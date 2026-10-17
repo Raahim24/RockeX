@@ -1,6 +1,12 @@
 // Owner: P3. POST AdviseRequest -> AdviseResponse. Always 200 with a usable message for a valid request.
 import { grokJson } from "@/lib/ai/grokClient";
-import { ADVISOR_SYSTEM, advisorUserPrompt, fallbackAdvice } from "@/lib/ai/prompts";
+import {
+  ADVISOR_SYSTEM,
+  advisorCandidates,
+  advisorUserPrompt,
+  fallbackAdvice,
+  sameSuggestion,
+} from "@/lib/ai/prompts";
 import {
   ADVISE_REPLY_JSON_SCHEMA,
   AdviseReplySchema,
@@ -23,23 +29,24 @@ export async function POST(req: Request): Promise<Response> {
   }
   const { build, verdict } = parsed.data;
   const catalog = loadCatalog();
+  const candidates = advisorCandidates(build, verdict, catalog);
 
   try {
     const raw = await grokJson({
       system: ADVISOR_SYSTEM,
-      user: advisorUserPrompt(build, verdict, catalog),
+      user: advisorUserPrompt(build, verdict, catalog, candidates),
       schemaName: "advise_reply",
       schema: ADVISE_REPLY_JSON_SCHEMA,
       timeoutMs: TIMEOUT_MS,
     });
     const grok = AdviseReplySchema.parse(raw);
-    return reply(
-      {
-        message: capSentences(grok.message),
-        suggestion: sanitizeSuggestion(grok.suggestion, build, catalog),
-      },
-      "grok",
-    );
+    if (grok.suggestion) {
+      const valid = sanitizeSuggestion(grok.suggestion, build, catalog);
+      if (!valid || !candidates.some((c) => sameSuggestion(c.suggestion, valid))) {
+        throw new Error(`suggestion not in candidates: ${JSON.stringify(grok.suggestion)}`);
+      }
+    }
+    return reply({ message: capSentences(grok.message), suggestion: grok.suggestion }, "grok");
   } catch (err) {
     console.warn("[advise] fallback:", err instanceof Error ? err.message : err);
     return reply(fallbackAdvice(verdict), "fallback");
