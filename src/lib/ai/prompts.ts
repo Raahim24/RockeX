@@ -1,2 +1,163 @@
-// Placeholder. Owner and task: see docs/ROADMAP.md.
-export {};
+// Owner: P3. Prompt builders and the rule-based fallback. Code computes every number; Grok only phrases.
+import { byId, type Catalog } from "@/lib/physics/catalog";
+import { evaluateBuild } from "@/lib/physics/feasibility";
+import { applySuggestionToBuild } from "@/store/applySuggestion";
+import type { AdviseResponse, BuildState, Suggestion, Verdict } from "@/types";
+
+const MAX_CANDIDATES = 5;
+const MAX_ENGINES = 9;
+
+const ms = (v: number): string => `${Math.round(v).toLocaleString("en-US")} m/s`;
+const tonnes = (kg: number): string => `${(kg / 1000).toFixed(1)} t`;
+const twr = (v: number): string => v.toFixed(2);
+
+const engineName = (catalog: Catalog, id: string): string => byId(catalog.engines, id)?.name ?? id;
+const tankName = (catalog: Catalog, id: string): string => byId(catalog.tanks, id)?.name ?? id;
+
+/** Human wording for a suggestion, using 1-based stage numbers. */
+export const describeSuggestion = (s: Suggestion, catalog: Catalog): string => {
+  switch (s.type) {
+    case "swap_engine":
+      return `Stage ${s.stageIndex + 1}: swap engine to ${engineName(catalog, s.engineId)}`;
+    case "swap_tank":
+      return `Stage ${s.stageIndex + 1}: swap tank to ${tankName(catalog, s.tankId)}`;
+    case "set_engine_count":
+      return `Stage ${s.stageIndex + 1}: use ${s.engineCount} engines`;
+    case "add_stage":
+      return `Add a stage: ${engineName(catalog, s.engineId)} on ${tankName(catalog, s.tankId)}`;
+  }
+};
+
+const allSingleChanges = (build: BuildState, catalog: Catalog): Suggestion[] => {
+  const out: Suggestion[] = [];
+  build.stages.forEach((stage, stageIndex) => {
+    for (const e of catalog.engines) {
+      if (e.id !== stage.engineId) out.push({ type: "swap_engine", stageIndex, engineId: e.id });
+    }
+    for (const t of catalog.tanks) {
+      if (t.id !== stage.tankId) out.push({ type: "swap_tank", stageIndex, tankId: t.id });
+    }
+    for (let n = 1; n <= MAX_ENGINES; n++) {
+      if (n !== stage.engineCount) out.push({ type: "set_engine_count", stageIndex, engineCount: n });
+    }
+  });
+  for (const e of catalog.engines) {
+    for (const t of catalog.tanks) out.push({ type: "add_stage", engineId: e.id, tankId: t.id });
+  }
+  return out;
+};
+
+export interface Candidate {
+  suggestion: Suggestion;
+  verdict: Verdict;
+}
+
+const sameBuild = (a: BuildState, b: BuildState): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/** Every one-change fix, evaluated by the physics code, best first: feasible, then most delta-v margin. */
+export const rankCandidates = (build: BuildState, catalog: Catalog): Candidate[] =>
+  allSingleChanges(build, catalog)
+    .map((suggestion) => {
+      const next = applySuggestionToBuild(build, suggestion, catalog);
+      return { suggestion, next, verdict: evaluateBuild(next, catalog) };
+    })
+    .filter((c) => !sameBuild(c.next, build))
+    .sort(
+      (a, b) =>
+        Number(b.verdict.feasible) - Number(a.verdict.feasible) ||
+        b.verdict.marginDeltaV_ms - a.verdict.marginDeltaV_ms,
+    )
+    .slice(0, MAX_CANDIDATES)
+    .map(({ suggestion, verdict }) => ({ suggestion, verdict }));
+
+export const ADVISOR_SYSTEM = [
+  "You are Grok, the flight engineer in a rocket configurator.",
+  "The verdict and every number are computed by the app's physics code and are correct. Never calculate, estimate or invent a number; only quote numbers given to you.",
+  "Reply as JSON matching the schema. message: at most 2 short sentences, plain spoken English for text-to-speech, no markdown.",
+  "suggestion: copy exactly one object from CANDIDATES (prefer the first, which the code ranked best), or null if the rocket is already feasible or no candidate helps.",
+  "If you suggest something, the message must say what to change and quote its resulting margin.",
+].join(" ");
+
+const stageLine = (build: BuildState, verdict: Verdict, catalog: Catalog, i: number): string => {
+  const s = build.stages[i];
+  const e = byId(catalog.engines, s.engineId);
+  const t = byId(catalog.tanks, s.tankId);
+  const dv = verdict.stages[i]?.deltaV_ms ?? 0;
+  return `Stage ${i + 1}: ${s.engineCount} x ${e?.name ?? s.engineId} (${e?.propellant ?? "?"}) on ${t?.name ?? s.tankId} (${t?.propellant ?? "?"}), delta-v ${ms(dv)}`;
+};
+
+const verdictLines = (v: Verdict): string[] => [
+  `Feasible: ${v.feasible ? "yes" : "no"}`,
+  `Delta-v: ${ms(v.totalDeltaV_ms)} of ${ms(v.requiredDeltaV_ms)} required, margin ${ms(v.marginDeltaV_ms)}${v.marginDeltaV_ms < 0 ? " (short)" : ""}`,
+  `Liftoff TWR: ${twr(v.liftoffTWR)} (needs 1.20)`,
+  `Total mass: ${tonnes(v.totalMass_kg)}`,
+  `Warnings: ${v.warnings.length ? v.warnings.join("; ") : "none"}`,
+];
+
+export const advisorUserPrompt = (build: BuildState, verdict: Verdict, catalog: Catalog): string => {
+  const mission = byId(catalog.missions, build.missionId);
+  const payload = byId(catalog.payloads, build.payloadId);
+  const candidates = verdict.feasible ? [] : rankCandidates(build, catalog);
+  return [
+    `MISSION: ${mission?.name ?? build.missionId} (${mission?.destination ?? "unknown"})`,
+    `PAYLOAD: ${payload ? `${payload.name}, ${tonnes(payload.mass_kg)}` : "none"}`,
+    "BUILD (stage 1 is the bottom stage):",
+    ...build.stages.map((_, i) => stageLine(build, verdict, catalog, i)),
+    "VERDICT:",
+    ...verdictLines(verdict),
+    "CANDIDATES (JSON suggestion -> result after applying it; stageIndex is 0-based):",
+    ...(candidates.length
+      ? candidates.map(
+          (c) =>
+            `${JSON.stringify(c.suggestion)} -> ${describeSuggestion(c.suggestion, catalog)}; feasible ${c.verdict.feasible ? "yes" : "no"}, margin ${ms(c.verdict.marginDeltaV_ms)}, TWR ${twr(c.verdict.liftoffTWR)}`,
+        )
+      : ["none"]),
+  ].join("\n");
+};
+
+/** Message built from the verdict alone. Used whenever Grok fails. */
+export const fallbackAdvice = (verdict: Verdict): AdviseResponse => {
+  const blocking = verdict.warnings.find((w) => w !== "liftoff TWR below 1.2");
+  let message: string;
+  if (verdict.stages.length === 0) {
+    message = "Add a stage to start building your rocket.";
+  } else if (blocking) {
+    message = `This build can't fly yet: ${blocking}. Fix that first.`;
+  } else if (!verdict.twrOk) {
+    message = `Liftoff TWR is ${twr(verdict.liftoffTWR)}, below the 1.2 needed. Add engines or lighten the bottom stage.`;
+  } else if (!verdict.deltaVOk) {
+    message = `You are ${ms(-verdict.marginDeltaV_ms)} short of the ${ms(verdict.requiredDeltaV_ms)} this mission needs. Try a higher-efficiency upper stage or a bigger tank.`;
+  } else {
+    message = `This rocket makes it with ${ms(verdict.marginDeltaV_ms)} to spare and a liftoff TWR of ${twr(verdict.liftoffTWR)}.`;
+  }
+  return { message, suggestion: null };
+};
+
+const RENDER_STYLE =
+  "Photorealistic product photograph of a rocket standing vertically on a launch pad at dusk, full rocket in frame, dramatic rim lighting, clear sky.";
+
+/** Image prompt built only from catalog part names and the livery, never from user text. */
+export const renderPrompt = (build: BuildState, catalog: Catalog): string => {
+  const stages = build.stages.flatMap((s, i) => {
+    const e = byId(catalog.engines, s.engineId);
+    const t = byId(catalog.tanks, s.tankId);
+    if (!e || !t) return [];
+    const label = i === 0 ? "First stage (bottom)" : `Stage ${i + 1}`;
+    return [`${label}: ${s.engineCount} ${e.name} engine${s.engineCount > 1 ? "s" : ""} under a ${t.diameter_m} m wide ${t.name}.`];
+  });
+  const payload = byId(catalog.payloads, build.payloadId);
+  const { primary, accent, stripe, patch } = build.livery;
+  const hex = /^#[0-9a-fA-F]{6}$/;
+  const livery = [
+    hex.test(primary) ? `Body color ${primary}.` : "",
+    hex.test(accent) ? `Accent color ${accent}${stripe ? " with a bold horizontal stripe" : ""}.` : "",
+    patch ? "A round mission patch decal on the upper stage." : "",
+  ].filter(Boolean);
+  return [
+    RENDER_STYLE,
+    `A ${stages.length}-stage rocket.`,
+    ...stages,
+    payload ? `Payload fairing on top housing the ${payload.name}.` : "Payload fairing on top.",
+    ...livery,
+  ].join(" ");
+};
