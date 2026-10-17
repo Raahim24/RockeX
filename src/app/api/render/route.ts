@@ -7,7 +7,7 @@ import type { RenderResponse } from "@/types";
 
 export const maxDuration = 60;
 
-const TIMEOUT_MS = 30000;
+const TIMEOUT_MS = 55000;
 const CACHED_IMAGE = "/fallback/render.jpg";
 
 export async function POST(req: Request): Promise<Response> {

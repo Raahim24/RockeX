@@ -1,6 +1,6 @@
 # xAI API spike (Phase 0, P3)
 
-Source: docs.x.ai, read 2026-10-17. Measured numbers come from `bash src/lib/ai/spike.sh` (fill the **Measured** column; until then the route timeouts below are the plan).
+Source: docs.x.ai, read 2026-10-17. Measured numbers come from `bash src/lib/ai/spike.sh`.
 
 ## Answers
 
@@ -35,18 +35,24 @@ Out of credits or over the spending limit returns HTTP **403** in ~0.15 s with b
 
 ## Latency and timeouts
 
-| Call | Route timeout | Measured (fill in) |
-|---|---|---|
-| Advise, `grok-4.20-non-reasoning` | 8 s (spec) | |
-| Advise, `grok-4.7` effort low (comparison only) | n/a | |
-| Voice, ~100 chars | 8 s | |
-| Render, 1k, `b64_json` | 30 s | |
+Measured 2026-10-17, 3 runs each, from a laptop (`spike.sh`):
 
-Render needs `export const maxDuration = 60` on `/api/render` so Vercel doesn't kill it first.
+| Call | Measured | Route timeout |
+|---|---|---|
+| Advise, `grok-4.20-non-reasoning` | **0.86 / 1.00 / 1.05 s** | 8 s (spec) |
+| Advise, `grok-4.7` effort low (comparison only) | 8.58 / 8.89 / 9.41 s, **over 8 s every time** | n/a |
+| Voice, ~90 chars | 0.76 / 0.95 / 1.02 s total, first byte 0.11-0.30 s | 8 s |
+| Render, 1k, `b64_json` | 14.4 / 15.9 / **46.0 s** | 55 s |
+
+- Strict JSON: 6/6 replies parsed and matched the schema. The fast model gave the same suggestion 3/3 at `temperature: 0`.
+- Render output: JPEG, 1024x576, ~0.3 MB base64. Usually ~15 s but can spike to ~45 s, so the UI should say "about 15-45 seconds".
+- Voice output: MPEG layer III, 128 kbps, 24 kHz, mono, ~105 KB for one sentence.
+
+`/api/render` sets `maxDuration = 60` so Vercel doesn't kill it before the 55 s timeout.
 
 ## Decisions (Gate 0)
 
-1. **Advisor:** `grok-4.20-non-reasoning`, Responses API, strict JSON schema mirroring `AdviseResponse`, `temperature: 0` for repeatable suggestions. Switch to `grok-4.7` only if measured latency fits in 8 s and quality is clearly better.
+1. **Advisor:** `grok-4.20-non-reasoning`, Responses API, strict JSON schema mirroring `AdviseResponse`, `temperature: 0` for repeatable suggestions. Confirmed by measurement: `grok-4.7` takes ~9 s even at low effort, so it can't fit the 8 s timeout.
 2. **Render prompt uses part names + livery only** (`/v1/images/generations`). Imagine *does* accept a reference image, but `RenderRequest` has no image field and the contract is frozen; a canvas screenshot also needs `preserveDrawingBuffer` in P1's scene. Reference-image render via `/v1/images/edits` is a contract v2 candidate, not Phase 1 work.
 3. **Voice:** MP3 default format, voice `eve`, text capped at 2 sentences by the advisor.
 
