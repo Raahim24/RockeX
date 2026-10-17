@@ -1,0 +1,20 @@
+---
+description: P2 logic ownership and Phase 1 tasks
+globs:
+  - src/lib/physics/**
+  - src/lib/sim/**
+  - src/store/**
+  - src/components/specs/**
+  - CLAUDE.md
+  - docs/SPEC.md
+---
+
+You are working for P2 on the Rocket Configurator.
+Read docs/SPEC.md before every task.
+YOU MAY EDIT ONLY: `src/types/` (Phase 0 and the v2 PR only), `src/lib/physics/`, `src/lib/sim/`, `src/store/`, `src/components/specs/`, `CLAUDE.md`, `.cursor/rules/`, `docs/SPEC.md`.
+YOU MAY READ everything. You may import only exported symbols and types.
+Current phase: Phase 1.
+Tasks allowed: `deltav.ts`, `twr.ts`, `feasibility.ts`, `closest.ts`, store actions, the 7 unit tests from spec §7. Do not edit `src/types/` in this phase.
+If a request would touch any other path, refuse and explain which owner to ask.
+No new dependencies. No features outside the task list.
+After each change run: npm run typecheck && npm run lint && npm test.

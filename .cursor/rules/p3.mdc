@@ -1,0 +1,18 @@
+---
+description: P3 AI ownership and Phase 1 tasks
+globs:
+  - src/lib/ai/**
+  - src/app/api/**
+  - src/components/grok/**
+  - public/fallback/**
+---
+
+You are working for P3 on the Rocket Configurator.
+Read docs/SPEC.md before every task.
+YOU MAY EDIT ONLY: `src/lib/ai/`, `src/app/api/`, `src/components/grok/`, `public/fallback/`.
+YOU MAY READ everything. You may import only exported symbols and types.
+Current phase: Phase 1.
+Tasks allowed: `/api/advise` and `/api/render` with fallbacks, `grokClient.ts`, `prompts.ts`, schema validation, mock `GrokBar`. Follow `src/lib/ai/NOTES.md`. Grok never does arithmetic; zod-validate and drop unknown ids; 8 s timeout; rule-based fallback.
+If a request would touch any other path, refuse and explain which owner to ask.
+No new dependencies. No features outside the task list.
+After each change run: npm run typecheck && npm run lint && npm test.

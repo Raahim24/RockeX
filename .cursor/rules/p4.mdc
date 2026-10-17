@@ -1,0 +1,18 @@
+---
+description: P4 data ownership and Phase 1 tasks
+globs:
+  - src/data/**
+  - public/models/**
+  - README.md
+  - docs/grok-bot/**
+---
+
+You are working for P4 on the Rocket Configurator.
+Read docs/SPEC.md before every task.
+YOU MAY EDIT ONLY: `src/data/`, `public/models/`, validation script, `README.md`, `docs/grok-bot/`, submission notes.
+YOU MAY READ everything. You may import only exported symbols and types.
+Current phase: Phase 1.
+Tasks allowed: Real data — 8 engines, tanks, payloads, 5 to 6 missions, 4 to 5 reference rockets, `SOURCES.md`, validation script. Every record has a `source` URL. Do not invent numbers without a source.
+If a request would touch any other path, refuse and explain which owner to ask.
+No new dependencies. No features outside the task list.
+After each change run: npm run typecheck && npm run lint && npm test.
