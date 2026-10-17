@@ -1,0 +1,10 @@
+[
+  {
+    "id": "crew-dragon",
+    "name": "Crew Dragon + trunk",
+    "mass_kg": 12519,
+    "diameter_m": 4.0,
+    "height_m": 8.1,
+    "source": "dims https://www.spacex.com/vehicles/dragon/ ; mass (at undock, not launch: TODO(source)) https://www.nasa.gov/feature/top-10-things-to-know-for-nasa-s-spacex-demo-2-return"
+  }
+]

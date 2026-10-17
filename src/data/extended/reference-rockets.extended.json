@@ -1,0 +1,524 @@
+[
+  {
+    "id": "falcon-9",
+    "name": "Falcon 9 Block 5",
+    "liftoffMass_kg": 549054,
+    "liftoffThrust_kN": 7607,
+    "payloadLEO_kg": 22800,
+    "stages": 2,
+    "source": "https://www.spacex.com/vehicles/falcon-9/",
+    "launches": 640,
+    "failures": 1,
+    "firstLaunchYear": 2018,
+    "roastFacts": [
+      {
+        "text": "SpaceX bills Falcon 9 as the world's first orbital-class reusable rocket.",
+        "source": "https://www.spacex.com/vehicles/falcon-9/"
+      },
+      {
+        "text": "On January 24, 2021, a Falcon 9 set the record for most satellites launched by a single rocket: 143.",
+        "source": "https://en.wikipedia.org/wiki/Falcon_9"
+      },
+      {
+        "text": "Individual Falcon 9 boosters have flown as many as 37 times.",
+        "source": "https://en.wikipedia.org/wiki/Falcon_9"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "falcon-heavy",
+    "name": "Falcon Heavy",
+    "liftoffMass_kg": 1420788,
+    "liftoffThrust_kN": 22819,
+    "payloadLEO_kg": 63800,
+    "stages": 2,
+    "source": "https://www.spacex.com/vehicles/falcon-heavy/",
+    "launches": 14,
+    "failures": 0,
+    "firstLaunchYear": 2018,
+    "roastFacts": [
+      {
+        "text": "SpaceX says Falcon Heavy's liftoff thrust equals approximately eighteen 747 aircraft at full power.",
+        "source": "https://www.spacex.com/vehicles/falcon-heavy/"
+      },
+      {
+        "text": "SpaceX says Falcon Heavy can lift the equivalent of a fully loaded 737 jetliner, complete with passengers.",
+        "source": "https://www.spacex.com/vehicles/falcon-heavy/"
+      },
+      {
+        "text": "Its first payload was Elon Musk's personal Tesla Roadster, with a mannequin named \"Starman\" at the wheel.",
+        "source": "https://en.wikipedia.org/wiki/Falcon_Heavy"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "saturn-v",
+    "name": "Saturn V",
+    "liftoffMass_kg": 2800000,
+    "liftoffThrust_kN": 34500,
+    "payloadLEO_kg": 118000,
+    "stages": 3,
+    "source": "https://www.nasa.gov/learning-resources/for-kids-and-students/what-was-the-saturn-v-grades-5-8/",
+    "launches": 13,
+    "failures": 1,
+    "firstLaunchYear": 1967,
+    "roastFacts": [
+      {
+        "text": "Fully fueled, the Saturn V weighed about as much as 400 elephants.",
+        "source": "https://www.nasa.gov/learning-resources/for-kids-and-students/what-was-the-saturn-v-grades-5-8/"
+      },
+      {
+        "text": "NASA says its launch thrust created more power than 85 Hoover Dams.",
+        "source": "https://www.nasa.gov/learning-resources/for-kids-and-students/what-was-the-saturn-v-grades-5-8/"
+      },
+      {
+        "text": "The fuel for one lunar mission could drive a 30-mpg car around the world about 800 times.",
+        "source": "https://www.nasa.gov/learning-resources/for-kids-and-students/what-was-the-saturn-v-grades-5-8/"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "starship",
+    "name": "Starship (Super Heavy + Starship, V3)",
+    "liftoffMass_kg": 5500000,
+    "liftoffThrust_kN": 80807,
+    "payloadLEO_kg": 100000,
+    "stages": 2,
+    "source": "https://www.spacex.com/vehicles/starship/ (thrust 8,240 tf, payload \"100+ t\" TARGET); liftoff mass 5,500 t from GCAT lv.tsv \"Starship V3\" (?-flagged) https://planet4589.org/space/gcat/tsv/tables/lv.tsv",
+    "launches": 14,
+    "failures": 5,
+    "firstLaunchYear": 2023,
+    "roastFacts": [
+      {
+        "text": "SpaceX calls Starship the world's most powerful launch vehicle ever developed.",
+        "source": "https://www.spacex.com/vehicles/starship/"
+      },
+      {
+        "text": "The Super Heavy booster lands by being caught by a pair of hydraulic arms on the launch tower.",
+        "source": "https://en.wikipedia.org/wiki/SpaceX_Super_Heavy"
+      },
+      {
+        "text": "After several setbacks, Starship did not reach orbit until its fourteenth flight test.",
+        "source": "https://en.wikipedia.org/wiki/SpaceX_Starship"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "sls-block-1",
+    "name": "SLS Block 1",
+    "liftoffMass_kg": 2603000,
+    "liftoffThrust_kN": 36786,
+    "payloadLEO_kg": 95000,
+    "stages": 2,
+    "source": "https://www.nasa.gov/wp-content/uploads/2022/03/sls-reference-guide-2022-v2-508-0.pdf",
+    "launches": 2,
+    "failures": 0,
+    "firstLaunchYear": 2022,
+    "roastFacts": [
+      {
+        "text": "NASA says SLS produces 15% more maximum thrust than the Saturn V.",
+        "source": "https://www.nasa.gov/wp-content/uploads/2026/03/sls-5640-sls-fact-sheet-dec2025-508.pdf"
+      },
+      {
+        "text": "At 322 ft, SLS Block 1 is taller than the Statue of Liberty.",
+        "source": "https://www.nasa.gov/wp-content/uploads/2026/03/sls-5640-sls-fact-sheet-dec2025-508.pdf"
+      },
+      {
+        "text": "The whole 5.75-million-lb rocket rests on the aft skirts of its two boosters.",
+        "source": "https://www.nasa.gov/wp-content/uploads/2022/03/sls-reference-guide-2022-v2-508-0.pdf"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "n1",
+    "name": "N1",
+    "liftoffMass_kg": 2750000,
+    "liftoffThrust_kN": 45780,
+    "payloadLEO_kg": 95000,
+    "stages": 5,
+    "source": "https://en.wikipedia.org/wiki/N1_(rocket)",
+    "launches": 4,
+    "failures": 4,
+    "firstLaunchYear": 1969,
+    "roastFacts": [
+      {
+        "text": "All four N1 launch attempts, from 1969 to 1972, failed.",
+        "source": "https://www.russianspaceweb.com/n1.html"
+      },
+      {
+        "text": "Its first stage clustered thirty NK-15 engines, managed by an analog computer (KORD) that shut down the engine opposite any that failed.",
+        "source": "https://en.wikipedia.org/wiki/N1_(rocket)"
+      },
+      {
+        "text": "The second flight caused one of the largest conventional explosions ever and put its launch pad out of action for 18 months.",
+        "source": "https://en.wikipedia.org/wiki/N1_(rocket)"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "space-shuttle",
+    "name": "Space Shuttle (STS)",
+    "liftoffMass_kg": 2041166,
+    "liftoffThrust_kN": 28580,
+    "payloadLEO_kg": 27500,
+    "stages": 1,
+    "source": "https://www.nasa.gov/reference/the-space-shuttle/",
+    "launches": 135,
+    "failures": 2,
+    "firstLaunchYear": 1981,
+    "roastFacts": [
+      {
+        "text": "The main engines burned fuel fast enough to drain an average family swimming pool in under 25 seconds.",
+        "source": "https://www.nasa.gov/reference/the-space-shuttle/"
+      },
+      {
+        "text": "The external tank was the only part of the Shuttle that was not reused.",
+        "source": "https://www.nasa.gov/reference/the-space-shuttle/"
+      },
+      {
+        "text": "Two orbiters were lost in accidents, Challenger in 1986 and Columbia in 2003, killing 14 astronauts in total.",
+        "source": "https://en.wikipedia.org/wiki/Space_Shuttle"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "atlas-v-551",
+    "name": "Atlas V 551",
+    "liftoffMass_kg": 573000,
+    "liftoffThrust_kN": 12269,
+    "payloadLEO_kg": 18850,
+    "stages": 2,
+    "source": "https://www.ulalaunch.com/rockets/atlas-v",
+    "launches": 23,
+    "failures": 0,
+    "firstLaunchYear": 2006,
+    "roastFacts": [
+      {
+        "text": "An Atlas V 551 launched New Horizons toward Pluto on January 19, 2006.",
+        "source": "https://en.wikipedia.org/wiki/Atlas_V"
+      },
+      {
+        "text": "Its first stage runs on a single Russian-made RD-180 engine.",
+        "source": "https://en.wikipedia.org/wiki/Atlas_V"
+      },
+      {
+        "text": "ULA says Atlas V builds on a heritage of more than 600 Atlas program launches.",
+        "source": "https://www.ulalaunch.com/rockets/atlas-v"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "delta-iv-heavy",
+    "name": "Delta IV Heavy",
+    "liftoffMass_kg": 733000,
+    "liftoffThrust_kN": 9411,
+    "payloadLEO_kg": 28370,
+    "stages": 2,
+    "source": "https://www.ulalaunch.com/rockets/delta-iv",
+    "launches": 16,
+    "failures": 1,
+    "firstLaunchYear": 2004,
+    "roastFacts": [
+      {
+        "text": "Its hydrogen-fuelled ignition often produced a large fireball that scorched the outside of the boosters.",
+        "source": "https://en.wikipedia.org/wiki/Delta_IV_Heavy"
+      },
+      {
+        "text": "It sent the Parker Solar Probe to study the Sun's atmosphere.",
+        "source": "https://www.ulalaunch.com/rockets/delta-iv"
+      },
+      {
+        "text": "The Delta family's six-decade run ended at 389 launches.",
+        "source": "https://www.ulalaunch.com/rockets/delta-iv"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "ariane-5-eca",
+    "name": "Ariane 5 ECA",
+    "liftoffMass_kg": 780000,
+    "liftoffThrust_kN": 11400,
+    "payloadLEO_kg": null,
+    "stages": 2,
+    "source": "https://ll.thespacedevs.com/2.3.0/launcher_configurations/20/",
+    "launches": 84,
+    "failures": 2,
+    "firstLaunchYear": 2002,
+    "roastFacts": [
+      {
+        "text": "The first Ariane 5 ECA launch (11 December 2002) ended in failure: it veered off course and was destroyed about three minutes into flight.",
+        "source": "https://en.wikipedia.org/wiki/Ariane_5"
+      },
+      {
+        "text": "An Ariane 5 (flight VA256) launched the James Webb Space Telescope on 25 December 2021.",
+        "source": "https://en.wikipedia.org/wiki/Ariane_5"
+      },
+      {
+        "text": "Ariane 5 had a run of 82 consecutive successful launches between 2003 and 2017.",
+        "source": "https://en.wikipedia.org/wiki/Ariane_5"
+      }
+    ],
+    "asOf": "2026-10-17",
+    "_todo": "payloadLEO_kg TODO(source)"
+  },
+  {
+    "id": "ariane-64",
+    "name": "Ariane 64 (Ariane 6)",
+    "liftoffMass_kg": 860000,
+    "liftoffThrust_kN": 15000,
+    "payloadLEO_kg": 21600,
+    "stages": 2,
+    "source": "https://www.esa.int/Enabling_Support/Space_Transportation/Launch_vehicles/Ariane_6",
+    "launches": 9,
+    "failures": 1,
+    "firstLaunchYear": 2024,
+    "roastFacts": [
+      {
+        "text": "ESA says a fully loaded Ariane 6 weighs roughly as much as one and a half Airbus A380s.",
+        "source": "https://www.esa.int/Enabling_Support/Space_Transportation/Launch_vehicles/Ariane_6"
+      },
+      {
+        "text": "Its 8,200-tonne mobile gantry is nearly a thousand tonnes heavier than the Eiffel Tower.",
+        "source": "https://www.esa.int/Enabling_Support/Space_Transportation/Launch_vehicles/Ariane_6"
+      },
+      {
+        "text": "On the maiden flight, VA262, the satellites reached orbit but the Vinci engine failed to ignite a third time to deorbit the upper stage.",
+        "source": "https://en.wikipedia.org/wiki/Ariane_6"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "vulcan-vc2s",
+    "name": "Vulcan Centaur VC2S",
+    "liftoffMass_kg": 663000,
+    "liftoffThrust_kN": 9303,
+    "payloadLEO_kg": 19000,
+    "stages": 2,
+    "source": "https://www.ulalaunch.com/rockets/vulcan-centaur",
+    "launches": 4,
+    "failures": 0,
+    "firstLaunchYear": 2024,
+    "roastFacts": [
+      {
+        "text": "On its second flight a solid booster's nozzle fell off about 37 seconds in, and Vulcan still reached its planned orbit.",
+        "source": "https://en.wikipedia.org/wiki/Vulcan_Centaur"
+      },
+      {
+        "text": "Its first launch carried the Peregrine lunar lander.",
+        "source": "https://en.wikipedia.org/wiki/Vulcan_Centaur"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "new-glenn",
+    "name": "New Glenn (7x2)",
+    "liftoffMass_kg": 1050000,
+    "liftoffThrust_kN": 17126,
+    "payloadLEO_kg": 45000,
+    "stages": 2,
+    "source": "https://ll.thespacedevs.com/2.3.0/launcher_configurations/138/",
+    "launches": 3,
+    "failures": 1,
+    "firstLaunchYear": 2025,
+    "roastFacts": [
+      {
+        "text": "It is named after John Glenn, the first American to orbit Earth.",
+        "source": "https://en.wikipedia.org/wiki/New_Glenn"
+      },
+      {
+        "text": "The booster first landed successfully on the second flight, NG-2, on November 13, 2025.",
+        "source": "https://en.wikipedia.org/wiki/New_Glenn"
+      },
+      {
+        "text": "In May 2026 a New Glenn exploded during preparations for an Amazon Leo launch, heavily damaging LC-36.",
+        "source": "https://en.wikipedia.org/wiki/New_Glenn"
+      }
+    ],
+    "asOf": "2026-10-17",
+    "_note": "liftoff mass 1,050 t from GCAT lv.tsv \"New Glenn 7x2\" (?-flagged) https://planet4589.org/space/gcat/tsv/tables/lv.tsv"
+  },
+  {
+    "id": "soyuz-2-1b",
+    "name": "Soyuz-2.1b",
+    "liftoffMass_kg": 312000,
+    "liftoffThrust_kN": 4150,
+    "payloadLEO_kg": 8200,
+    "stages": 2,
+    "source": "https://ll.thespacedevs.com/2.3.0/launcher_configurations/15/",
+    "launches": 88,
+    "failures": 2,
+    "firstLaunchYear": 2006,
+    "roastFacts": [
+      {
+        "text": "Soyuz-2 is the seventh major iteration of the Soyuz family and still flies from pads built for its R-7 ancestors.",
+        "source": "https://en.wikipedia.org/wiki/Soyuz-2"
+      },
+      {
+        "text": "In 2015 it emerged that parts of the Vostochny assembly complex had been designed for a different rocket variant and were too small for Soyuz-2.",
+        "source": "https://en.wikipedia.org/wiki/Soyuz-2"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "proton-m",
+    "name": "Proton-M",
+    "liftoffMass_kg": 705000,
+    "liftoffThrust_kN": 10532,
+    "payloadLEO_kg": 23000,
+    "stages": 4,
+    "source": "https://en.wikipedia.org/wiki/Proton-M",
+    "launches": 116,
+    "failures": 11,
+    "firstLaunchYear": 2001,
+    "roastFacts": [
+      {
+        "text": "The July 2013 failure was traced to three yaw-rate sensors installed in the wrong orientation.",
+        "source": "https://en.wikipedia.org/wiki/Proton-M"
+      },
+      {
+        "text": "In December 2010 an upper stage overloaded with 1,500 kg of liquid oxygen failed to reach orbital velocity, losing three GLONASS satellites.",
+        "source": "https://en.wikipedia.org/wiki/Proton-M"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "long-march-5b",
+    "name": "Long March 5B",
+    "liftoffMass_kg": 837000,
+    "liftoffThrust_kN": 10565,
+    "payloadLEO_kg": 25000,
+    "stages": 1,
+    "source": "https://ll.thespacedevs.com/2.3.0/launcher_configurations/208/",
+    "launches": 18,
+    "failures": 1,
+    "firstLaunchYear": 2016,
+    "roastFacts": [
+      {
+        "text": "Its nickname is \"Pang-Wu\" (\"Fat-Five\").",
+        "source": "https://en.wikipedia.org/wiki/Long_March_5"
+      },
+      {
+        "text": "The first 5B's core stage may have been the most massive object to make an uncontrolled re-entry since Salyut 7 (1991) and Skylab (1979).",
+        "source": "https://en.wikipedia.org/wiki/Long_March_5"
+      },
+      {
+        "text": "It launched all three modules of the Tiangong space station.",
+        "source": "https://en.wikipedia.org/wiki/Long_March_5"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "h3-24",
+    "name": "H3-24",
+    "liftoffMass_kg": 574000,
+    "liftoffThrust_kN": 12142,
+    "payloadLEO_kg": 16000,
+    "stages": 2,
+    "source": "https://global.jaxa.jp/projects/rockets/h3/",
+    "launches": 9,
+    "failures": 2,
+    "firstLaunchYear": 2023,
+    "roastFacts": [
+      {
+        "text": "The H3 maiden flight in March 2023 failed when the second-stage engine did not ignite.",
+        "source": "https://en.wikipedia.org/wiki/H3_(rocket)"
+      },
+      {
+        "text": "JAXA says the H3's LE-9 engine needed more thrust than any liquid rocket engine Japan had ever developed.",
+        "source": "https://global.jaxa.jp/projects/rockets/h3/"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "electron",
+    "name": "Electron",
+    "liftoffMass_kg": 13000,
+    "liftoffThrust_kN": 224.3,
+    "payloadLEO_kg": 300,
+    "stages": 2,
+    "source": "https://en.wikipedia.org/wiki/Rocket_Lab_Electron",
+    "launches": 97,
+    "failures": 4,
+    "firstLaunchYear": 2017,
+    "roastFacts": [
+      {
+        "text": "Its Rutherford engines are the first electric-pump-fed engines to power an orbital-class rocket, with the pumps running on lithium-polymer batteries.",
+        "source": "https://en.wikipedia.org/wiki/Rocket_Lab_Electron"
+      },
+      {
+        "text": "The second stage hot-swaps its batteries and throws away the empty ones to save mass.",
+        "source": "https://en.wikipedia.org/wiki/Rocket_Lab_Electron"
+      },
+      {
+        "text": "Almost all of the engine parts are 3D printed.",
+        "source": "https://en.wikipedia.org/wiki/Rocket_Lab_Electron"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "saturn-ib",
+    "name": "Saturn IB",
+    "liftoffMass_kg": 589770,
+    "liftoffThrust_kN": 7117,
+    "payloadLEO_kg": 20865,
+    "stages": 2,
+    "source": "https://en.wikipedia.org/wiki/Saturn_IB",
+    "launches": 9,
+    "failures": 0,
+    "firstLaunchYear": 1966,
+    "roastFacts": [
+      {
+        "text": "In 1973 Saturn IBs carried three crews to Skylab, and in 1975 one launched the Apollo side of the Apollo-Soyuz Test Project.",
+        "source": "https://en.wikipedia.org/wiki/Saturn_IB"
+      },
+      {
+        "text": "A backup Saturn IB was readied for a Skylab rescue mission but never flew.",
+        "source": "https://en.wikipedia.org/wiki/Saturn_IB"
+      }
+    ],
+    "asOf": "2026-10-17"
+  },
+  {
+    "id": "energia",
+    "name": "Energia",
+    "liftoffMass_kg": 2400000,
+    "liftoffThrust_kN": 35129,
+    "payloadLEO_kg": 100000,
+    "stages": 1,
+    "source": "https://www.russianspaceweb.com/energia.html",
+    "launches": 2,
+    "failures": 0,
+    "firstLaunchYear": 1987,
+    "roastFacts": [
+      {
+        "text": "On its first flight the rocket worked perfectly, but the Polyus payload fired its engines the wrong way and fell into the ocean.",
+        "source": "https://www.russianspaceweb.com/energia.html"
+      },
+      {
+        "text": "Its second and last flight carried the uncrewed Buran shuttle, which landed automatically after two orbits.",
+        "source": "https://www.russianspaceweb.com/energia.html"
+      },
+      {
+        "text": "Mothballed Energia and Buran hardware at Baikonur was destroyed when the assembly building roof collapsed.",
+        "source": "https://www.russianspaceweb.com/energia.html"
+      }
+    ],
+    "asOf": "2026-10-17"
+  }
+]
