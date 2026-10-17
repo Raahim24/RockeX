@@ -22,7 +22,7 @@ primary source in `src/data/SOURCES.md`.
 
 | # | Owner | Severity | Issue | Evidence | Suggested fix |
 |---|---|---|---|---|---|
-| 1 | P2, P3 | **High (demo)** | For the demo build, the advisor's top-ranked fix is not the documented `DEMO_FIX`. Rank 1 is "add RL10B-2 on Saturn V S-IVB tank" (+839 m/s), rank 2 "RL10B-2 on Centaur III" (+638 m/s). `DEMO_FIX` (RL10C-1 on Centaur III) is not in the top 3. The bar still turns green, but Grok will likely say a different fix than the script, and a 6.6 m stage on a 5 m stage looks wrong on screen. | `rankCandidates(DEMO_BUILD)` | Prefer `DEMO_FIX` when the build equals `DEMO_BUILD`, or rank stages wider than the stage below lower, or rewrite the demo script to the rank-1 fix. |
+| 1 | P2, P3 | ~~High (demo)~~ **Fixed in #14** | For the demo build, the advisor's top-ranked fix is not the documented `DEMO_FIX`. Rank 1 is "add RL10B-2 on Saturn V S-IVB tank" (+839 m/s), rank 2 "RL10B-2 on Centaur III" (+638 m/s). `DEMO_FIX` (RL10C-1 on Centaur III) is not in the top 3. The bar still turns green, but Grok will likely say a different fix than the script, and a 6.6 m stage on a 5 m stage looks wrong on screen. | `rankCandidates(DEMO_BUILD)` | Prefer `DEMO_FIX` when the build equals `DEMO_BUILD`, or rank stages wider than the stage below lower, or rewrite the demo script to the rank-1 fix. |
 | 2 | P2 | Medium | The engine-fit rule `floor(0.6 x (D/d)^2)` allows only **4** F-1s on the S-IC (real: 5). A real Saturn V first stage cannot be built in the UI, which also blocks the U3 "Raptor on a Saturn V" demo with a real S-IC. | F-1 exit 3.531 m (NASA MSFC), S-IC 10.058 m | Raise the coefficient to 0.62 (gives exactly 5 F-1s and still 9 Merlins; 0.75 would allow 6), or use per-tank max counts from data. |
 | 3 | P2 | Medium | The 4 % tank floor blocks two real tanks: Falcon 9 second stage (3.23 %) and Shuttle External Tank (3.71 %). The real Falcon 9 can't be the demo for this reason. | `falcon9-s2-tank`, `shuttle-et-tank` | Lower the floor to 3 %, as `src/data/extended/demo-build.candidates.json` already suggests. |
 | 4 | P2 | Low | `evaluateBuild` does not check engine counts. 0 engines gives 8.3 km/s with no engines, 50 Merlins evaluates with no warning, and NaN returns NaN numbers that would print as "NaN". The store clamps counts, so only a bypass of the store hits this. | Edge cases in the test | Treat counts outside 1..9 or non-integers as a blocking warning in `evaluateBuild`. |
@@ -30,7 +30,11 @@ primary source in `src/data/SOURCES.md`.
 | 5 | P2 | Low | With a vacuum engine on the booster (0 sea-level thrust), `closestRocketId` is an empty string. The build is already blocked, and the panel shows "—", so this is cosmetic. | 6,720 sweep builds | Fall back to a mass-only match when thrust is 0. |
 
 Issues 2 to 4 are recorded as `it.todo` entries in `src/data/odd-builds.test.ts`; flip them to real tests once
+<<<<<<< HEAD
 fixed. Issues 1 and 6 need P2 and P3 before the Phase 3 demo rehearsal: both affect what the judges see.
+=======
+fixed. Issue 1 was fixed by P3 in #14: the advisor now offers `DEMO_FIX` first whenever it makes the build feasible.
+>>>>>>> p4-phase3
 
 ## Real flown stages against the rules
 
