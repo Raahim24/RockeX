@@ -56,6 +56,14 @@ Measured 2026-10-17, 3 runs each, from a laptop (`spike.sh`):
 2. **Render prompt uses part names + livery only** (`/v1/images/generations`). Imagine *does* accept a reference image, but `RenderRequest` has no image field and the contract is frozen; a canvas screenshot also needs `preserveDrawingBuffer` in P1's scene. Reference-image render via `/v1/images/edits` is a contract v2 candidate, not Phase 1 work.
 3. **Voice:** MP3 default format, voice `eve`, text capped at 2 sentences by the advisor.
 
+## Reliability (Phase 3)
+
+- The code picks the one fix (`advisorCandidates`): `DEMO_FIX` if it makes the build feasible, else the best-ranked single change. Grok only phrases it; any other suggestion triggers the fallback. With 5 options Grok picked the higher-margin #2 instead of `DEMO_FIX` 10/10 times, hence one.
+- Demo build through `/api/advise`, 10 runs, 2026-10-17: **10/10** source `grok`, suggestion = `DEMO_FIX`, message names RL10C-1 and Centaur III and quotes 905 m/s short / 497 m/s margin, 0.92-1.48 s each.
+- Offline fallback offers the same fix with a code-written message, so Apply works with Grok down.
+- Render prompt says "no text or labels"; without it Imagine painted part names on the body.
+- Backups in `public/fallback/`: `render.jpg` (fixed demo build, 3 stages) and `advice.mp3` (the demo advice line).
+
 ## Keys
 
 - Env var name: `XAI_API_KEY`.
