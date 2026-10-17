@@ -4,6 +4,7 @@
 const BASE_URL = "https://api.x.ai/v1";
 export const ADVISOR_MODEL = "grok-4.20-non-reasoning";
 export const IMAGE_MODEL = "grok-imagine-image-2.0";
+const VOICE = "eve";
 
 export class GrokError extends Error {}
 
@@ -15,7 +16,10 @@ const apiKey = (): string => {
   return key;
 };
 
-const post = async (path: string, body: unknown, timeoutMs: number): Promise<unknown> => {
+const post = async (path: string, body: unknown, timeoutMs: number): Promise<unknown> =>
+  (await postRaw(path, body, timeoutMs)).json();
+
+const postRaw = async (path: string, body: unknown, timeoutMs: number): Promise<Response> => {
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, {
@@ -36,7 +40,7 @@ const post = async (path: string, body: unknown, timeoutMs: number): Promise<unk
     const detail = (await res.text().catch(() => "")).slice(0, 200);
     throw new GrokError(`${path}: HTTP ${res.status} ${detail}`);
   }
-  return res.json();
+  return res;
 };
 
 interface ResponsesOutput {
@@ -96,4 +100,14 @@ export const grokImage = async (prompt: string, timeoutMs: number): Promise<stri
     throw new GrokError("/images/generations: no image in reply");
   }
   return `data:${image.mime_type ?? "image/jpeg"};base64,${image.b64_json}`;
+};
+
+/** Text to speech. Returns MP3 bytes (24 kHz, 128 kbps). */
+export const grokSpeech = async (text: string, timeoutMs: number): Promise<ArrayBuffer> => {
+  const res = await postRaw("/tts", { text, voice_id: VOICE, language: "en" }, timeoutMs);
+  const audio = await res.arrayBuffer();
+  if (audio.byteLength === 0) {
+    throw new GrokError("/tts: empty audio");
+  }
+  return audio;
 };

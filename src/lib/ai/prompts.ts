@@ -54,7 +54,7 @@ export interface Candidate {
 
 const sameBuild = (a: BuildState, b: BuildState): boolean => JSON.stringify(a) === JSON.stringify(b);
 
-/** Every one-change fix, evaluated by the physics code, best first: feasible, then most delta-v margin. */
+/** Every one-change fix, evaluated by the physics code, best first: feasible, fewest warnings, TWR ok, most margin. */
 export const rankCandidates = (build: BuildState, catalog: Catalog): Candidate[] =>
   allSingleChanges(build, catalog)
     .map((suggestion) => {
@@ -65,6 +65,8 @@ export const rankCandidates = (build: BuildState, catalog: Catalog): Candidate[]
     .sort(
       (a, b) =>
         Number(b.verdict.feasible) - Number(a.verdict.feasible) ||
+        a.verdict.warnings.length - b.verdict.warnings.length ||
+        Number(b.verdict.twrOk) - Number(a.verdict.twrOk) ||
         b.verdict.marginDeltaV_ms - a.verdict.marginDeltaV_ms,
     )
     .slice(0, MAX_CANDIDATES)
@@ -94,10 +96,24 @@ const verdictLines = (v: Verdict): string[] => [
   `Warnings: ${v.warnings.length ? v.warnings.join("; ") : "none"}`,
 ];
 
-export const advisorUserPrompt = (build: BuildState, verdict: Verdict, catalog: Catalog): string => {
+/** The only suggestions the advisor may return. Empty when the build already works. */
+export const advisorCandidates = (build: BuildState, verdict: Verdict, catalog: Catalog): Candidate[] =>
+  verdict.feasible ? [] : rankCandidates(build, catalog);
+
+export const sameSuggestion = (a: Suggestion, b: Suggestion): boolean => {
+  const fields = (s: Suggestion): string =>
+    JSON.stringify(Object.entries(s).sort(([x], [y]) => x.localeCompare(y)));
+  return fields(a) === fields(b);
+};
+
+export const advisorUserPrompt = (
+  build: BuildState,
+  verdict: Verdict,
+  catalog: Catalog,
+  candidates: Candidate[],
+): string => {
   const mission = byId(catalog.missions, build.missionId);
   const payload = byId(catalog.payloads, build.payloadId);
-  const candidates = verdict.feasible ? [] : rankCandidates(build, catalog);
   return [
     `MISSION: ${mission?.name ?? build.missionId} (${mission?.destination ?? "unknown"})`,
     `PAYLOAD: ${payload ? `${payload.name}, ${tonnes(payload.mass_kg)}` : "none"}`,

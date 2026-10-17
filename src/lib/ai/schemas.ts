@@ -1,6 +1,14 @@
 // Owner: P3. Zod schemas for AI route input and Grok output, plus the id check.
 import type { Catalog } from "@/lib/physics/catalog";
-import type { AdviseRequest, AdviseResponse, BuildState, RenderRequest, Suggestion, Verdict } from "@/types";
+import type {
+  AdviseRequest,
+  AdviseResponse,
+  BuildState,
+  RenderRequest,
+  Suggestion,
+  Verdict,
+  VoiceRequest,
+} from "@/types";
 import { z } from "zod";
 
 const MAX_ENGINES = 9;
@@ -57,6 +65,10 @@ export const RenderRequestSchema = z.object({
   build: BuildStateSchema,
   verdict: VerdictSchema,
 }) satisfies z.ZodType<RenderRequest>;
+
+export const VoiceRequestSchema = z.object({
+  text: z.string().trim().min(1).max(300),
+}) satisfies z.ZodType<VoiceRequest>;
 
 const StageIndex = z.number().int().min(0).max(MAX_ENGINES);
 
