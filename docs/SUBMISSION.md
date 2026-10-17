@@ -1,7 +1,7 @@
 # Submission notes (draft)
 
 Owner: P4. Pitch, requirement proof, demo script and submission checklist. Everything unchecked must be done
-before the code freeze. The README is left as is for now (team decision).
+before the code freeze.
 
 ## Pitch (one paragraph)
 
@@ -54,10 +54,10 @@ lines to what it actually says, or wait for P2 and P3 to pin the demo fix.
 ## Submission checklist
 
 - [ ] Live app link on Vercel, tested on a second device
-- [ ] Repo link with a README that explains the idea and how to run it (README not updated yet)
+- [x] Repo link with a README that explains the idea and how to run it
 - [ ] Demo video or screen recording, 60 to 90 seconds, as a backup
 - [ ] Screenshots of Cursor prompts and the rules files
 - [ ] Screenshots of the Grok Bot planning session (`docs/grok-bot/`)
 - [x] `SOURCES.md` listing where every real number came from
 - [x] One paragraph pitch (above)
-- [ ] Team names and roles
+- [x] Team names and roles (in the README; confirm the spellings)
