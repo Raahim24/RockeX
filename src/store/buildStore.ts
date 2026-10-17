@@ -7,16 +7,19 @@ import { applySuggestionToBuild } from "./applySuggestion";
 
 const DEFAULT_LIVERY: Livery = { primary: "#f5f5f5", accent: "#111111", stripe: true, patch: null };
 
-// Placeholder ids until P4 fills src/data/*.json. Then retune with P4 so the demo is red, one swap, green, TWR ≈ 1.3.
-const DEMO_BUILD: BuildState = {
+// Canonical demo (P2 + P4): red, ~905 m/s short. TWR 1.64: a real Falcon 9 first stage with its 9 Merlins.
+export const DEMO_BUILD: BuildState = {
   missionId: "moon-transfer",
   stages: [
-    { engineId: "TODO(source)", engineCount: 9, tankId: "TODO(source)" },
-    { engineId: "TODO(source)", engineCount: 1, tankId: "TODO(source)" },
+    { engineId: "merlin-1d", engineCount: 9, tankId: "falcon9-s1-tank" },
+    { engineId: "rl10b-2", engineCount: 1, tankId: "dcss-5m-tank" },
   ],
-  payloadId: "TODO(source)",
+  payloadId: "jwst",
   livery: DEFAULT_LIVERY,
 };
+
+// The one documented swap that turns the demo green; also the advisor's built-in fallback. Must be a single Suggestion.
+export const DEMO_FIX: Suggestion | null = { type: "add_stage", engineId: "rl10c-1", tankId: "centaur-iii-tank" };
 
 const EMPTY_BUILD: BuildState = { missionId: "", stages: [], payloadId: "", livery: DEFAULT_LIVERY };
 
