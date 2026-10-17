@@ -1,0 +1,437 @@
+{
+  "engines": {
+    "merlin-1d": {
+      "thrustSL_kN": [
+        "https://www.spacex.com/vehicles/falcon-9",
+        "primary",
+        "\"Thrust\" \"845 kN / 190,000 lbf\""
+      ],
+      "thrustVac_kN": [
+        "https://www.spacex.com/vehicles/falcon-9",
+        "derived",
+        "stage \"Thrust in vacuum\" 8,227 kN / 1,849,500 lbf \u00f7 9 engines"
+      ],
+      "ispSL_s": [
+        "https://web.archive.org/web/20130715094112/http://www.spacex.com/falcon9",
+        "primary (2013, older 147 klbf Merlin 1D; dated)",
+        "\"Sea Level Isp: 282s\""
+      ],
+      "ispVac_s": [
+        "https://web.archive.org/web/20130715094112/http://www.spacex.com/falcon9",
+        "primary (2013; dated)",
+        "\"Vacuum Isp: 311s\""
+      ],
+      "mass_kg": [
+        "https://en.wikipedia.org/wiki/SpaceX_Merlin",
+        "wikipedia (cites Tom Mueller on Quora; Quora not fetchable)",
+        "\"The Merlin 1D weighs 1030 pounds\" -> 467.2 kg"
+      ],
+      "diameter_m": [
+        "https://en.wikipedia.org/wiki/SpaceX_Merlin",
+        "wikipedia (UNCITED in infobox) TODO(source)",
+        "\"Sea level: 0.92 m\""
+      ]
+    },
+    "merlin-1d-vac": {
+      "thrustSL_kN": [
+        "vacuum-only convention",
+        "derived",
+        "0"
+      ],
+      "ispSL_s": [
+        "vacuum-only convention",
+        "derived",
+        "0"
+      ],
+      "thrustVac_kN": [
+        "https://www.spacex.com/vehicles/falcon-9",
+        "primary",
+        "\"981 kN / 220,500 lbf\""
+      ],
+      "ispVac_s": [
+        "https://web.archive.org/web/20190101/http://www.spacex.com/falcon9",
+        "primary (archived 2016-2019)",
+        "\"vacuum isp of 348 seconds\""
+      ],
+      "mass_kg": [
+        "https://github.com/KSP-RO/RealismOverhaul/blob/master/GameData/RealismOverhaul/Engine_Configs/Merlin1_Config.cfg",
+        "cross-check-only (game config) TODO(source): no primary/secondary found",
+        "\"Merlin 1DVac+ ... Dry Mass: 490 Kg\""
+      ],
+      "diameter_m": [
+        "https://en.wikipedia.org/wiki/SpaceX_Merlin",
+        "wikipedia (UNCITED) TODO(source)",
+        "\"Vacuum: 3.3 m\""
+      ]
+    },
+    "rs-25": {
+      "thrustSL_kN": [
+        "https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rs-25-spec-sheet.pdf",
+        "primary",
+        "\"At Sea Level 418,000 lb\""
+      ],
+      "thrustVac_kN": [
+        "https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rs-25-spec-sheet.pdf",
+        "primary",
+        "\"In Vacuum 512,300 lb\""
+      ],
+      "ispSL_s": [
+        "https://www.l3harris.com/all-capabilities/rs-25-engine",
+        "primary",
+        "\"Sea Level: 366 sec.\""
+      ],
+      "ispVac_s": [
+        "https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rs-25-spec-sheet.pdf",
+        "primary",
+        "\"Specific Impulse In Vacuum 452.3 sec\""
+      ],
+      "mass_kg": [
+        "https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rs-25-spec-sheet.pdf",
+        "primary",
+        "\"Weight Dry 7,774 lb\""
+      ],
+      "diameter_m": [
+        "https://www.nasa.gov/wp-content/uploads/2016/08/174533main_shuttle_propulsion.pdf",
+        "primary",
+        "\"7.5 feet in diameter at the nozzle exit\""
+      ]
+    },
+    "rl10c-1": {
+      "thrustVac_kN": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Thrust ... 22,890 lbf\""
+      ],
+      "ispVac_s": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Specific Impulse ... 449.7 sec\""
+      ],
+      "mass_kg": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Weight ... 420 lbs\""
+      ],
+      "diameter_m": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Nozzle Diameter ... 57\u201d\""
+      ],
+      "thrustSL_kN": [
+        "vacuum-only convention",
+        "derived",
+        "0"
+      ],
+      "ispSL_s": [
+        "vacuum-only convention",
+        "derived",
+        "0"
+      ]
+    },
+    "rl10c-1-1": {
+      "thrustVac_kN": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Thrust ... 23,825 lbf\""
+      ],
+      "ispVac_s": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Specific Impulse ... 453.8 sec\""
+      ],
+      "mass_kg": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Weight ... 415 lbs\""
+      ],
+      "diameter_m": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Nozzle Diameter ... 62\u201d\""
+      ],
+      "thrustSL_kN": [
+        "vacuum-only convention",
+        "derived",
+        "0"
+      ],
+      "ispSL_s": [
+        "vacuum-only convention",
+        "derived",
+        "0"
+      ]
+    },
+    "rl10b-2": {
+      "thrustVac_kN": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Thrust ... 24,750 lbf\""
+      ],
+      "ispVac_s": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Specific Impulse ... 465.5 sec\""
+      ],
+      "mass_kg": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Weight ... 664 lbs\""
+      ],
+      "diameter_m": [
+        "https://web.archive.org/web/2024/https://l3harris.com/sites/default/files/2024-07/l3harris-ar-rl10-spec-sheet.pdf",
+        "primary",
+        "\"Nozzle Diameter ... 84.5\u201d\""
+      ],
+      "thrustSL_kN": [
+        "vacuum-only convention",
+        "derived",
+        "0"
+      ],
+      "ispSL_s": [
+        "vacuum-only convention",
+        "derived",
+        "0"
+      ]
+    },
+    "f-1": {
+      "thrustSL_kN": [
+        "https://web.archive.org/web/20051221114403/http://history.msfc.nasa.gov/saturn_apollo/documents/F-1_Engine.pdf",
+        "primary",
+        "\"uprated to 1,522,000 lb. thrust for Vehicle 504\" (sea level)"
+      ],
+      "thrustVac_kN": [
+        "https://en.wikipedia.org/wiki/Rocketdyne_F-1",
+        "wikipedia (no inline citation)",
+        "\"1746000 lbf\""
+      ],
+      "ispSL_s": [
+        "https://web.archive.org/web/20051221114403/http://history.msfc.nasa.gov/saturn_apollo/documents/F-1_Engine.pdf",
+        "primary",
+        "\"SPECIFIC IMPULSE (minimum) 260 sec.\""
+      ],
+      "ispVac_s": [
+        "https://en.wikipedia.org/wiki/Rocketdyne_F-1",
+        "wikipedia (no inline citation)",
+        "\"304 isp\""
+      ],
+      "mass_kg": [
+        "https://web.archive.org/web/20051221114403/http://history.msfc.nasa.gov/saturn_apollo/documents/F-1_Engine.pdf",
+        "primary",
+        "\"WEIGHT FLIGHT CONFIGURATION 18,500 lb. maximum\""
+      ],
+      "diameter_m": [
+        "https://web.archive.org/web/20051221114403/http://history.msfc.nasa.gov/saturn_apollo/documents/F-1_Engine.pdf",
+        "primary",
+        "\"MAXIMUM NOZZLE EXIT DIAMETER 11 ft. 7 in.\""
+      ]
+    },
+    "j-2": {
+      "thrustSL_kN": [
+        "https://en.wikipedia.org/wiki/Rocketdyne_J-2",
+        "wikipedia (not confirmed by any primary fetched)",
+        "\"486.2 kN\""
+      ],
+      "thrustVac_kN": [
+        "https://web.archive.org/web/20200808233218/https://www.nasa.gov/centers/marshall/pdf/499245main_J2_Engine_fs.pdf",
+        "primary",
+        "\"THRUST (altitude) 230,000 lb.\""
+      ],
+      "ispSL_s": [
+        "https://en.wikipedia.org/wiki/Rocketdyne_J-2",
+        "wikipedia (not confirmed by any primary fetched)",
+        "\"200 isp\""
+      ],
+      "ispVac_s": [
+        "https://web.archive.org/web/20200808233218/https://www.nasa.gov/centers/marshall/pdf/499245main_J2_Engine_fs.pdf",
+        "primary",
+        "\"SPECIFIC IMPULSE 424 sec.\""
+      ],
+      "mass_kg": [
+        "https://web.archive.org/web/20200808233218/https://www.nasa.gov/centers/marshall/pdf/499245main_J2_Engine_fs.pdf",
+        "primary",
+        "\"WEIGHT, DRY, FLIGHT CONFIGURATION 3,480 lb.\""
+      ],
+      "diameter_m": [
+        "https://web.archive.org/web/20200808233218/https://www.nasa.gov/centers/marshall/pdf/499245main_J2_Engine_fs.pdf",
+        "primary",
+        "\"NOZZLE EXIT DIAMETER 6 ft. 5 in.\""
+      ]
+    },
+    "rd-180": {
+      "thrustSL_kN": [
+        "https://web.archive.org/web/20140705155358/http://www.npoenergomash.ru/eng/engines/rd180/",
+        "primary",
+        "\"Thrust, sea level / vacuum, tf 390,2 / 423,4\""
+      ],
+      "thrustVac_kN": [
+        "https://web.archive.org/web/20140705155358/http://www.npoenergomash.ru/eng/engines/rd180/",
+        "primary",
+        "same"
+      ],
+      "ispSL_s": [
+        "https://web.archive.org/web/20140705155358/http://www.npoenergomash.ru/eng/engines/rd180/",
+        "primary",
+        "\"Specific impulse, sea level / vacuum, sec 311,9 / 338,4\""
+      ],
+      "ispVac_s": [
+        "https://web.archive.org/web/20140705155358/http://www.npoenergomash.ru/eng/engines/rd180/",
+        "primary",
+        "same"
+      ],
+      "mass_kg": [
+        "https://web.archive.org/web/20140705155358/http://www.npoenergomash.ru/eng/engines/rd180/",
+        "primary",
+        "\"Weight, dry / filled, kg 5480 / 5950\""
+      ],
+      "diameter_m": [
+        "https://web.archive.org/web/20140705155358/http://www.npoenergomash.ru/eng/engines/rd180/",
+        "primary (OVERALL engine diameter, 2 nozzles)",
+        "\"height / diameter, mm 3600 / 3200\""
+      ]
+    },
+    "rd-191": {
+      "thrustSL_kN": [
+        "https://web.archive.org/web/20131223082506/http://www.npoenergomash.ru/eng/engines/rd191/",
+        "primary",
+        "\"Thrust, sea level / vacuum, tf 196 / 212,6\""
+      ],
+      "thrustVac_kN": [
+        "https://web.archive.org/web/20131223082506/http://www.npoenergomash.ru/eng/engines/rd191/",
+        "primary",
+        "same"
+      ],
+      "ispSL_s": [
+        "https://web.archive.org/web/20131223082506/http://www.npoenergomash.ru/eng/engines/rd191/",
+        "primary",
+        "\"311,2 / 337,5\""
+      ],
+      "ispVac_s": [
+        "https://web.archive.org/web/20131223082506/http://www.npoenergomash.ru/eng/engines/rd191/",
+        "primary",
+        "same"
+      ],
+      "mass_kg": [
+        "https://web.archive.org/web/20131223082506/http://www.npoenergomash.ru/eng/engines/rd191/",
+        "primary",
+        "\"Weight, dry, kg 2200\""
+      ],
+      "diameter_m": [
+        "https://web.archive.org/web/20131223082506/http://www.npoenergomash.ru/eng/engines/rd191/",
+        "primary (OVERALL diameter)",
+        "\"height / diameter, mm 3780 / 2100\""
+      ]
+    },
+    "rs-68a": {
+      "thrustSL_kN": [
+        "https://web.archive.org/web/2020/https://www.rocket.com/sites/default/files/documents/RS-68A_data_sheet.pdf",
+        "primary",
+        "\"Thrust (Sea Level): 705K lbf\""
+      ],
+      "thrustVac_kN": [
+        "https://web.archive.org/web/2020/https://www.rocket.com/sites/default/files/documents/RS-68A_data_sheet.pdf",
+        "primary",
+        "\"Thrust (Vacuum): 800K lbf\""
+      ],
+      "ispSL_s": [
+        "https://web.archive.org/web/2020/https://www.rocket.com/sites/default/files/documents/RS-68A_data_sheet.pdf",
+        "primary",
+        "\"Isp, Sea Level: 362 sec\""
+      ],
+      "ispVac_s": [
+        "https://web.archive.org/web/2020/https://www.rocket.com/sites/default/files/documents/RS-68A_data_sheet.pdf",
+        "primary",
+        "\"Isp, Vacuum: 411 sec\""
+      ],
+      "mass_kg": [
+        "https://web.archive.org/web/2020/https://www.rocket.com/sites/default/files/documents/RS-68A_data_sheet.pdf",
+        "primary",
+        "\"Weight: 14,740 lbs\""
+      ],
+      "diameter_m": [
+        "https://web.archive.org/web/2020/https://www.rocket.com/sites/default/files/documents/RS-68A_data_sheet.pdf",
+        "primary (engine \"Diameter\", not stated as nozzle exit)",
+        "\"Diameter: 8 ft\""
+      ]
+    }
+  },
+  "tanks": {
+    "falcon9-s1-tank": {
+      "note": "propellant: FAA 2020 EA Table 2-1 total 1,135,925 lbm minus S2 232,950 lb (primary); dry 25,600 kg Wikipedia UNCITED; D 3.66 m Falcon User's Guide 2025; H 41.2 m Wikipedia",
+      "dryToPropellant_pct": 5.22,
+      "passes4pct": true,
+      "passes3pct": true
+    },
+    "falcon9-s2-tank": {
+      "note": "propellant: FAA 2020 EA \"168,000 pounds of LOX and 64,950 pounds of RP-1 in the second stage\"; dry 3,900 kg Wikipedia UNCITED; MVac mass is an RO placeholder; FAILS the 4% floor",
+      "dryToPropellant_pct": 3.23,
+      "passes4pct": false,
+      "passes3pct": true
+    },
+    "centaur-iii-tank": {
+      "note": "ULA Atlas V User's Guide 2010 Fig 1.4.1-3: \"Inert Mass: 4X1: 2,243 kg\", \"Propellant: 20,830-kg\", \"3.05-m ... x 12.68-m ... Length with Extended Nozzle\". Guide-era engine was RL10A-4-2 (168 kg, braeunig); catalog RL10C-1 mass used so the round trip closes",
+      "dryToPropellant_pct": 9.85,
+      "passes4pct": true,
+      "passes3pct": true
+    },
+    "saturn-v-s-ic-tank": {
+      "note": "SP-4029 Apollo 11 ground-ignition weights: dry 287,531 lb, fuel 1,424,889 lb, oxidizer 3,305,786 lb; D/L 33 ft x 138 ft from SA-503 flight manual https://ntrs.nasa.gov/api/citations/19750063889/downloads/19750063889.pdf",
+      "dryToPropellant_pct": 4.12,
+      "passes4pct": true,
+      "passes3pct": true
+    },
+    "saturn-v-s-ii-tank": {
+      "note": "SP-4029 Apollo 11: dry 79,714 lb; LOX 819,050 lb + LH2 158,116 lb (scan labels swapped, column sum verified); 33 ft x 81.5 ft from SA-503 manual",
+      "dryToPropellant_pct": 6.38,
+      "passes4pct": true,
+      "passes3pct": true
+    },
+    "saturn-v-s-ivb-tank": {
+      "note": "SP-4029 Apollo 11: dry 24,852 lb; LH2 43,608 + LOX 192,497 lb; 21.7 ft x 59.3 ft from SA-503 manual (length may include aft skirt)",
+      "dryToPropellant_pct": 9.05,
+      "passes4pct": true,
+      "passes3pct": true
+    },
+    "atlas-v-ccb-tank": {
+      "note": "ULA Atlas V UG 2010: \"Propellant: 284,089-kg\", \"Inert Mass: 21,054 kg\" (400-series), \"3.81-m ... x 32.46-m\"",
+      "dryToPropellant_pct": 5.48,
+      "passes4pct": true,
+      "passes3pct": true
+    },
+    "sls-core-tank": {
+      "note": "NASA: LH2 317,000 lb + LOX 1.86 M lb; 212 ft, 27.6 ft. Dry = Artemis II weighed 215,910 lb (Wikipedia citing @NASAGroundSys, not fetched) - inference that this includes engines; alt NASA \"empty 188,000 lb\" gives ~8.6%",
+      "dryToPropellant_pct": 8.49,
+      "passes4pct": true,
+      "passes3pct": true
+    },
+    "icps-tank": {
+      "note": "size from NASA ICPS fact sheet; masses Wikipedia UNCITED (empty 3,800 / gross 32,748 kg) https://en.wikipedia.org/wiki/Delta_Cryogenic_Second_Stage - low confidence",
+      "dryToPropellant_pct": 12.09,
+      "passes4pct": true,
+      "passes3pct": true
+    },
+    "delta-iv-cbc-tank": {
+      "note": "braeunig (secondary, no license notice): stage 226,400 kg, propellant 199,640 kg, length 40.8 m; D 5 m from ULA Delta IV UG https://www.ulalaunch.com/docs/default-source/rockets/delta-iv-user's-guide.pdf; GCAT agrees on masses for the RS-68A CBC",
+      "dryToPropellant_pct": 10.06,
+      "passes4pct": true,
+      "passes3pct": true
+    },
+    "dcss-5m-tank": {
+      "note": "propellant 27,200 kg ULA Delta IV UG (primary); stage 30,710 / propellant 27,220 kg and 13.7 m from braeunig http://www.braeunig.us/space/specs/delta.htm",
+      "dryToPropellant_pct": 11.72,
+      "passes4pct": true,
+      "passes3pct": true
+    },
+    "shuttle-et-tank": {
+      "note": "NASA propulsion fact sheet: \"approximately 59,400 pounds while empty and 1,658,900 pounds full\"; 154 ft x 27.6 ft (SLWT sheet). No engines. FAILS the 4% floor",
+      "dryToPropellant_pct": 3.71,
+      "passes4pct": false,
+      "passes3pct": true
+    }
+  },
+  "legend": {
+    "primary": "manufacturer/agency",
+    "secondary": "compilation (braeunig, press)",
+    "wikipedia": "Wikipedia, CC BY-SA 4.0",
+    "cross-check-only (game config)": "Realism Overhaul KSP config, CC-BY-SA (unversioned)",
+    "derived": "arithmetic from sourced values"
+  }
+}

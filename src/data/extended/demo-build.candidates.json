@@ -1,0 +1,62 @@
+{
+  "recommended": {
+    "_note": "Legal under the CURRENT spec rules (4% floor, 0.6 fit rule). moon-transfer @12,600: -905 -> +497 m/s; TWR 1.64 -> 1.57. See dataset-research.md section 6.",
+    "red": {
+      "missionId": "moon-transfer",
+      "stages": [
+        {
+          "engineId": "merlin-1d",
+          "engineCount": 9,
+          "tankId": "falcon9-s1-tank"
+        },
+        {
+          "engineId": "rl10b-2",
+          "engineCount": 1,
+          "tankId": "dcss-5m-tank"
+        }
+      ],
+      "payloadId": "jwst",
+      "livery": {
+        "primary": "#f5f5f5",
+        "accent": "#111111",
+        "stripe": true,
+        "patch": null
+      }
+    },
+    "suggestion": {
+      "type": "add_stage",
+      "engineId": "rl10c-1",
+      "tankId": "centaur-iii-tank"
+    }
+  },
+  "real_falcon_9": {
+    "_note": "Needs P2 rule changes: tank-dry floor 3% (F9 S2 is 3.2%) and max(1, ...) on the engine-fit rule (MVac 3.3 m on 3.66 m gives 0). mars-transfer: -1114 -> +626 m/s; TWR 1.41 -> 1.35.",
+    "red": {
+      "missionId": "mars-transfer",
+      "stages": [
+        {
+          "engineId": "merlin-1d",
+          "engineCount": 9,
+          "tankId": "falcon9-s1-tank"
+        },
+        {
+          "engineId": "merlin-1d-vac",
+          "engineCount": 1,
+          "tankId": "falcon9-s2-tank"
+        }
+      ],
+      "payloadId": "jwst",
+      "livery": {
+        "primary": "#f5f5f5",
+        "accent": "#111111",
+        "stripe": true,
+        "patch": null
+      }
+    },
+    "suggestion": {
+      "type": "add_stage",
+      "engineId": "rl10c-1",
+      "tankId": "centaur-iii-tank"
+    }
+  }
+}
