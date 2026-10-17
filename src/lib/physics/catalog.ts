@@ -1,8 +1,4 @@
-import enginesJson from "@/data/engines.json";
-import missionsJson from "@/data/missions.json";
-import payloadsJson from "@/data/payloads.json";
-import referenceRocketsJson from "@/data/reference-rockets.json";
-import tanksJson from "@/data/tanks.json";
+import { engines, missions, payloads, referenceRockets, tanks } from "@/data";
 import type { Engine, Mission, Payload, ReferenceRocket, Tank } from "@/types";
 
 export interface Catalog {
@@ -16,10 +12,6 @@ export interface Catalog {
 export const byId = <T extends { id: string }>(items: T[], id: string): T | undefined =>
   items.find((item) => item.id === id);
 
-export const loadCatalog = (): Catalog => ({
-  engines: enginesJson as Engine[],
-  tanks: tanksJson as Tank[],
-  payloads: payloadsJson as Payload[],
-  missions: missionsJson as Mission[],
-  referenceRockets: referenceRocketsJson as ReferenceRocket[],
-});
+const CATALOG: Catalog = { engines, tanks, payloads, missions, referenceRockets };
+
+export const loadCatalog = (): Catalog => CATALOG;
