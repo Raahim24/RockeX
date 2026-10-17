@@ -1,5 +1,6 @@
 import { POST as advise } from "@/app/api/advise/route";
 import { POST as render } from "@/app/api/render/route";
+import { POST as voice } from "@/app/api/voice/route";
 import { loadCatalog } from "@/lib/physics/catalog";
 import { evaluateBuild } from "@/lib/physics/feasibility";
 import type { AdviseResponse, BuildState, RenderResponse } from "@/types";
@@ -122,6 +123,27 @@ describe("/api/advise", () => {
     const res = await advise(post({ build, verdict }));
     expect(res.headers.get("x-advise-source")).toBe("grok");
     expect(await res.json()).toEqual({ message: "Swap the engine. It helps a lot.", suggestion: null });
+  });
+});
+
+describe("/api/voice", () => {
+  it("returns 400 for empty text", async () => {
+    expect((await voice(post({ text: "  " }))).status).toBe(400);
+  });
+
+  it("returns 502 when TTS fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 500 })));
+    expect((await voice(post({ text: "Hello." }))).status).toBe(502);
+  });
+
+  it("returns MP3 bytes and speaks at most two sentences", async () => {
+    const fetchMock = vi.fn(async () => new Response(new Uint8Array([1, 2, 3])));
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await voice(post({ text: "One. Two. Three." }));
+    expect(res.headers.get("content-type")).toBe("audio/mpeg");
+    expect((await res.arrayBuffer()).byteLength).toBe(3);
+    const sent = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(sent.text).toBe("One. Two.");
   });
 });
 
