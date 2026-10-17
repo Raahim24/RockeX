@@ -1,10 +1,13 @@
 // Owner: P2. Single source of truth. Verdict is derived, never stored (spec §6).
-import { create } from "zustand";
+import { byId, loadCatalog } from "@/lib/physics/catalog";
+import { clampEngineCount, evaluateBuild } from "@/lib/physics/feasibility";
 import type { BuildState, Livery, Suggestion, Verdict } from "@/types";
+import { create } from "zustand";
+import { applySuggestionToBuild } from "./applySuggestion";
 
 const DEFAULT_LIVERY: Livery = { primary: "#f5f5f5", accent: "#111111", stripe: true, patch: null };
 
-// Phase 0: hardcoded placeholder. Phase 2 replaces with src/data/demo-build.json (P4 + P2).
+// Placeholder ids until P4 fills src/data/*.json. Then retune with P4 so the demo is red, one swap, green, TWR ≈ 1.3.
 const DEMO_BUILD: BuildState = {
   missionId: "moon-transfer",
   stages: [
@@ -37,40 +40,71 @@ const updateStage = (b: BuildState, i: number, patch: Partial<BuildState["stages
   stages: b.stages.map((s, j) => (j === i ? { ...s, ...patch } : s)),
 });
 
+const catalogFor = () => loadCatalog();
+
 export const useBuildStore = create<BuildStore>((set) => ({
   build: DEMO_BUILD,
   setMission: (id) => set(({ build }) => ({ build: { ...build, missionId: id } })),
-  setStageEngine: (i, id) => set(({ build }) => ({ build: updateStage(build, i, { engineId: id }) })),
-  // TODO(P2, Phase 1): clamp to the engine-fit rule (spec §7).
-  setEngineCount: (i, n) => set(({ build }) => ({ build: updateStage(build, i, { engineCount: n }) })),
-  setStageTank: (i, id) => set(({ build }) => ({ build: updateStage(build, i, { tankId: id }) })),
-  addStage: () => set(({ build }) => ({ build: { ...build, stages: [...build.stages, { engineId: "", engineCount: 1, tankId: "" }] } })),
-  removeStage: (i) => set(({ build }) => ({ build: { ...build, stages: build.stages.filter((_, j) => j !== i) } })),
+  setStageEngine: (i, id) =>
+    set(({ build }) => {
+      const catalog = catalogFor();
+      const stage = build.stages[i];
+      if (!stage) {
+        return { build };
+      }
+      const engine = byId(catalog.engines, id);
+      const tank = byId(catalog.tanks, stage.tankId);
+      return {
+        build: updateStage(build, i, {
+          engineId: id,
+          engineCount: clampEngineCount(stage.engineCount, tank, engine),
+        }),
+      };
+    }),
+  setEngineCount: (i, n) =>
+    set(({ build }) => {
+      const catalog = catalogFor();
+      const stage = build.stages[i];
+      if (!stage) {
+        return { build };
+      }
+      const engine = byId(catalog.engines, stage.engineId);
+      const tank = byId(catalog.tanks, stage.tankId);
+      return { build: updateStage(build, i, { engineCount: clampEngineCount(n, tank, engine) }) };
+    }),
+  setStageTank: (i, id) =>
+    set(({ build }) => {
+      const catalog = catalogFor();
+      const stage = build.stages[i];
+      if (!stage) {
+        return { build };
+      }
+      const tank = byId(catalog.tanks, id);
+      const engine = byId(catalog.engines, stage.engineId);
+      return {
+        build: updateStage(build, i, {
+          tankId: id,
+          engineCount: clampEngineCount(stage.engineCount, tank, engine),
+        }),
+      };
+    }),
+  addStage: () =>
+    set(({ build }) => ({
+      build: { ...build, stages: [...build.stages, { engineId: "", engineCount: 1, tankId: "" }] },
+    })),
+  removeStage: (i) =>
+    set(({ build }) => ({ build: { ...build, stages: build.stages.filter((_, j) => j !== i) } })),
   setPayload: (id) => set(({ build }) => ({ build: { ...build, payloadId: id } })),
   setLivery: (l) => set(({ build }) => ({ build: { ...build, livery: l } })),
-  // TODO(P2, Phase 1): ignore suggestions whose ids are not in src/data/.
-  applySuggestion: () => {},
+  applySuggestion: (s) =>
+    set(({ build }) => ({ build: applySuggestionToBuild(build, s, catalogFor()) })),
   loadDemoBuild: () => set({ build: DEMO_BUILD }),
   reset: () => set({ build: EMPTY_BUILD }),
 }));
 
 export const useBuild = (): BuildState => useBuildStore((s) => s.build);
 
-// TODO(P2, Phase 1): derive from lib/physics (deltav, twr, feasibility, closest).
 export const useVerdict = (): Verdict => {
   const build = useBuild();
-  return {
-    stages: [],
-    totalDeltaV_ms: 0,
-    requiredDeltaV_ms: 0,
-    marginDeltaV_ms: 0,
-    liftoffTWR: 0,
-    deltaVOk: false,
-    twrOk: false,
-    feasible: false,
-    totalMass_kg: 0,
-    liftoffThrust_kN: 0,
-    closestRocketId: "",
-    warnings: build.stages.length === 0 ? ["empty build"] : [],
-  };
+  return evaluateBuild(build, catalogFor());
 };
