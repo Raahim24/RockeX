@@ -1,1 +1,26 @@
-[]
+[
+  {
+    "id": "merlin-1d",
+    "name": "Merlin 1D",
+    "propellant": "kerolox",
+    "thrustSL_kN": 845,
+    "thrustVac_kN": 981,
+    "ispSL_s": 282,
+    "ispVac_s": 311,
+    "mass_kg": 467,
+    "diameter_m": 0.92,
+    "source": "https://en.wikipedia.org/w/index.php?title=SpaceX_Merlin&oldid=1374377929"
+  },
+  {
+    "id": "rl10c-1",
+    "name": "RL10C-1",
+    "propellant": "hydrolox",
+    "thrustSL_kN": 0,
+    "thrustVac_kN": 101.5,
+    "ispSL_s": 0,
+    "ispVac_s": 449.7,
+    "mass_kg": 190.5,
+    "diameter_m": 1.45,
+    "source": "https://en.wikipedia.org/w/index.php?title=RL10&oldid=1380373031"
+  }
+]

@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "id": "leo",
+    "name": "Low Earth orbit",
+    "destination": "LEO",
+    "requiredDeltaV_ms": 9300,
+    "source": "https://en.wikipedia.org/w/index.php?title=Delta-v_budget&oldid=1362285519#Earth%E2%80%93Moon_space%E2%80%94high_thrust"
+  },
+  {
+    "id": "moon-transfer",
+    "name": "Moon transfer",
+    "destination": "Moon (trans-lunar injection)",
+    "requiredDeltaV_ms": 12500,
+    "source": "derived: Earth to LEO 9.3 km/s + LEO to TLI 3.20 km/s; https://en.wikipedia.org/w/index.php?title=Delta-v_budget&oldid=1362285519#Earth%E2%80%93Moon_space%E2%80%94high_thrust"
+  }
+]

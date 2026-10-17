@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "id": "nova-c",
+    "name": "Nova-C lunar lander",
+    "mass_kg": 1908,
+    "diameter_m": 2,
+    "height_m": 3.938,
+    "source": "https://en.wikipedia.org/w/index.php?title=Intuitive_Machines_Nova-C&oldid=1379202564"
+  }
+]
