@@ -1,1 +1,22 @@
-[]
+[
+  {
+    "id": "falcon9-s1-tank",
+    "name": "Falcon 9 first-stage tank",
+    "propellant": "kerolox",
+    "diameter_m": 3.7,
+    "height_m": 41.2,
+    "propellantMass_kg": 395700,
+    "dryMass_kg": 21397,
+    "source": "derived: Falcon 9 stage 1 empty mass 25,600 kg minus 9 x Merlin 1D 467 kg; https://en.wikipedia.org/w/index.php?title=Falcon_9&oldid=1368593710#Specifications"
+  },
+  {
+    "id": "centaur-iii-tank",
+    "name": "Centaur III tank",
+    "propellant": "hydrolox",
+    "diameter_m": 3.05,
+    "height_m": 12.68,
+    "propellantMass_kg": 20830,
+    "dryMass_kg": 2056.5,
+    "source": "derived: Centaur III single-engine empty mass 2,247 kg minus 1 x RL10C-1 190.5 kg; https://en.wikipedia.org/w/index.php?title=Centaur_(rocket_stage)&oldid=1379827336"
+  }
+]

@@ -1,1 +1,11 @@
-[]
+[
+  {
+    "id": "falcon-9",
+    "name": "Falcon 9 Block 5",
+    "liftoffMass_kg": 549000,
+    "liftoffThrust_kN": 7607,
+    "payloadLEO_kg": 22800,
+    "stages": 2,
+    "source": "https://en.wikipedia.org/w/index.php?title=Falcon_9_Full_Thrust&oldid=1380592492"
+  }
+]
