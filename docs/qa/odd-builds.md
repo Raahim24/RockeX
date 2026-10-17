@@ -9,6 +9,7 @@ Run on main at `22d19dc` (2026-10-17). Test: `src/data/odd-builds.test.ts`, part
 - **Edge cases:** empty build, unknown ids, 0 / 50 / NaN engines, four stages, a full real Saturn V.
 - **Real flown stages:** each engine on the tank it actually flew with, at its real engine count.
 - **Advisor ranking:** which fix P3's `rankCandidates` puts first for the canonical demo build.
+- **Advisor fallback:** what the advisor returns when Grok is unreachable.
 
 ## Result
 
@@ -25,10 +26,12 @@ primary source in `src/data/SOURCES.md`.
 | 2 | P2 | Medium | The engine-fit rule `floor(0.6 x (D/d)^2)` allows only **4** F-1s on the S-IC (real: 5). A real Saturn V first stage cannot be built in the UI, which also blocks the U3 "Raptor on a Saturn V" demo with a real S-IC. | F-1 exit 3.531 m (NASA MSFC), S-IC 10.058 m | Raise the coefficient to 0.62 (gives exactly 5 F-1s and still 9 Merlins; 0.75 would allow 6), or use per-tank max counts from data. |
 | 3 | P2 | Medium | The 4 % tank floor blocks two real tanks: Falcon 9 second stage (3.23 %) and Shuttle External Tank (3.71 %). The real Falcon 9 can't be the demo for this reason. | `falcon9-s2-tank`, `shuttle-et-tank` | Lower the floor to 3 %, as `src/data/extended/demo-build.candidates.json` already suggests. |
 | 4 | P2 | Low | `evaluateBuild` does not check engine counts. 0 engines gives 8.3 km/s with no engines, 50 Merlins evaluates with no warning, and NaN returns NaN numbers that would print as "NaN". The store clamps counts, so only a bypass of the store hits this. | Edge cases in the test | Treat counts outside 1..9 or non-integers as a blocking warning in `evaluateBuild`. |
+| 6 | P3 | ~~High (demo backup)~~ **Fixed in #14** | When Grok fails, `fallbackAdvice` always returns `suggestion: null`, so Apply suggestion disappears. The spec's backup plan says Apply should still work offline using the built-in demo fix, and `buildStore.ts` describes `DEMO_FIX` as "also the advisor's built-in fallback", but nothing uses it that way. | `src/lib/ai/prompts.ts` `fallbackAdvice` | In the fallback, return `DEMO_FIX` when the build equals `DEMO_BUILD` (or the top code-ranked candidate for any build). |
 | 5 | P2 | Low | With a vacuum engine on the booster (0 sea-level thrust), `closestRocketId` is an empty string. The build is already blocked, and the panel shows "—", so this is cosmetic. | 6,720 sweep builds | Fall back to a mass-only match when thrust is 0. |
 
 Issues 2 to 4 are recorded as `it.todo` entries in `src/data/odd-builds.test.ts`; flip them to real tests once
-fixed. Issue 1 was fixed by P3 in #14: the advisor now offers `DEMO_FIX` first whenever it makes the build feasible.
+fixed. Issues 1 and 6 were fixed by P3 in #14: the advisor offers `DEMO_FIX` first, and the offline fallback
+offers it too.
 
 ## Real flown stages against the rules
 
