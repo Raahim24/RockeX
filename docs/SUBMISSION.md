@@ -19,7 +19,7 @@ number is sourced and tested, and no AI is allowed to do the math.
 | Real space data | Sourced engines, stages, missions, payloads and reference rockets drive the verdict; the GCAT launch catalog backs the upgrades | `src/data/SOURCES.md`, `src/data/validate.test.ts`, the red to green bar in the demo |
 | Built with Cursor | Every phase built with scoped prompts per person, one rules file per person | Screenshots of prompts and `.cursor/rules/`, commit history (TODO screenshots) |
 | Grok Imagine | Photoreal render of the exact build | The render on the final card |
-| Grok Voice | Grok speaks its advice | Live audio in the demo, cached clip as backup (TODO clip) |
+| Grok Voice | Grok speaks its advice | Live audio in the demo, `public/fallback/advice.mp3` as backup |
 | Grok Bot (bonus) | Used to plan phases and split tasks | Screenshots in `docs/grok-bot/` (TODO) |
 
 ## Demo script (about 90 seconds)
@@ -37,17 +37,15 @@ Numbers below are from the canonical demo build and are checked by `src/store/de
 | 1:10 | "Grok Imagine renders the exact rocket I built." | Press Render it; show the render and the closest real rocket |
 | 1:25 | "Real data in, a rocket you can trust out. Built in Cursor." | Hold on the final card |
 
-Open risk (issue 1 in `docs/qa/odd-builds.md`): the advisor picks from fixes ranked by the code, and for the demo
-build the top-ranked fix is not the documented one (RL10C-1 on Centaur III). The bar still turns green, but the
-spoken fix may differ from what the narrator expects. Rehearse with the live advisor and adjust the 0:35 and 0:50
-lines to what it actually says, or wait for P2 and P3 to pin the demo fix.
+The advisor offers the scripted fix first for the demo build (P3, #14), so the spoken fix matches lines 0:35
+and 0:50. Rehearse once with the live advisor anyway.
 
 ## If something fails live
 
 | What fails | What the audience sees | Narrator line |
 |---|---|---|
-| Grok advise | A rule-based message from the verdict ("You are 905 m/s short…"). Today there is no Apply button in this case (issue 6 in `docs/qa/odd-builds.md`); until it is fixed, add the stage by hand | "Even offline, the code knows what's wrong." |
-| Grok Voice | Text only, no error | Read the message aloud |
+| Grok advise | A rule-based message from the verdict, and Apply still offers the demo fix | "Even offline, the code knows what's wrong." |
+| Grok Voice | The recorded backup clip (`public/fallback/advice.mp3`), or text only | Read the message aloud |
 | Grok Imagine | The cached render with a small "cached" label | "Here's one we rendered earlier." |
 | Wifi or Vercel | Local build on the demo laptop (`npm run build && npm run start`) | Carry on |
 
