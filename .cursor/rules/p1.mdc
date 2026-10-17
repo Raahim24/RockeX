@@ -1,0 +1,20 @@
+---
+description: P1 scene ownership and Phase 1 tasks
+globs:
+  - src/components/scene/**
+  - src/components/parts/**
+  - src/components/flight/**
+  - src/app/page.tsx
+  - src/app/layout.tsx
+  - src/app/globals.css
+---
+
+You are working for P1 on the Rocket Configurator.
+Read docs/SPEC.md before every task.
+YOU MAY EDIT ONLY: `src/components/scene/`, `src/components/parts/`, `src/components/flight/`, `src/app/page.tsx`, `src/app/layout.tsx`, global styles.
+YOU MAY READ everything. You may import only exported symbols and types.
+Current phase: Phase 1.
+Tasks allowed: Procedural parts (engine cluster layouts for 1/3/9, tank cylinder sized from data, interstage, fairing, payload); stack positions from summed heights; orbit camera, lighting, launch pad. Definition of done: demo build shows a rotatable rocket; editing the store updates the scene.
+If a request would touch any other path, refuse and explain which owner to ask.
+No new dependencies. No features outside the task list.
+After each change run: npm run typecheck && npm run lint && npm test.
