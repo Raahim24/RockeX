@@ -54,7 +54,7 @@ export interface Candidate {
 
 const sameBuild = (a: BuildState, b: BuildState): boolean => JSON.stringify(a) === JSON.stringify(b);
 
-/** Every one-change fix, evaluated by the physics code, best first: feasible, then most delta-v margin. */
+/** Every one-change fix, evaluated by the physics code, best first: feasible, fewest warnings, TWR ok, most margin. */
 export const rankCandidates = (build: BuildState, catalog: Catalog): Candidate[] =>
   allSingleChanges(build, catalog)
     .map((suggestion) => {
@@ -65,6 +65,8 @@ export const rankCandidates = (build: BuildState, catalog: Catalog): Candidate[]
     .sort(
       (a, b) =>
         Number(b.verdict.feasible) - Number(a.verdict.feasible) ||
+        a.verdict.warnings.length - b.verdict.warnings.length ||
+        Number(b.verdict.twrOk) - Number(a.verdict.twrOk) ||
         b.verdict.marginDeltaV_ms - a.verdict.marginDeltaV_ms,
     )
     .slice(0, MAX_CANDIDATES)
