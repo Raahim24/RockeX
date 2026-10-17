@@ -49,6 +49,6 @@ export async function POST(req: Request): Promise<Response> {
     return reply({ message: capSentences(grok.message), suggestion: grok.suggestion }, "grok");
   } catch (err) {
     console.warn("[advise] fallback:", err instanceof Error ? err.message : err);
-    return reply(fallbackAdvice(verdict), "fallback");
+    return reply(fallbackAdvice(verdict, candidates, catalog), "fallback");
   }
 }

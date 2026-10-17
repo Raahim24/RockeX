@@ -2,6 +2,7 @@
 import { byId, type Catalog } from "@/lib/physics/catalog";
 import { evaluateBuild } from "@/lib/physics/feasibility";
 import { applySuggestionToBuild } from "@/store/applySuggestion";
+import { DEMO_FIX } from "@/store/buildStore";
 import type { AdviseResponse, BuildState, Suggestion, Verdict } from "@/types";
 
 const MAX_CANDIDATES = 5;
@@ -55,7 +56,7 @@ export interface Candidate {
 const sameBuild = (a: BuildState, b: BuildState): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /** Every one-change fix, evaluated by the physics code, best first: feasible, fewest warnings, TWR ok, most margin. */
-export const rankCandidates = (build: BuildState, catalog: Catalog): Candidate[] =>
+const rankAll = (build: BuildState, catalog: Catalog): Candidate[] =>
   allSingleChanges(build, catalog)
     .map((suggestion) => {
       const next = applySuggestionToBuild(build, suggestion, catalog);
@@ -69,15 +70,19 @@ export const rankCandidates = (build: BuildState, catalog: Catalog): Candidate[]
         Number(b.verdict.twrOk) - Number(a.verdict.twrOk) ||
         b.verdict.marginDeltaV_ms - a.verdict.marginDeltaV_ms,
     )
-    .slice(0, MAX_CANDIDATES)
     .map(({ suggestion, verdict }) => ({ suggestion, verdict }));
+
+export const rankCandidates = (build: BuildState, catalog: Catalog): Candidate[] =>
+  rankAll(build, catalog).slice(0, MAX_CANDIDATES);
 
 export const ADVISOR_SYSTEM = [
   "You are Grok, the flight engineer in a rocket configurator.",
   "The verdict and every number are computed by the app's physics code and are correct. Never calculate, estimate or invent a number; only quote numbers given to you.",
   "Reply as JSON matching the schema. message: at most 2 short sentences, plain spoken English for text-to-speech, no markdown.",
-  "suggestion: copy exactly one object from CANDIDATES (prefer the first, which the code ranked best), or null if the rocket is already feasible or no candidate helps.",
-  "If you suggest something, the message must say what to change and quote its resulting margin.",
+  "suggestion: copy the object from FIX exactly, or null if FIX is none.",
+  "With a suggestion: sentence 1 names the problem and quotes the margin or TWR from VERDICT; sentence 2 says the change using the exact part names from FIX (engine and tank, or engine count) and quotes its resulting margin.",
+  "Without a suggestion: say whether the rocket works and quote its margin.",
+  "Describe warnings using their exact wording; never guess a cause.",
 ].join(" ");
 
 const stageLine = (build: BuildState, verdict: Verdict, catalog: Catalog, i: number): string => {
@@ -96,14 +101,22 @@ const verdictLines = (v: Verdict): string[] => [
   `Warnings: ${v.warnings.length ? v.warnings.join("; ") : "none"}`,
 ];
 
-/** The only suggestions the advisor may return. Empty when the build already works. */
-export const advisorCandidates = (build: BuildState, verdict: Verdict, catalog: Catalog): Candidate[] =>
-  verdict.feasible ? [] : rankCandidates(build, catalog);
-
 export const sameSuggestion = (a: Suggestion, b: Suggestion): boolean => {
   const fields = (s: Suggestion): string =>
     JSON.stringify(Object.entries(s).sort(([x], [y]) => x.localeCompare(y)));
   return fields(a) === fields(b);
+};
+
+/**
+ * The one suggestion the advisor may return (code picks, Grok only phrases). Empty when the build already works.
+ * The scripted demo swap (DEMO_FIX) wins whenever the physics says it makes this build feasible.
+ */
+export const advisorCandidates = (build: BuildState, verdict: Verdict, catalog: Catalog): Candidate[] => {
+  if (verdict.feasible) return [];
+  const ranked = rankAll(build, catalog);
+  const demoFix = DEMO_FIX;
+  const demo = demoFix ? ranked.find((c) => sameSuggestion(c.suggestion, demoFix)) : undefined;
+  return (demo?.verdict.feasible ? [demo] : ranked).slice(0, 1);
 };
 
 export const advisorUserPrompt = (
@@ -121,7 +134,7 @@ export const advisorUserPrompt = (
     ...build.stages.map((_, i) => stageLine(build, verdict, catalog, i)),
     "VERDICT:",
     ...verdictLines(verdict),
-    "CANDIDATES (JSON suggestion -> result after applying it; stageIndex is 0-based):",
+    "FIX (JSON suggestion -> result after applying it; stageIndex is 0-based):",
     ...(candidates.length
       ? candidates.map(
           (c) =>
@@ -131,12 +144,23 @@ export const advisorUserPrompt = (
   ].join("\n");
 };
 
-/** Message built from the verdict alone. Used whenever Grok fails. */
-export const fallbackAdvice = (verdict: Verdict): AdviseResponse => {
+/** Message built by code alone. Used whenever Grok fails. Offers the top candidate only if it makes the build feasible. */
+export const fallbackAdvice = (verdict: Verdict, candidates: Candidate[] = [], catalog?: Catalog): AdviseResponse => {
   const blocking = verdict.warnings.find((w) => w !== "liftoff TWR below 1.2");
+  const fix = candidates[0]?.verdict.feasible && catalog ? candidates[0] : undefined;
   let message: string;
   if (verdict.stages.length === 0) {
     message = "Add a stage to start building your rocket.";
+  } else if (!verdict.feasible && fix && catalog) {
+    const problem = blocking
+      ? `This build can't fly yet: ${blocking}.`
+      : !verdict.twrOk
+        ? `Liftoff TWR is ${twr(verdict.liftoffTWR)}, below the 1.2 needed.`
+        : `You are ${ms(-verdict.marginDeltaV_ms)} short of the ${ms(verdict.requiredDeltaV_ms)} this mission needs.`;
+    return {
+      message: `${problem} ${describeSuggestion(fix.suggestion, catalog)}, which leaves ${ms(fix.verdict.marginDeltaV_ms)} to spare.`,
+      suggestion: fix.suggestion,
+    };
   } else if (blocking) {
     message = `This build can't fly yet: ${blocking}. Fix that first.`;
   } else if (!verdict.twrOk) {
@@ -150,7 +174,7 @@ export const fallbackAdvice = (verdict: Verdict): AdviseResponse => {
 };
 
 const RENDER_STYLE =
-  "Photorealistic product photograph of a rocket standing vertically on a launch pad at dusk, full rocket in frame, dramatic rim lighting, clear sky.";
+  "Photorealistic product photograph of a rocket standing vertically on a launch pad at dusk, full rocket in frame, dramatic rim lighting, clear sky. No text, labels, numbers or writing anywhere in the image; the part names below describe the hardware only.";
 
 /** Image prompt built only from catalog part names and the livery, never from user text. */
 export const renderPrompt = (build: BuildState, catalog: Catalog): string => {

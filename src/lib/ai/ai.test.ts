@@ -3,6 +3,7 @@ import { POST as render } from "@/app/api/render/route";
 import { POST as voice } from "@/app/api/voice/route";
 import { loadCatalog } from "@/lib/physics/catalog";
 import { evaluateBuild } from "@/lib/physics/feasibility";
+import { DEMO_BUILD, DEMO_FIX } from "@/store/buildStore";
 import type { AdviseResponse, BuildState, RenderResponse } from "@/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { advisorCandidates, advisorUserPrompt, fallbackAdvice, rankCandidates, renderPrompt } from "./prompts";
@@ -84,6 +85,16 @@ describe("prompts", () => {
     expect(prompt).toContain("RL10C-1");
     expect(prompt).toContain("#f5f5f5");
     expect(prompt).not.toContain("ignore previous instructions");
+  });
+
+  it("puts the scripted demo fix first for the demo build, and the fallback offers it", () => {
+    const demoVerdict = evaluateBuild(DEMO_BUILD, catalog);
+    const candidates = advisorCandidates(DEMO_BUILD, demoVerdict, catalog);
+    expect(candidates[0].suggestion).toEqual(DEMO_FIX);
+    expect(candidates[0].verdict.feasible).toBe(true);
+    const fallback = fallbackAdvice(demoVerdict, candidates, catalog);
+    expect(fallback.suggestion).toEqual(DEMO_FIX);
+    expect(fallback.message).toContain("RL10C-1");
   });
 
   it("fallback handles an empty build", () => {
