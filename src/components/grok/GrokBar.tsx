@@ -673,11 +673,14 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
         {/* Subtitles on/off: a small badge on Grok's shoulder, so the hint row under it keeps its width. */}
         <button
           type="button"
-          onClick={toggleSubtitles}
+          onClick={(e) => {
+            toggleSubtitles();
+            if (e.detail > 0) e.currentTarget.blur(); // a mouse click: no focus ring left behind (keyboard keeps it)
+          }}
           aria-pressed={subtitles}
           aria-label={subtitles ? "Hide subtitles" : "Show subtitles"}
           title={subtitles ? "Subtitles on: click to hide what Grok says" : "Subtitles off: click to show what Grok says"}
-          className={`absolute -right-3 -top-1 rounded-md border px-1 py-px text-[10px] font-bold leading-tight backdrop-blur ${
+          className={`absolute -right-8 -top-1 rounded-md border px-1 py-px text-[10px] font-bold leading-tight backdrop-blur ${
             subtitles ? "border-white/40 bg-white/20 text-white" : "border-white/15 bg-black/40 text-neutral-500 line-through"
           }`}
         >
