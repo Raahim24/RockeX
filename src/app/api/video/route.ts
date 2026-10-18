@@ -27,6 +27,8 @@ const started = new Map<string, { id: string; outcome: string; promptUsed: strin
 const clipKey = (b: z.infer<typeof BuildStateSchema>, flight: unknown): string =>
   JSON.stringify([VIDEO_MODEL, VIDEO_SECONDS, b.missionId, b.payloadId, b.stages, b.livery.primary, b.livery.accent, flight ?? null]);
 
+const notConfigured = (err: unknown): boolean => err instanceof Error && err.message.includes("XAI_API_KEY is not set");
+
 export async function POST(req: Request): Promise<Response> {
   const parsed = VideoRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
@@ -37,14 +39,14 @@ export async function POST(req: Request): Promise<Response> {
   const cached = started.get(key);
   if (cached) return Response.json(cached);
 
-  const { outcome, prompt } = flightVideoPlan(build, loadCatalog(), flight);
+  const { outcome, prompt } = flightVideoPlan(build, loadCatalog(), flight, VIDEO_SECONDS);
   try {
     let withImage = Boolean(image);
     let id: string;
     try {
       id = await grokVideoStart({ prompt, image, timeoutMs: START_TIMEOUT_MS });
     } catch (err) {
-      if (!image) throw err;
+      if (!image || notConfigured(err)) throw err;
       // The first frame is a bonus: if xAI rejects it, film from the prompt alone.
       console.warn("[video] retry without start image:", err instanceof Error ? err.message : err);
       withImage = false;
@@ -55,7 +57,7 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json(body);
   } catch (err) {
     console.warn("[video] fallback:", err instanceof Error ? err.message : err);
-    return Response.json({ id: null, outcome, promptUsed: prompt, fallback: true });
+    return Response.json({ id: null, outcome, promptUsed: prompt, fallback: true, reason: notConfigured(err) ? "not_configured" : "unavailable" });
   }
 }
 

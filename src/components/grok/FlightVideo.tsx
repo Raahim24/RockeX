@@ -9,7 +9,7 @@ import type { BuildState } from "@/types";
 type Clip =
   | { state: "filming"; since: number }
   | { state: "ready"; url: string }
-  | { state: "failed" };
+  | { state: "failed"; why?: "not_configured" };
 
 const POLL_MS = 5000;
 const GIVE_UP_MS = 6 * 60_000;
@@ -46,8 +46,10 @@ export function FlightVideo() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ build, ...(image ? { image } : {}), ...(flight ? { flight } : {}) }),
         });
-        const started = (await res.json()) as { id: string | null };
-        if (!res.ok || !started.id) return set(k, { state: "failed" });
+        const started = (await res.json()) as { id: string | null; reason?: string };
+        if (!res.ok || !started.id) {
+          return set(k, started.reason === "not_configured" ? { state: "failed", why: "not_configured" } : { state: "failed" });
+        }
         const deadline = Date.now() + GIVE_UP_MS;
         while (Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, POLL_MS));
@@ -119,7 +121,11 @@ export function FlightVideo() {
             <video src={clip.url} autoPlay muted loop playsInline className="block aspect-video w-full bg-black object-cover" />
           </button>
         ) : (
-          <p className="m-0 px-3 pb-3 text-sm text-white/60">Couldn&apos;t film this flight right now.</p>
+          <p className="m-0 px-3 pb-3 text-sm text-white/60">
+            {clip.why === "not_configured"
+              ? "Grok Imagine isn't set up here (no XAI_API_KEY on the server)."
+              : "Couldn't film this flight right now."}
+          </p>
         )}
         <p className="m-0 px-3 py-1.5 text-[11px] text-white/40">An artistic interpretation of this build. The physics decides the outcome.</p>
       </figure>

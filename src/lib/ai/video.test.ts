@@ -23,13 +23,20 @@ describe("flight outcome comes from the verdict", () => {
 });
 
 describe("flight video prompt", () => {
-  it("names the real parts, the payload and the destination, and lands a Falcon-type booster", () => {
+  it("describes only what a camera can see, keeps the first-frame rocket, and lands a Falcon-type booster", () => {
     const { prompt, outcome } = flightVideoPlan(fixed, catalog);
     expect(outcome).toBe("success");
-    expect(prompt).toContain("Merlin 1D");
-    expect(prompt).toContain("James Webb");
+    expect(prompt).toContain("The rocket from the first frame, kept exactly as it is");
+    expect(prompt).toContain("a cluster of 9 engines");
+    expect(prompt).toContain("night launch");
     expect(prompt).toContain("landing pad");
-    expect(prompt).toMatch(/no text, no logos, no watermarks/);
+    expect(prompt).not.toMatch(/Merlin|RL10|James Webb|Moon/); // names a video model can't show
+    expect(prompt).toMatch(/No text, no captions, no logos, no watermarks/);
+  });
+
+  it("splits the two shots over the clip length", () => {
+    expect(flightVideoPlan(fixed, catalog, undefined, 8).prompt).toMatch(/Shot 1, 0 to 4 seconds.*Shot 2, 4 to 8 seconds/);
+    expect(flightVideoPlan(fixed, catalog, undefined, 12).prompt).toMatch(/Shot 1, 0 to 6 seconds.*Shot 2, 6 to 12 seconds/);
   });
 
   it("only lands boosters that really land", () => {
@@ -78,12 +85,13 @@ describe("/api/video", () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body).image).toBeUndefined();
   });
 
-  it("falls back instead of failing when Grok is unavailable", async () => {
+  it("falls back instead of failing when Grok is unavailable, and doesn't retry without a key", async () => {
     delete process.env.XAI_API_KEY;
     const { POST } = await import("@/app/api/video/route");
-    const res = await POST(post({ build: DEMO_BUILD }));
+    const res = await POST(post({ build: DEMO_BUILD, image: "data:image/jpeg;base64,AAAA" }));
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ id: null, fallback: true });
+    expect(await res.json()).toMatchObject({ id: null, fallback: true, reason: "not_configured" });
   });
 
   it("maps xAI job states and rejects bad ids", async () => {
@@ -114,7 +122,7 @@ describe("the video follows the screen's own flight", () => {
     expect(orbit.prompt).toContain("landing pad");
     const impact = flightVideoPlan(f9, catalog, { outcome: "impact", boosterLands: false });
     expect(impact.outcome).toBe("impact");
-    expect(impact.prompt).toContain("falls back");
+    expect(impact.prompt).toContain("falls back toward the ground");
     expect(impact.prompt).not.toContain("landing pad");
   });
 });
