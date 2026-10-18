@@ -4,7 +4,8 @@
 //   createOptionShelf({ camera, scene, root, canvas, catalog, onPick }) ->
 //     { show({ build, partId, options, built }), clear(), flyIn(part) -> Promise, has(partId, recordId), update(dt), busy,
 //       partId, forBuilt }   (built: the options are swaps for a part already on the rocket)
-//   options: [{ recordId, engineCount?, title, effect }]   (all of them; shown PAGE at a time with ‹ ›)
+//   options: [{ recordId, engineCount?, title, effect, warn? }]   (all of them; shown PAGE at a time with ‹ ›; warn: a
+//   rule it breaks, on its own line)
 import * as THREE from "three";
 import { buildManifest } from "./layout.js";
 import { createMaterials, createPart } from "./parts.js";
@@ -118,7 +119,7 @@ export function createOptionShelf({ camera, scene, root, canvas, catalog, onPick
         "position:absolute;transform:translate(-50%,0);pointer-events:auto;cursor:pointer;border:1px solid rgba(255,255,255,.14);" +
         "background:rgba(11,13,18,.82);color:#f6f7fb;border-radius:10px;padding:4px 10px;font:600 12px/1.3 Inter,system-ui,sans-serif;" +
         "text-align:center;white-space:nowrap;backdrop-filter:blur(6px)";
-      label.innerHTML = `<span style="opacity:.6">${i + 1}</span> ${o.title}<br><span style="font-weight:500;color:#a9adb8">${o.effect}</span>`;
+      label.innerHTML = `<span style="opacity:.6">${i + 1}</span> ${o.title}<br><span style="font-weight:500;color:#a9adb8">${o.effect}</span>${o.warn ? `<br><span style="font-weight:500;color:#ff9a76">⚠ ${o.warn}</span>` : ""}`;
       const item = { option: o, part, holder, label };
       label.addEventListener("click", () => pick(item));
       labels.append(label);
@@ -190,7 +191,7 @@ export function createOptionShelf({ camera, scene, root, canvas, catalog, onPick
     const n = items.length;
     items.forEach((it, i) => {
       const y = n === 1 ? 0 : h * 0.55 * (1 - (2 * i) / (n - 1));
-      const local = new THREE.Vector3(-w * 0.62, y * 0.9, -DIST);
+      const local = new THREE.Vector3(-w * 0.42, y * 0.9, -DIST);
       it.holder.position.copy(camera.localToWorld(local));
       it.holder.scale.setScalar((FIT * h) / it.holder.userData.size / Math.max(1, n / 3));
       it.holder.userData.spin += dt * 0.6;

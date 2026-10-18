@@ -151,11 +151,12 @@ function ThoughtCloud({ text }: { text: string }) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  // Centred over Grok's head, but never off screen and never over the option shelf (the column of part choices):
-  // then it sits just right of the shelf and its trail leans back toward Grok. Checked each frame because the
-  // shelf's labels follow the 3D scene.
+  // Centred over Grok's head, but never off screen and never over the option shelf (the column of part choices).
+  // While the shelf shares its rows, it moves to the mirror spot on the other side of the rocket (the free space
+  // between the readiness panel and the control bar) without the trail, as Grok's word on the choices. Checked
+  // each frame because the shelf's labels follow the 3D scene.
   const cloudRef = useRef<HTMLDivElement>(null);
-  const [place, setPlace] = useState({ shift: 0, trail: 0, lean: 0 });
+  const [place, setPlace] = useState({ shift: 0, trail: 0, lean: 0, detached: false });
   useEffect(() => {
     let raf = 0;
     let last = "";
@@ -167,20 +168,27 @@ function ThoughtCloud({ text }: { text: string }) {
       const d = dock.getBoundingClientRect();
       const cx = d.left + d.width / 2;
       const w = cloud.offsetWidth;
+      const c = cloud.getBoundingClientRect(); // its height and rows don't depend on the sideways shift
       let left = cx - w / 2;
       let shelfLeft = Infinity;
       let shelfRight = -Infinity;
       document.querySelectorAll(".option-shelf > *").forEach((el) => {
         const r = el.getBoundingClientRect();
-        if (!r.width || !r.height) return;
+        if (!r.width || !r.height || r.bottom < c.top || r.top > c.bottom) return; // only what shares its rows
         shelfLeft = Math.min(shelfLeft, r.left);
         shelfRight = Math.max(shelfRight, r.right);
       });
-      if (shelfLeft < left + w && shelfRight > left) left = shelfRight + 16;
+      const detached = shelfLeft < left + w && shelfRight > left;
+      if (detached) left = innerWidth - (shelfLeft + shelfRight) / 2 - w / 2;
       left = Math.max(8, Math.min(left, innerWidth - w - 8));
       const trail = Math.min(Math.max(cx - left, 28), w - 28);
-      const next = { shift: Math.round(left - (cx - w / 2)), trail: Math.round(trail), lean: Math.round(Math.max(cx - left - trail, -48)) };
-      const key = `${next.shift},${next.trail},${next.lean}`;
+      const next = {
+        shift: Math.round(left - (cx - w / 2)),
+        trail: Math.round(trail),
+        lean: Math.round(Math.max(cx - left - trail, -48)),
+        detached,
+      };
+      const key = `${next.shift},${next.trail},${next.lean},${detached}`;
       if (key !== last) {
         last = key;
         setPlace(next);
@@ -209,13 +217,15 @@ function ThoughtCloud({ text }: { text: string }) {
       <span ref={textRef} className="grok-cloud-text" style={{ width: shown.length > 28 ? 200 : "max-content" }}>
         {shown}
       </span>
-      <span className="grok-cloud-trail" style={{ left: place.trail || "50%", ["--lean" as string]: `${place.lean}px` }} aria-hidden />
+      {!place.detached && (
+        <span className="grok-cloud-trail" style={{ left: place.trail || "50%", ["--lean" as string]: `${place.lean}px` }} aria-hidden />
+      )}
     </div>
   );
 }
 
 interface Props {
-  /** The whole rocket is on screen. Grok reacts and Apply/Render appear only then. Defaults to true. */
+  /** The whole rocket is on screen. Grok reacts and Apply fix appears only then. Defaults to true. */
   rocketReady?: boolean;
   /** The parts in build order and which are placed, from the screen; drives the guided build. */
   progress?: BuildProgress;

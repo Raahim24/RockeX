@@ -56,12 +56,12 @@ export const VOICE_TOOLS = [
     type: "function",
     name: "show_options",
     description:
-      "Put choices for a part on screen as real 3D parts beside the rocket (paged, with each part's type and size), and get their details including what each would do and why some won't work. Works for the next part, or for a part already on the rocket (to swap it). Call it whenever you start talking about choices. Without ids it shows all of them; with ids, just those.",
+      "Put choices for a part on screen as real 3D parts beside the rocket (4 per page, each labelled with its fuel, push, efficiency and any rule it breaks), and get their details including why some won't work. Works for the next part, or for a part already on the rocket (to swap it). Call it whenever you start talking about choices, and again whenever you name a part that isn't on the first page: the ids you pass go first on screen.",
     parameters: {
       type: "object",
       properties: {
         partId: { type: "string", description: "which part (an id from SCREEN); default: the next part to place" },
-        ids: { type: "array", items: { type: "string" }, description: "record ids to show (default: all)" },
+        ids: { type: "array", items: { type: "string" }, description: "record ids you will name; they go first on screen (at most 4)" },
       },
       required: [],
       additionalProperties: false,
@@ -180,10 +180,12 @@ export const runVoiceTool = (name: string, rawArgs: string): Record<string, unkn
       const all = slotOptions(build, next, Infinity);
       if (all.length === 0) return fail(`the ${slotName(next)} has no choice to make`);
       const wanted = Array.isArray(args.ids) ? args.ids.map(String) : [];
-      // Every option for the slot (the screen pages them), or just the ones Grok names (ids of other kinds ignored).
-      const chosen = all.filter((o) => wanted.includes(o.id));
-      const picked = chosen.length >= 2 ? chosen : all;
-      showOnScreen(next, picked);
+      // Every option for the slot goes on screen (it pages them 4 at a time); the ones Grok names come first so
+      // whatever it talks about is on the first page, then the part already there, then the rest in catalog order.
+      const chosen = wanted.flatMap((id) => all.filter((o) => o.id === id));
+      const rest = all.filter((o) => !chosen.includes(o));
+      showOnScreen(next, [...chosen, ...rest.filter((o) => o.current), ...rest.filter((o) => !o.current)]);
+      const picked = chosen.length ? chosen : all;
       return {
         ok: true,
         part: slotName(next),
@@ -312,9 +314,9 @@ export const slotOptions = (build: BuildState, part: BuildPart, limit = OPTIONS_
   const i = part.stageIndex ?? 0;
   const stage = build.stages[i];
   // Each candidate is evaluated first; problems are blamed on this slot only if this slot causes or can fix them.
-  const candidates: { next: BuildState; id: string; name: string; about: string; trait: string; sortKey: number; engineCount?: number }[] = [];
-  const consider = (next: BuildState, id: string, name: string, about: string, trait: string, sortKey: number, engineCount?: number): void => {
-    candidates.push({ next, id, name, about, trait, sortKey, engineCount });
+  const candidates: { next: BuildState; id: string; name: string; about: string; trait: string; sortKey: number; engineCount?: number; isp?: number }[] = [];
+  const consider = (next: BuildState, id: string, name: string, about: string, trait: string, sortKey: number, engineCount?: number, isp?: number): void => {
+    candidates.push({ next, id, name, about, trait, sortKey, engineCount, isp });
   };
   if (part.kind === "engines" && stage) {
     const tank = byId(catalog.tanks, stage.tankId);
@@ -325,9 +327,10 @@ export const slotOptions = (build: BuildState, part: BuildPart, limit = OPTIONS_
         e.id,
         e.name,
         `${count} x ${e.name}: ${e.propellant}, ${i === 0 ? `${Math.round(e.thrustSL_kN)} kN at sea level` : `${Math.round(e.thrustVac_kN)} kN in vacuum`} each, efficiency (Isp) ${Math.round(i === 0 ? e.ispSL_s : e.ispVac_s)} s`,
-        `${e.propellant} · ${Math.round(i === 0 && e.thrustSL_kN > 0 ? e.thrustSL_kN : e.thrustVac_kN).toLocaleString("en-US")} kN${i === 0 && e.thrustSL_kN <= 0 ? " (vacuum)" : ""}`,
+        `${e.propellant} · ${Math.round(i === 0 && e.thrustSL_kN > 0 ? e.thrustSL_kN : e.thrustVac_kN).toLocaleString("en-US")} kN push${count > 1 ? " each" : ""}`,
         e.thrustSL_kN > 0 ? e.thrustSL_kN : e.thrustVac_kN,
         count,
+        i === 0 && e.ispSL_s > 0 ? e.ispSL_s : e.ispVac_s,
       );
     });
   } else if (part.kind === "tank" && stage) {
@@ -346,6 +349,13 @@ export const slotOptions = (build: BuildState, part: BuildPart, limit = OPTIONS_
       consider({ ...build, payloadId: p.id }, p.id, p.name, `${kg(p.mass_kg)}`, `${(p.mass_kg / 1000).toFixed(1)} t`, p.mass_kg),
     );
   }
+  // Efficiency in words, against the other engines for this slot (top third efficient, bottom third thirsty).
+  const isps = candidates.flatMap((c) => (c.isp === undefined ? [] : [c.isp])).sort((a, b) => a - b);
+  const third = (k: number): number => isps[Math.min(isps.length - 1, Math.floor((isps.length * k) / 3))];
+  candidates.forEach((c) => {
+    if (c.isp === undefined || isps.length < 3) return;
+    c.trait += c.isp >= third(2) ? " · efficient" : c.isp < third(1) ? " · thirsty" : " · average";
+  });
   const before = new Set(blocking(evaluateBuild(build, catalog)));
   const verdicts = candidates.map((c) => evaluateBuild(c.next, catalog));
   // A problem the rocket already has belongs to this slot if some choice here makes it go away.
@@ -384,6 +394,7 @@ const showOnScreen = (part: BuildPart, options: SlotOption[]): void =>
           engineCount: o.engineCount,
           title: o.engineCount && o.engineCount > 1 ? `${o.engineCount} × ${o.name}` : o.name,
           effect: `${o.trait}${o.current ? " · current" : ""}`,
+          ...(o.problem ? { warn: o.problem } : {}),
         })),
       },
     }),

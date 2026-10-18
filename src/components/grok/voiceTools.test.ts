@@ -197,6 +197,29 @@ describe("show_options tool", () => {
   });
 
 
+  it("puts the options Grok names first, so what it talks about is on the first page", () => {
+    setGuideProgress(progress);
+    const tanks = loadCatalog().tanks.map((t) => t.id);
+    const named = tanks.slice(-2).reverse(); // two from the end of the catalog order
+    runVoiceTool("show_options", JSON.stringify({ ids: named }));
+    const sent = (dispatchEvent as unknown as { mock: { calls: [CustomEvent][] } }).mock.calls.at(-1)![0];
+    const order = sent.detail.options.map((o: { recordId: string }) => o.recordId);
+    expect(order.slice(0, 2)).toEqual(named);
+    expect(order[2]).toBe("falcon9-s1-tank"); // then the part already chosen
+    expect(order).toHaveLength(tanks.length); // and still every option, a page further on
+  });
+
+  it("labels engines with fuel, push and efficiency in words, and flags rule breakers", () => {
+    setGuideProgress([{ id: "s0-engines", kind: "engines", stageIndex: 0, recordId: "merlin-1d", built: false }]);
+    runVoiceTool("show_options", "{}");
+    const sent = (dispatchEvent as unknown as { mock: { calls: [CustomEvent][] } }).mock.calls.at(-1)![0];
+    const shown: { recordId: string; effect: string; warn?: string }[] = sent.detail.options;
+    expect(shown.every((o) => /^\w+ · [\d,]+ kN push( each)? · (efficient|average|thirsty)/.test(o.effect))).toBe(true);
+    const broken = slotOptions(DEMO_BUILD, { id: "s0-engines", kind: "engines", stageIndex: 0, recordId: "merlin-1d", built: false }, Infinity).filter((o) => !o.works);
+    expect(broken.length).toBeGreaterThan(0);
+    for (const o of broken) expect(shown.find((s) => s.recordId === o.id)?.warn).toBe(o.problem);
+  });
+
   it("says so when there is nothing to choose", () => {
     setGuideProgress(progress.map((p) => ({ ...p, built: true })));
     expect(runVoiceTool("show_options", "{}").ok).toBe(false);
