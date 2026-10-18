@@ -1197,8 +1197,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         break;
       case "liftoff":
         sfx.play("clunk"); // hold-down release
-        state.shake = 1;
-        openClamps();
+        openClamps(); // (no camera shake at liftoff: the user read it as the rocket vibrating, stuck)
         break;
       case "transonic":
         L.fx?.halo?.fire(); // vapour collar through Mach 1
@@ -1420,13 +1419,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       if (!L.ignited && t >= padT("ignite")) {
         ignite(0, padT("ignite"));
         L.ignited = true;
-        state.shake = Math.max(state.shake, 0.5);
         say("ignite", "ENGINE START");
       }
       const s0 = L.samples[0];
       const thr = updatePlumes(dt, t, s0);
       L.padLight?.update(dt, thr, 0);
-      if (thr > 0) state.shake = Math.max(state.shake, 0.3 * thr);
       padEffects(dt, t, thr, 0);
     }
   }
@@ -1544,6 +1541,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   const spFwd = new THREE.Vector3(1, 0, 0);
   const spGoal = new THREE.Vector3();
   const spLook = new THREE.Vector3();
+  const spNow = new THREE.Vector3();
+  const spVel = new THREE.Vector3();
   function spaceCam(dt) {
     const c = L.chase;
     // Local up at the vehicle, in near axes: from the current body's centre out to the vehicle. Through coasts and
@@ -1553,14 +1552,14 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const live = /reentry|landing|braking|approach|vertical|entry|parachute|deorbit|booster-descent/.test(seg0);
     c.lockK = ease1(c.lockK ?? 0, live ? 0 : 1, dt, 0.8); // 1 = locked
     const centre = bodyCentre(L.smp.body === "space" ? "earth" : L.smp.body, L.smp);
-    const upNow = new THREE.Vector3().copy(L.V).sub(centre).normalize().applyQuaternion(L.QnInv);
+    const upNow = spNow.copy(L.V).sub(centre).normalize().applyQuaternion(L.QnInv);
     c.upLock ??= upNow.clone();
     const black = state.cut >= 0.98; // a skip or a cut: the locked frame re-takes the new place unseen
     if (c.lockK < 0.05 || black) c.upLock.copy(upNow);
     spUp.copy(upNow).lerp(c.upLock, c.lockK).normalize();
     // Direction of travel along the surface (the velocity, or the nose when the velocity is near vertical).
     const v = L.smp.vel_eci_kms ?? L.smp.vel_kms;
-    const f = v ? new THREE.Vector3(v[0], v[1], v[2]).applyQuaternion(world.eciFrame).applyQuaternion(L.QnInv) : null;
+    const f = v ? spVel.set(v[0], v[1], v[2]).applyQuaternion(world.eciFrame).applyQuaternion(L.QnInv) : null;
     if (f && (c.lockK < 0.5 || black)) {
       f.addScaledVector(spUp, -f.dot(spUp));
       if (f.lengthSq() > 1e-8) spFwd.lerp(f.normalize(), black ? 1 : 1 - Math.exp(-dt / 0.8)).normalize(); // eased: no snaps
@@ -1716,7 +1715,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     // The vehicle's base at the origin: the bottom of what is still flying (after each drop the remaining stack's
     // bottom is the point flight.js tracks), with the flight group's pivot up the axis from it.
     // (Eased over ~0.7 s so a drop moves the frame smoothly instead of by a stage's height at once.)
-    const baseY = L.lander ? L.lander.baseY : Math.min(...parts.filter((p) => !L.gone.has(p)).map((p) => p.slotY), Infinity);
+    let baseY = Infinity;
+    if (L.lander) baseY = L.lander.baseY;
+    else for (const p of parts) if (!L.gone.has(p) && p.slotY < baseY) baseY = p.slotY;
     const goal = Number.isFinite(baseY) ? baseY : 0;
     const base0 = L.baseY;
     L.baseY = L.baseY == null ? goal : L.baseY + (goal - L.baseY) * (1 - Math.exp(-(L.dtFrame ?? 0.016) / 0.25));
@@ -1945,6 +1946,22 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     c.upLock = null;
     deployRole("gridFin");
   }
+  // User, round 25: no flip or large reorientation on screen after liftoff (the gravity turn is the only visible
+  // rotation). Where the timeline turns the vehicle faster than ~15°/s outside the climb, the screen fades to black
+  // for the turn (held while it lasts, at most 2 s) and the camera re-takes its place on the black frame.
+  const flipA = new THREE.Vector3();
+  function flipGuard(smp, dt) {
+    flipA.set(smp.axis[0], smp.axis[1], smp.axis[2]);
+    const prev = (L.flipPrev ??= flipA.clone());
+    const rate = dt > 0 ? THREE.MathUtils.radToDeg(prev.angleTo(flipA)) / dt : 0;
+    prev.copy(flipA);
+    const exempt = smp.segment === "ascent" || L.tumbling || L.brokenUp || L.F.endState?.type === "lost" || L.real < 0;
+    L.flipping = !exempt && rate > 15;
+    if (L.flipping && !L.cut) {
+      const until = L.real + 2;
+      L.cut = { t: 0, up: 0, fired: false, hold: 1, wait: () => L.flipping && L.real < until, fn: () => {} };
+    }
+  }
   function flightUpdate(dt) {
     const F = L.F;
     L.dtFrame = dt;
@@ -1978,6 +1995,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     if (smp.segment !== "ascent") prepareLanding();
     if (smp.segment === "booster-descent" && !L.boosterOn) showBooster();
+    flipGuard(smp, dt);
     placeFlight(smp);
     // The release beat is lit (story, est.; Head 1): UI4's story sun over the ground below the stage from the black
     // frame before the release to the cut after it, the stage's key light from the same side.
@@ -2002,7 +2020,6 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     if (L.landerPlume) L.landerPlume.update(dt, { throttle: smp.stageIndex == null ? smp.throttle : 0, ambientPressure_Pa: 0, cameraDistance: camera.position.distanceTo(controls.target) });
     if (tS >= 0) {
       L.padLight?.update(dt, thr, Math.max(0, s.alt_m));
-      if (thr > 0 && s.alt_m < 300) state.shake = Math.max(state.shake, 0.35 * thr * (1 - s.alt_m / 300));
       padEffects(dt, t, thr, Math.max(0, s.alt_m));
     }
     updateDebris(dt);
@@ -3157,7 +3174,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         createDroneShip({ size_u: 0.5 }).object3d,
         ...(() => {
           const layout = padLayout({ baseRadius_u: 0.5 });
-          return [createVents([{ position: new THREE.Vector3() }], { scale_u: 0.2 }), createDeluge({ layout }), createTrenchJet({ layout }), createSteamCloud({ layout }), createCondensationHalo({}), createSkyDome({ radius_u: 1 }), createIgnitionFlash({}), createColdGasPuffs({}), createImpact(), createPlasmaGlow({})].map((fx) => fx.object3d);
+          return [createVents([{ position: new THREE.Vector3() }], { scale_u: 0.2 }), createDeluge({ layout }), createTrenchJet({ layout }), createSteamCloud({ layout }), createCondensationHalo({}), createSkyDome({ radius_u: 1 }), createIgnitionFlash({}), createColdGasPuffs({}), createImpact(), createPlasmaGlow({}), createTouchdownBurst({ surface: "catch" }), createParachute({ diameter_m: 10 })].map((fx) => fx.object3d);
         })(),
       );
       warmFx.position.set(0, -50, 0);
@@ -3224,7 +3241,27 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       if (part.ghost.visible) part.ghost.position.y = part.slotY + Math.sin(t * 2.6) * 0.05;
     }
     if (highlighted.size) updateHighlights(t);
-    if (L) launchUpdate(dt);
+    if (L && !L.crashed) {
+      try {
+        launchUpdate(dt);
+      } catch (err) {
+        // Never a frozen flight: an exception ends the fade, holds the frame with the result line, and R resets.
+        console.error("flight loop:", err);
+        L.crashed = true;
+        L.cut = null;
+        state.cut = 0;
+        if (!L.done) {
+          try {
+            finishFlight();
+          } catch {
+            L.done = true;
+            state.launch = "done";
+            state.busy = Math.max(0, state.busy - 1);
+            changed();
+          }
+        }
+      }
+    }
     updateGlow();
     flash.update(dt);
     if (state.shake > 0.002) {

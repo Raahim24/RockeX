@@ -354,7 +354,7 @@ const COAST_FRAG = /* glsl */ `
       vec3 R = reflect(-V, N);
       vec3 sky = mix(uHorizon, uSky, smoothstep(0.0, 0.35, R.y));
       float shallow = lag > 0.0 ? 0.5 : 1.0 - smoothstep(0.0, 600.0, s);
-      vec3 body = mix(vec3(0.012, 0.05, 0.1), vec3(0.03, 0.17, 0.17), shallow);
+      vec3 body = mix(vec3(0.007, 0.032, 0.07), vec3(0.02, 0.11, 0.12), shallow);
       col = mix(body * sunLit, sky, F);
       float rs = max(dot(R, uSun), 0.0);
       col += uSunCol * (pow(rs, 400.0) * 40.0 + pow(rs, 60.0) * 0.6) * uDay * (1.0 - 0.85 * uCloudy);
@@ -365,7 +365,7 @@ const COAST_FRAG = /* glsl */ `
       float e = -s;                                         // metres inland from the ocean shore
       float n1 = mix(cN(pm / 45.0), 0.5, smoothstep(12.0, 40.0, fw));       // mottling fades once sub-pixel
       float n2 = mix(cN(pm / 330.0 + 7.0), 0.5, smoothstep(90.0, 300.0, fw));
-      vec3 scrub = mix(vec3(0.07, 0.09, 0.04), vec3(0.13, 0.12, 0.07), n1 * 0.6 + n2 * 0.4);
+      vec3 scrub = mix(vec3(0.1, 0.12, 0.06), vec3(0.17, 0.155, 0.095), n1 * 0.6 + n2 * 0.4);
       // patches a few hundred metres across: dry sandy scrub, darker wet hammocks
       float n3 = mix(cN(pm / 900.0 + 11.0), 0.5, smoothstep(250.0, 800.0, fw));
       scrub = mix(scrub, vec3(0.2, 0.18, 0.11), smoothstep(0.6, 0.75, n3));
@@ -392,7 +392,7 @@ const COAST_FRAG = /* glsl */ `
     #include <fog_fragment>
   }
 `;
-const DAY_SUN = new THREE.Vector3(-0.34, 0, 0.94).normalize().multiplyScalar(Math.cos((40 * Math.PI) / 180)).setY(Math.sin((40 * Math.PI) / 180));
+const DAY_SUN = new THREE.Vector3(-0.34, 0, 0.94).normalize().multiplyScalar(Math.cos((27 * Math.PI) / 180)).setY(Math.sin((27 * Math.PI) / 180));
 function createCoast({ m, y, apronR }) {
   const u = {
     uTime: { value: 0 },

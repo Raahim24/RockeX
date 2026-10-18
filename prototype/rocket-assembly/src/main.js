@@ -437,8 +437,26 @@ createScrub({
 const { btnRockets, rocketsEl, btnBuildAll, btnExplode, btnReset, hudText } = shell;
 // The readiness panel (UI 5's readiness.js): destination picker (Orbit · GTO · Moon · Mars), Speed / Push /
 // Parts rows, the range line with its factors popover, and the flight result. rangeUi keeps its phase calls.
-const readyUi = mountReadiness({ hud: shell.hud, destinations: catalogModule.destinations?.() ?? [], onDestination: (missionId) => setMission(missionId) });
-const rangeUi = { setPhase: (phase) => readyUi.setPhase(phase), update: () => pushReadiness() };
+// (User, round 25: off by default, the team's Grok picks the destination; it shows only the flight result, and
+// ?panel=1 brings the whole panel back for testing. The standalone picker is a row in the Rockets list.)
+const DESTINATIONS = catalogModule.destinations?.() ?? [];
+const DEST_ROW = DESTINATIONS.length ? DESTINATIONS : [
+  { id: "orbit", label: "Orbit", missionId: "leo" },
+  { id: "gto", label: "GTO", missionId: "gto" },
+  { id: "moon", label: "Moon", missionId: "moon-transfer" },
+  { id: "mars", label: "Mars", missionId: "mars-transfer" },
+];
+const PANEL_ON = new URLSearchParams(location.search).get("panel") === "1";
+const readyUi = mountReadiness({ hud: shell.hud, destinations: DESTINATIONS, onDestination: (missionId) => setMission(missionId) });
+const panelPhase = (phase) => document.body.classList.toggle("rdy-off", !PANEL_ON && phase !== "result");
+panelPhase("pad");
+const rangeUi = {
+  setPhase: (phase) => {
+    panelPhase(phase);
+    readyUi.setPhase(phase);
+  },
+  update: () => pushReadiness(),
+};
 function pushReadiness() {
   const mission = catalog.missions.find((m) => m.id === current.build.missionId) ?? null;
   readyUi.update({
@@ -489,6 +507,12 @@ function rocketsHtml(mode = "switch") {
     const meta = catalogModule.twinLine ? catalogModule.twinLine(rec) : name;
     rows.push(`<li><button type="button" class="opt" data-twin="1"><span class="opt-name">Closest real rocket: ${f.esc(name)}</span><span class="opt-meta" title="${f.esc(meta)}">${f.esc(meta)}</span></button></li>`);
   }
+  if (mode === "switch") {
+    // The destination for this build (the panel's picker, now here): the same build, another mission.
+    const cur = current.build.missionId;
+    const btns = DEST_ROW.map((d) => `<button type="button" class="dest" data-mission="${f.esc(d.missionId ?? d.id)}" aria-pressed="${(d.missionId ?? d.id) === cur}">${f.esc(d.label)}</button>`);
+    rows.push(`<li class="dest-row"><span class="opt-name">Destination</span><span class="dest-btns" role="group" aria-label="Destination">${btns.join("")}</span></li>`);
+  }
   presetIds.forEach((id, i) => {
     if (mode === "compare" && i === presetIndex && !current.modified) return; // not itself
     const p = getPreset(id);
@@ -514,6 +538,12 @@ function setRocketsOpen(open, mode = "switch") {
 }
 btnRockets.addEventListener("click", () => setRocketsOpen(rocketsEl.hidden));
 rocketsEl.addEventListener("click", (e) => {
+  const dest = e.target.closest("[data-mission]");
+  if (dest) {
+    setMission(dest.dataset.mission);
+    rocketsEl.innerHTML = rocketsHtml(rocketsMode); // the list stays open, the pick shows
+    return;
+  }
   const opt = e.target.closest(".opt");
   if (!opt) return;
   if (opt.dataset.compare) {
@@ -572,7 +602,7 @@ function hudHtml() {
     return `<strong>${built.length}/${parts.length}</strong> parts · <strong>${f.m(height_m)}</strong> est. · <strong>${f.t(mass)}</strong>${choreo.state.exploded ? " · exploded" : ""}`;
   }
   // In the team app the launch-readiness panel right below shows Δv, TWR and GO / NO-GO; standalone, this line does.
-  const verdictBits = document.body.dataset.readinessPanel
+  const verdictBits = document.body.dataset.readinessPanel && !document.body.classList.contains("rdy-off")
     ? []
     : [
         `Δv ${f.num(verdict.totalDeltaV_ms, 0)} / ${f.ms(verdict.requiredDeltaV_ms)}`,
@@ -612,8 +642,13 @@ function syncUi() {
   if (launched) {
     if (telemetry.final) hudText.innerHTML = telemetry.final;
   } else if (twin ?? rival) hudText.innerHTML = (twin ?? rival).line;
-  else if (!swapping) hudText.innerHTML = hudHtml();
+  else if (!swapping) hudText.innerHTML = range.scrubbed && range.html && performance.now() < range.showUntil ? range.html : hudHtml();
   announceProgress();
+  // L pressed while a rocket was still settling (Rockets list → appears built): launch once it has.
+  if (launch.queued && busy === 0 && !launched && built === parts.length) {
+    launch.queued = false;
+    launch();
+  }
   announceComplete();
   // A selected part that is being removed (or gone after reset) loses its card.
   const sel = selector.selected;
@@ -936,7 +971,8 @@ function onTelemetry(tel) {
   const now = performance.now();
   if (now - telemetry.last < 80) return;
   telemetry.last = now;
-  hudText.innerHTML = telemetryHtml(tel);
+  const html = telemetryHtml(tel);
+  if (html !== telemetry.html) hudText.innerHTML = telemetry.html = html; // the DOM only when the line changes
 }
 // The ascent is simulated ahead, at idle, once a stack is complete (it takes ~45 ms, which otherwise lands on
 // the first frame of the countdown as a stutter); launch() reuses it for the same build.
@@ -987,7 +1023,9 @@ function strikeLightning(where) {
 }
 
 async function launch({ countdown, brief = false } = {}) {
+  if (!brief && !choreo.state.launch && choreo.state.busy && !choreo.state.exploded) launch.queued = true; // after the swap
   if (!isComplete() || choreo.state.busy || choreo.state.launch) return;
+  launch.queued = false;
   setRocketsOpen(false);
   if (choreo.state.exploded && !(await choreo.assemble())) return;
   // The range first: after a scrub, a second press tries the next window.
@@ -997,7 +1035,7 @@ async function launch({ countdown, brief = false } = {}) {
   if (!a.go) {
     range.scrubbed = true;
     const why = a.blockers?.[0]?.text ?? fx.scrubReason ?? "";
-    hudText.innerHTML = `<strong class="nogo">${f.esc(a.hud)}</strong>${why ? ` · ${f.esc(why)}` : ""} · L: next window`;
+    hudText.innerHTML = range.html = `<strong class="nogo">${f.esc(a.hud)}</strong>${why ? ` · ${f.esc(why)}` : ""} · L: next window`;
     report("launch", hudText.innerHTML);
     strikeLightning(fx.lightning);
     clearTimeout(launch.abortTimer);
@@ -1617,6 +1655,8 @@ canvas.after(cutEl);
 
 const clock = new THREE.Clock();
 function frame() {
+  // The next frame first: an exception anywhere below loses one frame, never the loop (a frozen, blank page).
+  requestAnimationFrame(frame);
   const rawDt = clock.getDelta();
   const dt = rawDt > 1 ? 0 : Math.min(rawDt, 0.05); // a stall over 1 s (tab hidden, GPU blocked) never advances the flight clock
   const t = clock.elapsedTime;
@@ -1711,7 +1751,6 @@ function frame() {
     renderer.render(scene, camera);
     renderer.autoClear = true;
   }
-  requestAnimationFrame(frame);
 }
 frame();
 

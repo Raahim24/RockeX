@@ -297,7 +297,7 @@ function bodyLook(name) {
   const air = atmosphereFor(name);
   const H = air && !air.none ? air.scaleHeight_m / 1000 / KM_PER_UNIT : 0;
   if (name === "earth")
-    return { maps: ["earth_day", "earth_bump", "earth_night", "earth_clouds"], ocean: 1, relief: 0.8, atmo: { H, HM: 0.12, betaR: [0.058, 0.135, 0.331], betaM: [0.1, 0.1, 0.1], extM: [0.231, 0.231, 0.231], g: 0.76, top: 10 * H, glow: 1, glowColor: [0.008, 0.022, 0.07], ms: 0.3, gain: 8 } }; // glow = skyAt("earth", 0).haze
+    return { maps: ["earth_day", "earth_bump", "earth_night", "earth_clouds"], ocean: 1, relief: 0.8, atmo: { H, HM: 0.12, betaR: [0.058, 0.135, 0.331], betaM: [0.075, 0.075, 0.075], extM: [0.231, 0.231, 0.231], g: 0.76, top: 10 * H, glow: 1, glowColor: [0.008, 0.022, 0.07], ms: 0.3, gain: 7 } }; // glow = skyAt("earth", 0).haze
   if (name === "mars")
     // Mars: dust scatters red most but absorbs blue, so its extinction is roughly neutral (butterscotch sky)
     return { maps: ["mars_color", "mars_bump"], ocean: 0, relief: 1.2, atmo: { H, HM: H, betaR: [0.004, 0.007, 0.014], betaM: [0.36, 0.21, 0.09], extM: [0.2, 0.2, 0.2], g: 0.6, top: 8 * H, glow: 0, glowColor: [0, 0, 0], dust: [0.25, 0.15, 0.09, 0.8], dustH: 0.15 } }; // dust: the horizon's colour, 1/e over ~12 km of low air (est.)
@@ -818,8 +818,8 @@ export function createWorld({ renderer = null } = {}) {
       // day (setSky): blue overhead, pale toward the horizon; overcast: grey; fading to space with height
       const space = THREE.MathUtils.smoothstep(alt_km, 5, 60);
       const cloudy = skyState.weather === "cloudy";
-      const zenith = (cloudy ? new THREE.Color(0.4, 0.43, 0.48) : new THREE.Color(0.07, 0.21, 0.64)).multiplyScalar(1 - space);
-      const horizon = (cloudy ? new THREE.Color(0.52, 0.55, 0.59) : new THREE.Color(0.5, 0.65, 0.86)).multiplyScalar(1 - 0.9 * space);
+      const zenith = (cloudy ? new THREE.Color(0.4, 0.43, 0.48) : new THREE.Color(0.035, 0.12, 0.48)).multiplyScalar(1 - space);
+      const horizon = (cloudy ? new THREE.Color(0.52, 0.55, 0.59) : new THREE.Color(0.34, 0.48, 0.72)).multiplyScalar(1 - 0.9 * space);
       return { zenith, horizon, haze: horizon.clone().multiplyScalar(k), stars: space };
     }
     const haze = new THREE.Color(0.008, 0.022, 0.07).multiplyScalar(k);
@@ -836,7 +836,8 @@ export function createWorld({ renderer = null } = {}) {
   // environmentIntensity, exposure (renderer.toneMappingExposure), fog: { color, near_u, far_u }, background,
   // sky: { zenith, horizon } } (colours linear; visual values).
   const skyState = { time: "night", weather: "clear" };
-  const DAY_SUN = new THREE.Vector3(-0.34, 0, 0.94).normalize().multiplyScalar(Math.cos(40 * DEG)).setY(Math.sin(40 * DEG));
+  // late afternoon (user feedback round 22: no blown-out whites, longer shadows): 27° up from the south-west
+  const DAY_SUN = new THREE.Vector3(-0.34, 0, 0.94).normalize().multiplyScalar(Math.cos(27 * DEG)).setY(Math.sin(27 * DEG));
   const NIGHT_SUN = sunDir.clone();
   function setSky({ time = "day", weather = "clear" } = {}) {
     skyState.time = time === "day" ? "day" : "night";
@@ -864,11 +865,11 @@ export function createWorld({ renderer = null } = {}) {
       sunDir: sunDir.clone(),
       // clear: a strong sun over a light fill (contrast), fog only far out (a crisp pad to the horizon, haze at
       // the sea line); cloudy: flat light and a closer haze
-      key: cloudy ? { color: C(0.86, 0.88, 0.92), intensity: 0.9 } : { color: C(1.0, 0.91, 0.78), intensity: 3.4 },
-      fill: cloudy ? { color: C(0.7, 0.73, 0.78), intensity: 0.5 } : { color: C(0.5, 0.64, 0.95), intensity: 0.42 },
-      exposure: cloudy ? 1.0 : 0.92, // renderer.toneMappingExposure (white paint keeps its detail in the sun)
-      hemi: cloudy ? { sky: C(0.62, 0.65, 0.7), ground: C(0.24, 0.24, 0.23), intensity: 2.0 } : { sky: C(0.38, 0.55, 0.92), ground: C(0.4, 0.32, 0.22), intensity: 0.55 },
-      environmentIntensity: cloudy ? 0.7 : 0.4,
+      key: cloudy ? { color: C(0.86, 0.88, 0.92), intensity: 0.9 } : { color: C(1.0, 0.84, 0.66), intensity: 3.3 },
+      fill: cloudy ? { color: C(0.7, 0.73, 0.78), intensity: 0.5 } : { color: C(0.45, 0.58, 0.92), intensity: 0.32 },
+      exposure: cloudy ? 1.0 : 0.8, // renderer.toneMappingExposure (white paint reads light grey with its shading)
+      hemi: cloudy ? { sky: C(0.62, 0.65, 0.7), ground: C(0.24, 0.24, 0.23), intensity: 2.0 } : { sky: C(0.32, 0.48, 0.9), ground: C(0.32, 0.25, 0.17), intensity: 0.55 },
+      environmentIntensity: cloudy ? 0.7 : 0.35,
       sky: { zenith: s.zenith.clone(), horizon: s.horizon.clone() },
       fog: cloudy ? { color: s.horizon, near_u: 400, far_u: 5000 } : { color: s.horizon, near_u: 6000, far_u: 40000 },
       background: s.horizon.clone(),

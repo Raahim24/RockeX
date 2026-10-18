@@ -511,10 +511,10 @@ function paintedMaterials(t, classic) {
     Object.assign(c, po);
     return c;
   };
-  const white = sooty(paint(0xe9eae6));
+  const white = sooty(paint(0xc4c6c2)); // light grey, so the shading reads in the sun (round 22: no flat white)
   return {
     body: white,
-    roll: sooty(paint(0xe9e9e5, { map: t.roll })),
+    roll: sooty(paint(0xc4c4c0, { map: t.roll })),
     foam: sooty(phys({ color: 0xffffff, map: t.foam, bumpMap: t.foam, bumpScale: 1.6, roughness: 0.82, clearcoat: 0.05 })),
     bronze: sooty(paint(0xa65f35, { metalness: 0.15, roughness: 0.45 })),
     silver: sooty(paint(0xb9bdc2, { metalness: 0.7, roughness: 0.35 })),

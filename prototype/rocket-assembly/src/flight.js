@@ -1,9 +1,20 @@
 // One continuous flight: launch -> space -> (transfer) -> land, as a single timeline. Pure: no DOM; all est.
 //   flightTimeline(build, catalog, opts?) -> {
 //     outcome, kind, endState, bodies, bodyPosAt(body, t_sim), segments, events, stageDrops, sampleAt(t_screen),
-//     screenToSim(t), simToScreen(t), surfaceFrame, totalScreen_s, totalSim_s, arrival, est }
+//     screenToSim(t), simToScreen(t), surfaceFrame, totalScreen_s, totalSim_s, arrival, booster, entry, est }
 //   opts: { ascent (a simulateAscent result to reuse), totalScreen_s (scales every segment's share),
-//           calibrate (false: fly the ascent uncalibrated, see below) }
+//           calibrate (false: fly the ascent uncalibrated, see below),
+//           boosterInset (Earth missions: the main track stays with the upper stage through a 10 s release beat
+//           and the booster's final descent runs alongside it on f.booster's own clock, for a picture-in-picture;
+//           default false: the sequential story, release then a cut to the booster) }
+//   booster (successful Earth missions, else null): the first stage's final descent into the tower catch on its
+//     own clock, either way: { start_screen (main screen time it starts: the cut to it, or with boosterInset the
+//     release beat's start), duration_s, end_screen, inset, sampleAt(t_local 0..duration_s) -> a sampleAt-shaped
+//     state + t_local, beats [{ type, t_local, t_screen, t_vehicle }] (landing-burn-start, touchdown), mode,
+//     relocated, events (ascent.js booster events, its own time), shift, onScreenFrom_t }
+//   entry (Mars landings, else null): arrival.js descentTimeline's entry { aeroshell_m, canopy_m, chuteOpen,
+//     chuteRelease, ballisticCoeff_kgm2, speedAt10km_ms } (aeroshell 1.6 x, canopy 6 x the payload diameter:
+//     model choices)
 //   A blocked build gives { blocked: true, outcome: "blocked", reason, endState, est } and nothing else.
 //   sampleAt(t_screen) -> { t_sim, t_screen, body ("earth" | "moon" | "mars" | "space"), segment, phase,
 //     stageIndex (null once only the spacecraft flies), pos_km (body-centred; "space" = Earth-centred), pos_eci_km,
@@ -29,7 +40,10 @@
 //     orbitBudget_ms when the verdict found it short of the LEO share) | "transfer-failed" (body, shortBy_ms,
 //     apogee_km (null if it escapes Earth), perigee_km, period_s) | "aborted" (blocked, or never left the pad).
 //   stageDrops: [{ type: "sep" | "fairing" | "les-jettison" | "payload-release" | "spacecraft-sep", stageIndex, t_sim, t_screen,
-//     dropAway: { dir_body, dir_eci, speed_ms, duration_s } }] (fairing: one half; the other mirrors x).
+//     dropAway: { dir_body, dir_eci, speed_ms, duration_s } }] (fairing: one half; the other mirrors x). Each
+//     names a part layout.js's manifest builds (part: "stage" | "fairing" | "payload" | "escape-tower"); a part the
+//     build does not have gets no drop and no event (an exposed payload has no fairing; only the capsule archetype
+//     with a sourced les_height_m draws an escape tower).
 // Built on ascent.js (the ascent itself) and arrival.js (success / landing rules, the powered descents). Nothing
 // here adds physics beyond those and the cited constants; the stitching below is model choices:
 // - Frame: Earth-centred, km, z = Earth's axis, x toward longitude 0; Earth's rotation ignored. Launch site 28.5 N,
@@ -91,6 +105,7 @@
 import { simulateAscent, returnFromSpace, boosterStory } from "./ascent.js";
 import { arrivalTimeline, descentTimeline, lightingFor, atmosphereFor } from "./arrival.js";
 import { G0, evaluateBuild } from "./physics.js";
+import { buildManifest } from "./layout.js";
 
 export { lightingFor, atmosphereFor };
 
@@ -135,6 +150,7 @@ const TURN_FRACTION = 0.25; // a coast turns to the next attitude over its last 
 const SHARE = {
   // round 25: the ascent ~16 s on screen (staging and fairing in near real time, so the parts drift off in frame)
   booster: { ascent: 16, "orbit-coast": 0.3, "payload-release": 3.5, "booster-descent": 10 }, // ~30-34: rocket, release, catch
+  boosterInset: { ascent: 16, "orbit-coast": 0.3, "payload-release": 10 }, // the release beat as long as the booster's descent beside it
   // round 22: every coast is a skip (a cut) of at most 0.5 s; what is shown is the story's beats
   earth: { ascent: 16, orbit: 2.6, "orbit-coast": 0.3, "deorbit-burn": 1, "deorbit-coast": 0.3, reentry: 6, landing: 4.5 }, // ~37 (LEO, then home)
   gto: { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 0.05, "deorbit-burn": 0.5, "deorbit-coast": 0.3, reentry: 5.5, landing: 4 }, // ~34
@@ -502,7 +518,18 @@ export function flightTimeline(build, catalog, opts = {}) {
     };
   };
   const tEndAscent = AS.at(-1).t;
-  const hasLes = Boolean(payload && catalog.visuals?.payloads?.[payload.id]?.dims?.les_height_m > 0);
+  // the parts the scene really has (layout.js, as parts.js builds them): a drop or a jettison only for those
+  const manifest = buildManifest(build, catalog);
+  const payPart = manifest.find((p) => p.kind === "payload");
+  const stageCount = new Set(manifest.filter((p) => p.stageIndex != null).map((p) => p.stageIndex)).size;
+  const parts = new Set([
+    ...(stageCount ? ["stage"] : []),
+    ...(payPart ? ["payload"] : []),
+    ...(manifest.some((p) => p.kind === "fairing") ? ["fairing"] : []),
+    // parts.js draws the tower (pieces tagged userData.escapeTower) in the capsule archetype only
+    ...(payPart?.geom?.archetype === "capsule" && payPart.geom.lesH_m > 0 ? ["escape-tower"] : []),
+  ]);
+  const hasLes = parts.has("escape-tower");
   const lastA = AS.at(-1);
   // where a lost flight comes down: within 1 km of the pad "ground", else "sea" (the Cape launches east over the
   // Atlantic; there is no coastline data, so a far impact is called sea too: a default for the director, est.)
@@ -513,6 +540,7 @@ export function flightTimeline(build, catalog, opts = {}) {
   for (const e of AE) {
     if (e.t > tEndAscent + 1e-6) continue;
     if (!liftoff && e.type === "impact") continue; // held down: a pad abort, not a crash
+    if (e.type === "fairing" && !parts.has("fairing")) continue; // an exposed payload (Apollo) has no fairing
     ev(e.type, e.t, { body: "earth", stage: e.stage, ...(e.type === "impact" ? { ...impact, v_ms: Math.round(lastA.vel_ms) } : {}) });
     if (e.type === "impact") win(e.t - 2, e.t);
     if (e.type === "maxq") win(e.t - 0.5, e.t + 0.5);
@@ -522,7 +550,7 @@ export function flightTimeline(build, catalog, opts = {}) {
     }
     if (e.type === "meco") win(e.t - 0.3, e.t + 2.8); // MECO, separation (+1 s), upper-stage ignition (+2 s): >= 1.5 s each side of the sep
     if (e.type === "sep") stageDrops.push(dropAway("sep", e.stage, e.t, ascentState(e.t), undefined, { part: "stage" }));
-    // a payload with a launch escape tower (visuals.json dims.les_height_m: Apollo) jettisons it after the first
+    // a payload drawn with a launch escape tower (parts above: Apollo) jettisons it after the first
     // upper-stage ignition; the data has no jettison time, so it is LES_AFTER_IGNITION_S later (model choice, est.)
     if (e.type === "ignition2" && hasLes && !events.some((x) => x.type === "les-jettison")) {
       const tL = e.t + LES_AFTER_IGNITION_S;
@@ -543,6 +571,7 @@ export function flightTimeline(build, catalog, opts = {}) {
   const upperEvents = [];
   const storyCuts = []; // story times where the vehicle on screen changes (round 24): a cut
   let boosterTrack = null;
+  let marsEntry = null; // arrival.js's entry (aeroshell, parachute) on a Mars landing
   // the vehicle that lands at the Moon / Mars (round 23: the upper stage with the payload on top)
   let landerStage = null;
   let landerMass = payload?.mass_kg ?? null;
@@ -748,7 +777,11 @@ export function flightTimeline(build, catalog, opts = {}) {
     // result sentences, never on screen.
     const bst = arrival.success && arrival.body === "earth" ? boosterStory(build, catalog, s, { mode: "rtls", only: true }) : null;
     if (bst) {
-      shareKey = "booster";
+      // opts.boosterInset (picture-in-picture): the release beat lasts as long as the booster's descent, the upper
+      // stage drifting on in real time, and the booster flies alongside it on its own clock (f.booster), not after
+      // a cut; its beats are then in f.booster.beats, not in the main events
+      const inset = Boolean(opts.boosterInset);
+      shareKey = inset ? "boosterInset" : "booster";
       const BS = bst.samples;
       const tDown = BS.at(-1).t;
       // the payload release: LEO / escape at the ascent's release; GTO right after its departure burn
@@ -775,7 +808,7 @@ export function flightTimeline(build, catalog, opts = {}) {
       for (let i = events.length - 1; i >= 0; i--) if (events[i].t_sim > tEndAscent + 1e-6) upperEvents.unshift(...events.splice(i, 1));
       // SECO, then a cut to the release; the release in real time (3.5 s); then a cut to the booster
       const rel0 = tRel - 1.75;
-      const rel1 = tRel + 1.75;
+      const rel1 = inset ? rel0 + SHARE.boosterInset["payload-release"] : tRel + 1.75;
       pieces.push({ name: "orbit-coast", body: "earth", t0: tEndAscent, t1: rel0, fn: relState, skip: true });
       pieces.push({ name: "payload-release", body: "earth", t0: rel0, t1: rel1, fn: relState });
       ev("payload-release", tRel, { body: "earth", stage: upper });
@@ -793,7 +826,7 @@ export function flightTimeline(build, catalog, opts = {}) {
       // (a relocated descent is drawn straight down the tower line instead: its altitude and timing as flown)
       if (!bst.relocated) while (k5 < BS.length - 3 && slant(k5) > 15) k5++;
       const tB0 = BS[k5].t;
-      const shift = rel1 - tB0; // story time = booster time + shift
+      const shift = (inset ? rel0 : rel1) - tB0; // story time = booster time + shift (inset: from the release beat)
       const xEnd = BS.at(-1).x_m;
       // relocated: the descent's ground track is moved so the touchdown is at the tower (the pad)
       const xOff = bst.relocated ? xEnd : 0;
@@ -813,19 +846,30 @@ export function flightTimeline(build, catalog, opts = {}) {
         const throttle = lerp(a.throttle, b.throttle, u);
         return { body: "earth", pos, vel, axis, throttle, burn: throttle > 0 ? "landing" : null, stageIndex: 0, mass_kg: null, heat: lerp(a.heat ?? 0, b.heat ?? 0, u), gridFin_deg: lerp(a.gridFin_deg ?? 0, b.gridFin_deg ?? 0, u), tVehicle: t, phase: t >= tDown ? "touchdown" : "booster-descent" };
       };
-      storyCuts.push(rel1); // from the upper stage in orbit to the booster at 5 km: a cut by construction
-      pieces.push({ name: "booster-descent", body: "earth", t0: rel1, t1: tDown + shift, fn: boosterState });
+      if (!inset) {
+        storyCuts.push(rel1); // from the upper stage in orbit to the booster at 5 km: a cut by construction
+        pieces.push({ name: "booster-descent", body: "earth", t0: rel1, t1: tDown + shift, fn: boosterState });
+      }
+      // the booster's own clock (f.booster) keeps the real-time windows the main clock gives its descent
+      const bWindows = [[tB0, tB0 + 0.3], [tDown - 2, tDown]];
+      const bBeats = [];
       for (const e of bst.events) {
         if (e.t < tB0) continue; // flip, boostback and entry: in the sim and the sentences, not on screen
         if (e.type === "landing-burn") {
+          bWindows.push([e.t - 0.5, e.t + 0.5]);
+          bBeats.push({ type: "landing-burn-start", t_vehicle: e.t, alt_m: e.alt_m, vel_ms: e.vel_ms });
+          if (inset) continue;
           ev("booster-landing-burn", e.t + shift, { body: "earth", stage: 0, alt_m: e.alt_m, vel_ms: e.vel_ms, t_vehicle: e.t });
           ev("landing-burn-start", e.t + shift, { body: "earth", stage: 0, t_vehicle: e.t });
           win(e.t + shift - 0.5, e.t + shift + 0.5);
         }
       }
-      ev("booster-touchdown", tDown + shift, { body: "earth", stage: 0, speed_ms: round(bst.touchdownSpeed_ms, 2), t_vehicle: tDown });
-      ev("touchdown", tDown + shift, { body: "earth", stage: 0, speed_ms: round(bst.touchdownSpeed_ms, 2), t_vehicle: tDown });
-      win(tDown + shift - 2, tDown + shift);
+      bBeats.push({ type: "touchdown", t_vehicle: tDown, speed_ms: round(bst.touchdownSpeed_ms, 2) });
+      if (!inset) {
+        ev("booster-touchdown", tDown + shift, { body: "earth", stage: 0, speed_ms: round(bst.touchdownSpeed_ms, 2), t_vehicle: tDown });
+        ev("touchdown", tDown + shift, { body: "earth", stage: 0, speed_ms: round(bst.touchdownSpeed_ms, 2), t_vehicle: tDown });
+        win(tDown + shift - 2, tDown + shift);
+      }
       const legs = Boolean(catalog.visuals?.tanks?.[build.stages[0]?.tankId]?.features?.includes("landing-legs"));
       const touch = posAt(tDown).pos;
       const steps = ["flipped", ...(bst.events.some((e) => e.type === "boostback") ? ["flew back"] : []), ...(bst.events.some((e) => e.type === "entry") ? ["re-entered"] : [])];
@@ -843,8 +887,8 @@ export function flightTimeline(build, catalog, opts = {}) {
         modelled: [...(bst.modelled ?? []), ...(legs ? ["caught at the tower (Falcon 9 itself lands on its legs)"] : [])],
       };
       endState = end("landed", "First stage caught at the tower · est.", { body: "earth", missionLine: arrival.lines.at(-1), payloadLine: `Payload released into ${MISSION_PAYLOAD[mission.id] ?? "its orbit"} at ${tPlus(tRel)} (est.)`, landing });
-      ev("end", tDown + shift, { body: "earth" });
-      boosterTrack = { mode: "tower", relocated: Boolean(bst.relocated), events: bst.events, shift, onScreenFrom_t: tB0 };
+      ev("end", inset ? rel1 : tDown + shift, { body: "earth" });
+      boosterTrack = { mode: "tower", relocated: Boolean(bst.relocated), events: bst.events, shift, onScreenFrom_t: tB0, inset, tB0, tDown, startSim: inset ? rel0 : rel1, windows: bWindows, beats: bBeats, state: boosterState };
     } else if (!(need > 0) || ownEscape) {
       // LEO: release the payload, then the stage comes home, its de-orbit timed so it touches down on the pad
       shareKey = "earth";
@@ -1102,7 +1146,9 @@ export function flightTimeline(build, catalog, opts = {}) {
           if (arrival.lands) {
             ev("entry-interface", tEi, { body: "mars" });
             winSpace(tEi - 0.5, tEi + 0.5);
-            const tEnd = addDescent(descentTimeline(payload, { body: "mars" }), "mars", tEi, 0, u1, u2, () => marsC, () => [0, 0, 0]);
+            const descent = descentTimeline(payload, { body: "mars" });
+            marsEntry = descent.entry ?? null;
+            const tEnd = addDescent(descent, "mars", tEi, 0, u1, u2, () => marsC, () => [0, 0, 0]);
             endState = end("landed", `Upper stage landed on Mars with ${payloadName} on top · est.`, { body: "mars", landing: landerRecord() });
             ev("end", tEnd, { body: "mars" });
           } else {
@@ -1241,6 +1287,11 @@ export function flightTimeline(build, catalog, opts = {}) {
 
   for (const e of events) e.t_screen = round(clock.simToScreen(e.t_sim), 3);
   events.sort((a, b) => a.t_sim - b.t_sim);
+  // never a drop for a part the scene does not have (Head 1: a missing part must not reach the director)
+  for (let i = stageDrops.length - 1; i >= 0; i--) {
+    const d = stageDrops[i];
+    if (!parts.has(d.part) || (d.part === "stage" && !(d.stageIndex < stageCount))) stageDrops.splice(i, 1);
+  }
   for (const d of stageDrops) d.t_screen = round(clock.simToScreen(d.t_sim), 3);
   const segments = pieces.map((p) => ({ name: p.name, body: p.body, ...(p.skip ? { skip: true } : {}), t0_sim: round(p.t0, 3), t1_sim: round(p.t1, 3), t0_screen: round(clock.simToScreen(p.t0), 3), t1_screen: round(clock.simToScreen(p.t1), 3) }));
   // the cuts (round 22): the director can cut (or fade) across each; the vehicle's state still moves continuously
@@ -1252,12 +1303,7 @@ export function flightTimeline(build, catalog, opts = {}) {
 
   const pieceAt = (t) => pieces.find((x) => t >= x.t0 && t <= x.t1) ?? (t < pieces[0].t0 ? pieces[0] : pieces.at(-1));
   const dest = kind !== "earth" && bodies[kind] ? kind : null;
-  const sampleAt = (tScreen) => {
-    const ts = Math.max(0, Math.min(clock.total, tScreen));
-    const t = clock.screenToSim(ts);
-    const piece = pieceAt(t);
-    const st = piece.fn(Math.max(piece.t0, Math.min(piece.t1, t)));
-    const destPos = dest ? bodyPos(dest, t) : null;
+  const describe = (st, t, ts, segment, destPos) => {
     const frameBody = st.body === "space" ? "earth" : st.body;
     const f = surfaceFrame(frameBody, st.pos);
     const pitch = (Math.acos(Math.max(-1, Math.min(1, dot(st.axis, f.up)))) * 180) / Math.PI;
@@ -1270,7 +1316,7 @@ export function flightTimeline(build, catalog, opts = {}) {
       t_vehicle: st.tVehicle ?? t,
       t_screen: ts,
       body: st.body,
-      segment: piece.name,
+      segment,
       phase: st.phase,
       stageIndex: st.stageIndex,
       pos_km: r3(st.pos), // body-centred ("space": Earth-centred)
@@ -1293,6 +1339,37 @@ export function flightTimeline(build, catalog, opts = {}) {
       dust: round(st.dust ?? 0, 3),
     };
   };
+  const sampleAt = (tScreen) => {
+    const ts = Math.max(0, Math.min(clock.total, tScreen));
+    const t = clock.screenToSim(ts);
+    const piece = pieceAt(t);
+    const st = piece.fn(Math.max(piece.t0, Math.min(piece.t1, t)));
+    return describe(st, t, ts, piece.name, dest ? bodyPos(dest, t) : null);
+  };
+  // the booster's final descent on its own clock (same budget and real-time windows as its sequential segment),
+  // so the director can play it after the cut or beside the upper stage (opts.boosterInset)
+  let booster = null;
+  if (boosterTrack) {
+    const { state, windows: bWindows, beats, startSim, tB0, tDown, ...track } = boosterTrack;
+    const bClock = buildClock([{ t0: tB0, t1: tDown, skip: false, budget: share[track.inset ? "payload-release" : "booster-descent"] * scale }], bWindows);
+    const start = clock.simToScreen(startSim);
+    const local = (tl) => Math.max(0, Math.min(bClock.total, tl));
+    booster = {
+      ...track,
+      start_screen: round(start, 3),
+      duration_s: round(bClock.total, 3),
+      end_screen: round(start + bClock.total, 3),
+      sampleAt: (tLocal) => {
+        const tl = local(tLocal);
+        const ts = Math.min(clock.total, start + tl);
+        return { t_local: tl, ...describe(state(bClock.screenToSim(tl) + track.shift), clock.screenToSim(ts), ts, "booster-descent", null) };
+      },
+      beats: beats.map((b) => {
+        const tl = round(bClock.simToScreen(b.t_vehicle), 3);
+        return { ...b, t_local: tl, t_screen: round(start + tl, 3) };
+      }),
+    };
+  }
 
   return {
     outcome: s.outcome,
@@ -1320,7 +1397,8 @@ export function flightTimeline(build, catalog, opts = {}) {
     calibration: s.calibration ?? null, // ascent.js: how the trajectory was made to agree with the verdict (est.)
     // round 23: the first stage's return (Earth missions; the main track follows it after staging), the upper
     // stage's events after the staging beat (off screen: result text), and the upper stage during the staging
-    booster: boosterTrack ? { ...boosterTrack, sampleAt } : null,
+    booster,
+    entry: marsEntry, // Mars landings: the aeroshell and parachute arrival.js models (sizes are model choices)
     _cuts: storyCuts,
     upper: upperStory,
     upperEvents,

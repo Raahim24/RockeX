@@ -463,6 +463,52 @@ kbd {
   text-overflow: ellipsis;
 }
 
+/* The destination row (main.js rocketsHtml): Orbit · GTO · Moon · Mars for the current build. */
+.rockets li.dest-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--hairline);
+}
+.rockets .dest-btns {
+  display: flex;
+  gap: 4px;
+}
+.rockets .dest {
+  padding: 4px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rockets .dest:hover,
+.rockets .dest:focus-visible {
+  color: var(--text);
+  border-color: var(--holo);
+  outline: none;
+}
+.rockets .dest[aria-pressed="true"] {
+  color: var(--text);
+  border-color: var(--holo);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* User, round 25: only the ROCKEX logo top-left (the keys still work); the readiness panel only for the flight
+   result unless ?panel=1 (main.js body.rdy-off). */
+.brand p.keys,
+.brand .sky-toggles {
+  display: none;
+}
+body.rdy-off .rdy {
+  display: none !important;
+}
+
 .rockets li.more {
   margin-top: 4px;
   padding-top: 4px;
