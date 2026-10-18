@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Rocket Configurator",
+  title: "ROCKEX",
   description: "Real engine data decides whether your rocket works. Grok is your engineer.",
 };
 

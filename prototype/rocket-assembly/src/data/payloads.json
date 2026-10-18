@@ -5,7 +5,8 @@
     "mass_kg": 1908,
     "diameter_m": 2,
     "height_m": 3.938,
-    "source": "https://en.wikipedia.org/w/index.php?title=Intuitive_Machines_Nova-C&oldid=1379202564 (\"launch mass of 1908 kg\"; \"3.938 m tall\"; infobox diameter 2 m)"
+    "source": "https://en.wikipedia.org/w/index.php?title=Intuitive_Machines_Nova-C&oldid=1379202564 (\"It has a launch mass of 1,908 kg (4,206 lb)\"; \"is 3.938 m (12.92 ft) tall\"; infobox diameter 2 m)",
+    "_comment": "wording-only change from the team copy: the two quotes now match the page as rendered (sources audit, 2026-10-18); the values are unchanged. Propose the same wording to the team's src/data/payloads.json."
   },
   {
     "id": "goes-r",

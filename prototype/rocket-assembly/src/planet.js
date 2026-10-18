@@ -877,8 +877,43 @@ function valueNoise2(seed) {
 
 // Tileable detail maps (regolith/sand): albedo variation (sRGB) and a normal map from the same height noise.
 const detailCache = new Map();
+// The maps cost ~110 ms of main-thread work the first time per body (UI 6's profile: the hitch when L is pressed
+// on a Moon flight). They are built by a generator that yields every 8 rows: detailMaps runs it to the end at
+// once; prepareTerrain(body) runs it in idle slices ahead of time and resolves when the maps are cached.
+const detailPending = new Map(); // body → its generator, part way through
 function detailMaps(body) {
   if (detailCache.has(body)) return detailCache.get(body);
+  const gen = detailPending.get(body) ?? detailSteps(body);
+  detailPending.delete(body);
+  let r;
+  do r = gen.next();
+  while (!r.done);
+  return detailCache.get(body);
+}
+// prepareTerrain(body = "moon", { budgetMs = 6 }) -> Promise (resolves when the body's detail maps are cached):
+// call it at idle (e.g. once the stack is complete for a Moon or Mars mission) so createTerrain does not stall.
+export function prepareTerrain(body = "moon", { budgetMs = 6 } = {}) {
+  if (detailCache.has(body)) return Promise.resolve(detailCache.get(body));
+  if (!detailPending.has(body)) detailPending.set(body, detailSteps(body));
+  const idle = typeof requestIdleCallback === "function" ? (f) => requestIdleCallback(f, { timeout: 250 }) : (f) => setTimeout(f, 0);
+  return new Promise((resolve) => {
+    const slice = () => {
+      if (detailCache.has(body)) return resolve(detailCache.get(body)); // finished elsewhere (a direct createTerrain)
+      const gen = detailPending.get(body);
+      if (!gen) return resolve(detailMaps(body));
+      const t0 = performance.now();
+      let r;
+      do r = gen.next();
+      while (!r.done && performance.now() - t0 < budgetMs);
+      if (r.done) {
+        detailPending.delete(body);
+        resolve(detailCache.get(body));
+      } else idle(slice);
+    };
+    idle(slice);
+  });
+}
+function* detailSteps(body) {
   const N = 512;
   const P = 6; // lattice cells per tile at the coarsest octave
   // Value noise with a period of p cells, so the tile wraps seamlessly.
@@ -921,6 +956,7 @@ function detailMaps(body) {
       if (mars) hh += 0.045 * Math.sin(Math.PI * 2 * (u * 9 + v * 3 + 0.35 * tile(u, v, 4, 31))) * smoothstep(0.35, 0.75, tile(u, v, 3, 41)); // patchy wind ripples
       height[y * N + x] = hh;
     }
+    if ((y & 7) === 7) yield;
   }
   const alb = new Uint8Array(N * N * 4);
   const nrm = new Uint8Array(N * N * 4);
@@ -940,6 +976,7 @@ function detailMaps(body) {
       const l = Math.hypot(dx, dy, 1);
       nrm.set([Math.round(((-dx / l) * 0.5 + 0.5) * 255), Math.round(((-dy / l) * 0.5 + 0.5) * 255), Math.round(((1 / l) * 0.5 + 0.5) * 255), 255], (y * N + x) * 4);
     }
+    if ((y & 7) === 7) yield;
   }
   const mk = (data, srgb) => {
     const t = new THREE.DataTexture(data, N, N);
@@ -957,48 +994,170 @@ function detailMaps(body) {
   return out;
 }
 
-// createTerrain({ body: "moon" | "mars", size_u, seed, padRadius_u, sunDir, tint })
-//   -> { object3d, sun, heightAt(x, z), padRadius_u, dispose() }
-// A displaced plane (240 × 240 segments): craters (bowls with raised rims and bright fresh ejecta, power-law
-// sizes) and rolling noise on the Moon; dunes and soft sand-filled craters on Mars; a flat landing spot of
-// padRadius_u at the centre; large-scale albedo in vertex colours and a tileable regolith/sand detail map
-// (albedo + normal, 4 m tile). Boulders (on crater rims and scattered) and pebbles (around the landing spot) are
-// two InstancedMeshes of faceted low-poly rocks (PBR). Ground and boulders cast and receive shadows;
-// `sun` is a shadow-casting DirectionalLight aimed at the landing spot, already inside object3d; its direction
-// defaults to lightingFor(body).sunDir (site frame: +x east, +y up, +z south). For the lander's
-// own shadow call enableShadowCasting(landerGroup). Draws: ground, boulders, pebbles = 3 (+ shadow passes).
-export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_u = 2, sunDir = new THREE.Vector3(...lightingFor(body).sunDir), tint: tintIn = null } = {}) {
+// createTerrain({ body: "moon" | "mars", size_u, seed, padRadius_u, sunDir, tint, sunLight = true })
+//   -> { object3d, sun (null with sunLight: false), sunDir (site frame, unit), heightAt(x, z), padRadius_u,
+//        prewarm(renderer), setHaze(colour, d_u), dispose() }
+// sunLight: false leaves out the DirectionalLight (adding a light recompiles every material): aim the scene's
+// own key light along sunDir instead; the baked self-shadowing uses sunDir either way. prewarm(renderer)
+// uploads the detail textures ahead of the first frame that shows the ground. Build ~80–100 ms (+ ~150 ms the
+// first time per body for the detail maps): create it before the descent needs it, hidden.
+// A displaced grid of 240 × 240 segments up to ~3 km across: uniform on small patches; on large ones warped so
+// the central 300 m (the landing zone) is dense (~2.5 m) and the cells grow smoothly outward. Relief: rolling
+// noise at three scales, craters in three size bands (0.6–4 m in the landing zone, 4–25 m out to ~600 m, 25 m
+// up to a fifth of the patch everywhere; bowls with raised rims and bright fresh ejecta, power-law sizes, kept off
+// the landing spot) on the Moon; dunes and soft sand-filled craters on Mars; a flat landing spot of padRadius_u;
+// heights and detail fade out at the edge so the patch meets the far planet. Large-scale albedo in vertex
+// colours; the regolith / sand detail map (albedo + normal) at 4 m and 60 m with anti-tiling (hash-picked
+// offset and rotation variants blended over a low-frequency index) and ±8 % low-frequency albedo, so no repeat
+// reads at any altitude. Terrain self-shadowing is baked per vertex (sunVis, marched toward the sun) and scales
+// the direct light of every directional light on the ground; the shadow map carries the lander and boulders.
+// Boulders (on crater rims and scattered) and pebbles (around the landing spot) are two InstancedMeshes of
+// faceted low-poly rocks (PBR). `sun` is a shadow-casting DirectionalLight aimed at the landing spot, already
+// inside object3d; its direction defaults to lightingFor(body).sunDir (site frame: +x east, +y up, +z south).
+// For the lander's own shadow call enableShadowCasting(landerGroup). Draws: ground, boulders, pebbles = 3.
+export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_u = 2, sunDir = new THREE.Vector3(...lightingFor(body).sunDir), tint: tintIn = null, sunLight = true } = {}) {
   const mars = body === "mars";
   const S = size_u;
+  const half = S / 2;
   const rand = rng(seed);
   const fbm = valueNoise2(seed);
   const m = (metres) => metres * SCALE;
-  // Craters: power-law sizes (many small, few large). Fresh ones are deep with a sharp raised rim and a bright
-  // ejecta halo; degraded ones are shallow and soft. Profile (d = distance / radius): floor −depth at the centre
-  // rising as d^k to the rim crest at d = 1, then an ejecta skirt falling as d^-3 to 0 at d = 2. Visual ratios.
+  const zone = Math.min(half, m(150)); // landing-zone half-width (dense grid, small craters)
+
+  // ---- the grid: uniform on small patches; on large ones x' = half · w(t), dense in the landing zone ----
+  const SEG = 240;
+  const T0 = 0.5; // the inner half of the segments covers the landing zone
+  const warped = zone < T0 * half;
+  const c1 = warped ? ((zone / T0) * (1 - T0)) / (half - zone) : 1; // slope match at the joint (≤ 1 here)
+  const w = (t) => {
+    const a = Math.abs(t);
+    if (!warped) return t * half;
+    if (a <= T0) return (t * zone) / T0;
+    const u = (a - T0) / (1 - T0);
+    return Math.sign(t) * (zone + (half - zone) * (c1 * u + (1 - c1) * u * u));
+  };
+  const winv = (x) => {
+    const a = Math.abs(x);
+    if (!warped) return x / half;
+    if (a <= zone) return (x * T0) / zone;
+    const X = Math.min(1, (a - zone) / (half - zone));
+    const u = c1 >= 1 ? X : (-c1 + Math.sqrt(c1 * c1 + 4 * (1 - c1) * X)) / (2 * (1 - c1));
+    return Math.sign(x) * (T0 + u * (1 - T0));
+  };
+  // grid spacing (units) at |x| = a, and at a point (the coarser axis)
+  const dw = (a) => {
+    if (!warped) return S / SEG;
+    const t = Math.abs(winv(a));
+    if (t <= T0) return ((zone / T0) * 2) / SEG;
+    const u = (t - T0) / (1 - T0);
+    return (((half - zone) / (1 - T0)) * (c1 + 2 * (1 - c1) * u) * 2) / SEG;
+  };
+  const spacing = (x, z) => Math.max(dw(x), dw(z));
+
+
+  // ---- craters: three bands, counts from a density (per square unit of area) over each band's extent ----
+  // Profile (d = distance / radius): floor −depth at the centre rising as d^k to the rim crest at d = 1, then an
+  // ejecta skirt falling as d^-3 to 0 at d = 2. Radii follow N(>r) ∝ r^-2 inside each band. Visual ratios.
   const craters = [];
-  const nC = mars ? 70 : 420;
-  for (let i = 0; i < nC; i++) {
-    const r = m(0.6) + m(mars ? 14 : 22) * rand() ** 5;
-    const fresh = rand() ** (mars ? 1.6 : 0.8); // 1 fresh … 0 degraded (Mars: mostly sand-filled)
-    craters.push({
-      x: (rand() - 0.5) * S * 1.1,
-      z: (rand() - 0.5) * S * 1.1,
-      r,
-      fresh,
-      depth: r * (mars ? 0.2 : 0.32) * (0.3 + 0.7 * fresh),
-      rim: r * (mars ? 0.04 : 0.07) * (0.25 + 0.75 * fresh),
-      k: 1.5 + 1.3 * fresh,
-    });
+  const perKm2 = (n) => n / (m(1000) * m(1000));
+  const bands = mars
+    ? [
+        { r0: 0.6, r1: 4, ext: zone * 1.4, dens: perKm2(700) },
+        { r0: 4, r1: 25, ext: m(600), dens: perKm2(260) },
+        { r0: 25, r1: 150, ext: half, dens: perKm2(14) }, // 50–300 m across: the ones that read from 1–3 km
+      ]
+    : [
+        // the small ones thin out radially (full inside ~30 m, gone by ~190 m); the medium ones keep their
+        // smallest size near the lander and raise it smoothly to ~19 m by ~320 m (floor: the grid can only carry
+        // ~19 m+ out there, and it coarsens fast past ~150 m, which left the landing zone's cluster as a blotch with
+        // a rim), then end on a circle near 600 m
+        { r0: 0.6, r1: 4, ext: zone * 1.4, dens: perKm2(4000), taper: [m(30), m(190)] },
+        { r0: 4, r1: 25, ext: m(600), dens: perKm2(700), taper: [m(380), m(600)], floor: [m(40), m(320), 3.75] },
+        { r0: 25, r1: 220, ext: half, dens: perKm2(14) },
+      ];
+  const thin = rng(seed + 202); // the tapers' own stream: the craters that stay are the ones that were there
+  for (const bd of bands) {
+    const ext = Math.min(bd.ext, half * 1.05);
+    const r1 = Math.min(m(bd.r1), 0.2 * S);
+    const r0 = m(bd.r0);
+    if (r1 <= r0) continue;
+    const n = Math.min(2500, Math.round(bd.dens * (2 * ext) ** 2));
+    for (let i = 0; i < n; i++) {
+      const r = r0 / Math.sqrt(1 - rand() * (1 - (r0 / r1) ** 2));
+      const x = (rand() - 0.5) * 2 * ext;
+      const z = (rand() - 0.5) * 2 * ext;
+      if (r > m(25) && Math.hypot(x, z) < zone + 0.6 * r) continue; // big ones stay out of the landing zone
+      if (bd.taper && thin() > 1 - smoothstep(bd.taper[0], bd.taper[1], Math.hypot(x, z))) continue;
+      if (bd.floor && r < r0 * (1 + bd.floor[2] * smoothstep(bd.floor[0], bd.floor[1], Math.hypot(x, z)))) continue;
+      if (r < 1.3 * spacing(x, z)) continue; // the grid there could not carry it (it would alias into a blob)
+      const bigM = mars && r > m(25);
+      const fresh = rand() ** (mars ? (bigM ? 0.6 : 1.6) : 0.8); // 1 fresh … 0 degraded (Mars: small ones mostly sand-filled)
+      craters.push({ x, z, r, fresh, depth: r * (mars ? (bigM ? 0.34 : 0.2) : 0.32) * (0.3 + 0.7 * fresh), rim: r * (mars ? (bigM ? 0.06 : 0.04) : 0.07) * (0.25 + 0.75 * fresh), k: 1.5 + 1.3 * fresh });
+    }
+  }
+  // spatial grid: each crater listed in every cell its 2.5 r reach overlaps
+  const CELL = Math.max(m(20), S / 120);
+  const cells = new Map();
+  const key = (i, j) => i * 100003 + j;
+  for (const c of craters) {
+    const reach = 2.5 * c.r;
+    for (let i = Math.floor((c.x - reach) / CELL); i <= Math.floor((c.x + reach) / CELL); i++) {
+      for (let j = Math.floor((c.z - reach) / CELL); j <= Math.floor((c.z + reach) / CELL); j++) {
+        const k = key(i, j);
+        let list = cells.get(k);
+        if (!list) cells.set(k, (list = []));
+        list.push(c);
+      }
+    }
   }
   const windA = 0.6;
   const wx = Math.cos(windA);
   const wz = Math.sin(windA);
+  // heights and the large-scale albedo settle to the far map's toward the edge. Mars: radially over the outer
+  // ~40 %, while the ground itself fades out (alpha) over the outer ~25 % so the far layer's ground, with its own
+  // haze and in-scattered light, shows through: no square, no brightness step at the border
+  const edgeFade = mars
+    ? (x, z) => 1 - smoothstep(0.62 * half, 0.98 * half, Math.hypot(x, z))
+    : (x, z) => 1 - smoothstep(0.8 * half, 0.98 * half, Math.max(Math.abs(x), Math.abs(z)));
+  // ---- Mars: dune fields, dark rock fields, wrinkle ridges (a visual model, every size est.) ----
+  // Fields of dark basaltic sand ~1 km across and smaller dark rock fields between them, none on the landing
+  // zone: [dune, rock] weights 0…1.
+  const marsField = (x, z, r) => {
+    const F = smoothstep(0.5, 0.62, fbm(x / m(900) + 3.3, z / m(900) - 1.1, 3)) * smoothstep(m(260), m(450), r);
+    const R = smoothstep(0.53, 0.71, fbm(x / m(420) - 7.7, z / m(420) + 9.1, 3)) * (1 - F) * smoothstep(m(140), m(320), r);
+    return [F, R];
+  };
+  // Two wrinkle ridges 0.5–1 km off the landing spot: a broad arch with a narrower crest on one flank, 18–34 m
+  // high, wandering and swelling along their length. Their own random stream, so the Moon's layout is unchanged.
+  const rr = rng(seed + 101);
+  const DUNE_BIG_L = m(180);
+  const DUNE_BIG_H = m(12);
+  const bigDuneWarp = (x, z) => 1.4 * fbm(x / m(600) + 5, z / m(600) - 9, 2);
+  const bigDunePhase = (x, z) => (x * wx + z * wz) / DUNE_BIG_L + bigDuneWarp(x, z) + 1000; // + 1000: positive for %
+  const ridges = !mars
+    ? []
+    : [0, 1].map((i) => {
+        const th = rr() * Math.PI;
+        const n = [Math.cos(th), Math.sin(th)];
+        const off = m(500 + 500 * rr()) * (rr() < 0.5 ? -1 : 1);
+        const H = m(18 + 16 * rr());
+        const W = m(150 + 90 * rr());
+        return (x, z, r) => {
+          const along = -x * n[1] + z * n[0];
+          const sd = x * n[0] + z * n[1] - off + m(240) * (fbm(along / m(800) + 13 * i, 7.3 * i, 2) - 0.5);
+          if (Math.abs(sd) > 3 * W) return 0;
+          const k = 0.5 + fbm(along / m(450) + 40 + i, 3.1 + i, 2);
+          return H * k * (Math.exp(-((sd / W) ** 2)) + 0.7 * Math.exp(-(((sd - 0.35 * W) / (0.25 * W)) ** 2))) * smoothstep(m(250), m(450), r);
+        };
+      });
   // Height and an albedo factor at (x, z); heightAt is the public half.
   const sample = (x, z) => {
-    let h = (fbm(x / m(45), z / m(45), 3) - 0.5) * m(mars ? 2.2 : 1.2) + (fbm(x / m(7) + 7, z / m(7) - 3, 3) - 0.5) * m(mars ? 0.35 : 0.3);
+    const r = Math.hypot(x, z);
+    const fine = 1 - smoothstep(m(250), m(450), r); // features the far, coarser grid cannot carry fade out
+    let h = (fbm(x / m(420) + 31, z / m(420) - 17, 3) - 0.5) * m(mars ? 14 : 9) + (fbm(x / m(45), z / m(45), 3) - 0.5) * m(mars ? 2.2 : 1.2) + (fbm(x / m(7) + 7, z / m(7) - 3, 3) - 0.5) * m(mars ? 0.35 : 0.3) * fine;
     let a = 0;
-    for (const c of craters) {
+    let dark = 0; // Mars: dark sand drifted into the floors of old craters
+    for (const c of cells.get(key(Math.floor(x / CELL), Math.floor(z / CELL))) ?? []) {
       const dx = x - c.x;
       const dz = z - c.z;
       const lim = c.r * 2.5;
@@ -1006,51 +1165,239 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
       const d = Math.hypot(dx, dz) / c.r;
       if (d < 1) h += -c.depth + (c.depth + c.rim) * d ** c.k;
       else if (d < 2) h += c.rim * ((d ** -3 - 0.125) / 0.875);
-      if (d < 2.5) a += c.fresh ** 2 * (d < 1 ? 0.12 : 0.28 * Math.exp(-(((d - 1) / 0.7) ** 2))); // bright fresh ejecta
+      if (d < 2.5) a += c.fresh ** 2 * (d < 1 ? (mars ? 0 : 0.12) : 0.28 * Math.exp(-(((d - 1) / 0.7) ** 2))); // bright fresh ejecta
+      // Mars: dark sand drifted into crater floors (more in old ones), so a crater reads as a hole whatever the
+      // light; bright fresh ejecta outside the rim (a, above)
+      if (mars && d < 0.85) dark += ((c.r > m(25) ? 0.3 : 0.18) + 0.2 * (1 - c.fresh)) * smoothstep(0.85, 0.45, d);
+      // the big ones also get a bright rim (dust-free crest rock): dark floor, pale ring = a hole in any light
+      if (mars && c.r > m(25) && d > 0.75 && d < 1.35) a += 0.35 * Math.exp(-(((d - 1.02) / 0.1) ** 2));
     }
     if (mars) {
       const along = x * wx + z * wz;
       const dune = Math.sin(along / m(9) + 2.2 * fbm(x / m(60), z / m(60), 2)) * 0.5 + 0.5;
-      h += m(1.1) * dune ** 3 * (0.5 + fbm(x / m(25) + 3, z / m(25), 2));
+      h += m(1.1) * dune ** 3 * (0.5 + fbm(x / m(25) + 3, z / m(25), 2)) * fine;
+      // broad relief the 1–3 km view reads: a swell of ±15 m over ~1.2 km
+      h += (fbm(x / m(1200) - 21, z / m(1200) + 8, 2) - 0.5) * m(30);
+      const [F, R] = marsField(x, z, r);
+      if (F > 0) {
+        // big transverse dunes across the wind, ~180 m apart, ~12 m high: a rounded profile here (crest at 3/4 of
+        // the wavelength, what the grid can carry); the shader turns it into the sharp crest and slip face
+        const f = bigDunePhase(x, z) % 1;
+        h += DUNE_BIG_H * F * (f < 0.75 ? 0.5 - 0.5 * Math.cos((Math.PI * f) / 0.75) : 0.5 + 0.5 * Math.cos((Math.PI * (f - 0.75)) / 0.25));
+      }
+      if (R > 0) h += m(3) * R * (fbm(x / m(45) + 9, z / m(45) - 4, 2) - 0.35); // hummocky rock
+      for (const g of ridges) h += g(x, z, r);
     }
-    const flat = smoothstep(padRadius_u, padRadius_u * 1.7, Math.hypot(x, z)); // flat landing spot
-    return [h * flat, Math.min(a, 0.35)];
+    const flat = smoothstep(padRadius_u, padRadius_u * 1.7, r); // flat landing spot
+    return [h * flat * edgeFade(x, z), Math.min(a, 0.35), Math.min(dark, 0.35)];
   };
   const heightAt = (x, z) => sample(x, z)[0];
 
-  const SEG = 240;
   const geo = new THREE.PlaneGeometry(S, S, SEG, SEG).rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
+  const uvA = geo.attributes.uv;
   const col = new Float32Array(pos.count * 3);
+  const hs = new Float32Array(pos.count);
   const tint = tintIn ?? (mars ? [0.62, 0.36, 0.22] : [0.56, 0.55, 0.53]); // tint: linear rgb, e.g. world.surfaceColourAt
+  const kMean = mars ? 0.75 : 0.68;
+  // Mars, per vertex for the shader: dune-field weight, the small dunes' phase warp, rock-field weight
+  const marsA = mars ? new Float32Array(pos.count * 4) : null;
+  const kArr = new Float32Array(pos.count); // each vertex's albedo factor before the edge fade
+  let kW = 0;
+  let kSum = 0;
   for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const z = pos.getZ(i);
-    const [h, bright] = sample(x, z);
-    pos.setY(i, h);
+    const x = w(pos.getX(i) / half);
+    const z = w(pos.getZ(i) / half);
+    const [h, bright, dark] = sample(x, z);
+    pos.setXYZ(i, x, h, z);
+    hs[i] = h;
+    uvA.setXY(i, x / S + 0.5, 0.5 - z / S); // u along +x, v along −z (the tangent frame of the detail normals)
     const big = fbm(x / m(70) + 11, z / m(70) - 5, 3);
-    const k = (mars ? 0.75 : 0.68) + 0.4 * (big - 0.5) * (mars ? 1.2 : 1.4) + bright * (mars ? 0.4 : 1);
-    col.set([tint[0] * k, tint[1] * k, tint[2] * k], i * 3);
+    let k = kMean + 0.4 * (big - 0.5) * (mars ? 1.2 : 1.4) + bright * (mars ? 0.4 : 1);
+    if (mars) {
+      const [F, R] = marsField(x, z, Math.hypot(x, z));
+      const fade = edgeFade(x, z);
+      k *= 1 - 0.45 * F - 0.42 * R - dark;
+      marsA.set([F * fade, 2.4 * fbm(x / m(170) + 1.7, z / m(170) - 2.9, 2), R * fade, bigDuneWarp(x, z)], i * 4);
+    }
+    kArr[i] = k;
+    const wA = dw(x) * dw(z); // the vertex's share of the area (the grid is dense in the middle)
+    kW += wA;
+    kSum += wA * k;
+  }
+  // Mars: the dune and rock fields and crater floors pull the mean below kMean; match (and fade the edge to) the
+  // patch's actual mean so it is as bright as the far ground around it. The Moon keeps kMean.
+  const kAvg = mars ? kSum / kW : kMean;
+  for (let i = 0; i < pos.count; i++) {
+    const kk = kAvg + (kArr[i] - kAvg) * edgeFade(pos.getX(i), pos.getZ(i)); // the edge settles to the tint, like the far map
+    col.set([tint[0] * kk, tint[1] * kk, tint[2] * kk], i * 3);
   }
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  if (mars) geo.setAttribute("aMars", new THREE.BufferAttribute(marsA, 4));
   geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+
+  // ---- baked self-shadowing: march from each vertex toward the sun over the height grid (soft edges) ----
+  const sd = sunDir.clone().normalize();
+  const sunVis = new Float32Array(pos.count).fill(1);
+  const horiz = Math.hypot(sd.x, sd.z);
+  const tanEl = sd.y / Math.max(horiz, 1e-6);
+  const N1 = SEG + 1;
+  const hAt = (x, z) => {
+    const fx = ((winv(x) + 1) / 2) * SEG;
+    const fz = ((winv(z) + 1) / 2) * SEG; // row index grows with z (PlaneGeometry rows run −z → +z here)
+    const ix = Math.min(SEG - 1, Math.max(0, Math.floor(fx)));
+    const iz = Math.min(SEG - 1, Math.max(0, Math.floor(fz)));
+    const ax = Math.min(1, Math.max(0, fx - ix));
+    const az = Math.min(1, Math.max(0, fz - iz));
+    const a = hs[iz * N1 + ix] + (hs[iz * N1 + ix + 1] - hs[iz * N1 + ix]) * ax;
+    const b = hs[(iz + 1) * N1 + ix] + (hs[(iz + 1) * N1 + ix + 1] - hs[(iz + 1) * N1 + ix]) * ax;
+    return a + (b - a) * az;
+  };
+  if (sd.y > 0 && sd.y < 0.97 && horiz > 1e-6) {
+    const dx = sd.x / horiz;
+    const dz = sd.z / horiz;
+    const maxD = Math.min(S, m(900));
+    for (let i = 0; i < pos.count; i++) {
+      const x0 = pos.getX(i);
+      const z0 = pos.getZ(i);
+      const h0 = hs[i] + m(0.05);
+      const pen0 = spacing(x0, z0);
+      let vis = 1;
+      for (let d = m(0.6); d < maxD; d *= 1.18) {
+        const x = x0 + dx * d;
+        const z = z0 + dz * d;
+        if (Math.abs(x) > half || Math.abs(z) > half) break;
+        const excess = hAt(x, z) - (h0 + d * tanEl);
+        vis = Math.min(vis, 1 - excess / (0.03 * d + Math.max(m(0.3), 0.7 * pen0))); // penumbra: distance, grid
+        if (vis <= 0) break;
+      }
+      sunVis[i] = Math.min(1, Math.max(0, vis));
+    }
+  }
+  geo.setAttribute("sunVis", new THREE.BufferAttribute(sunVis, 1));
+
+  // ---- the ground material: anti-tiled two-scale detail, low-frequency albedo, baked sun visibility ----
   const det = detailMaps(body);
-  const tiles = S / m(4); // one detail tile per 4 m
   const albedo = det.albedo.clone();
-  albedo.repeat.set(tiles, tiles);
   albedo.needsUpdate = true;
   const normal = det.normal.clone();
-  normal.repeat.set(tiles, tiles);
   normal.needsUpdate = true;
   const groundMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: albedo, normalMap: normal, normalScale: new THREE.Vector2(1.6, 1.6), roughness: 0.97, metalness: 0 });
+  // haze: aerial perspective toward uHaze over uHazeD (1/e distance, scene units; 0 = none), Mars by default
+  const tu = { uFine: { value: m(4) }, uCoarse: { value: m(60) }, uLow: { value: m(220) }, uHalf: { value: half }, uWind: { value: new THREE.Vector2(wx, wz) }, uDuneL: { value: m(42) }, uDuneH: { value: m(4) }, uBigL: { value: DUNE_BIG_L }, uBigH: { value: DUNE_BIG_H }, uHaze: { value: mars ? skyAt(0, sd, "mars").horizon : new THREE.Color() }, uHazeD: { value: mars ? m(30000) : 0 }, uFadeA: { value: 1 } };
+  if (mars) groundMat.defines = { TERR_MARS: "" };
+  groundMat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, tu);
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute float sunVis;\nvarying float vSunVis;\nvarying vec3 vTerrP;\n#ifdef TERR_MARS\nattribute vec4 aMars;\nvarying vec4 vMars;\n#endif")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvSunVis = sunVis;\nvTerrP = position;\n#ifdef TERR_MARS\nvMars = aMars;\n#endif");
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "void main() {",
+        /* glsl */ `
+        uniform float uFine, uCoarse, uLow, uHalf, uHazeD, uFadeA;
+        uniform vec3 uHaze;
+        varying float vSunVis;
+        varying vec3 vTerrP;
+        #ifdef TERR_MARS
+        uniform vec2 uWind;
+        uniform float uDuneL, uDuneH, uBigL, uBigH;
+        varying vec4 vMars;
+        // Transverse dunes in the dune fields: a gentle stoss slope up to a sharp crest, a steep slip face down.
+        // Small ones (~40 m apart) whole; on the big ones (~180 m, rounded in the mesh) the difference between the
+        // sharp and the rounded profile. -> (dh/dx, dh/dz, small-dune phase, weight); faded when sub-pixel.
+        vec4 terrDune() {
+          float ph = dot(vTerrP.xz, uWind) / uDuneL + vMars.y;
+          float f = fract(ph);
+          float vis = vMars.x * (1.0 - smoothstep(0.12, 0.45, fwidth(ph)));
+          float slope = (f < 0.8 ? smoothstep(0.0, 0.12, f) / 0.8 : -1.0 / 0.2) * uDuneH / uDuneL * vis;
+          float pb = dot(vTerrP.xz, uWind) / uBigL + vMars.w + 1000.0;
+          float fb = fract(pb);
+          float visB = vMars.x * (1.0 - smoothstep(0.15, 0.5, fwidth(pb)));
+          float sharp = fb < 0.75 ? 1.0 / 0.75 : -1.0 / 0.25;
+          float round = fb < 0.75 ? 0.5 * PI / 0.75 * sin(PI * fb / 0.75) : -0.5 * PI / 0.25 * sin(PI * (fb - 0.75) / 0.25);
+          slope += (sharp - round) * uBigH / uBigL * visB;
+          return vec4(uWind * slope, f, vis);
+        }
+        #endif
+        float tH(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float tN(vec2 p) {
+          vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(tH(i), tH(i + vec2(1.0, 0.0)), f.x), mix(tH(i + vec2(0.0, 1.0)), tH(i + vec2(1.0, 1.0)), f.x), f.y);
+        }
+        mat2 tRot(float a) { float c = cos(a); float s = sin(a); return mat2(c, s, -s, c); }
+        // two hash-picked variants of the tile (offset + rotation), blended over a low-frequency index
+        void tVar(vec2 uv, out vec2 a, out vec2 b, out float ra, out float rb, out float wgt) {
+          float k = tN(uv * 0.13) * 6.0;
+          float ia = floor(k);
+          wgt = smoothstep(0.3, 0.7, fract(k));
+          ra = tH(vec2(ia, 1.7)) * 6.2831853;
+          rb = tH(vec2(ia + 1.0, 1.7)) * 6.2831853;
+          a = tRot(ra) * uv + vec2(tH(vec2(ia, 3.1)), tH(vec2(ia, 5.3))) * 11.0;
+          b = tRot(rb) * uv + vec2(tH(vec2(ia + 1.0, 3.1)), tH(vec2(ia + 1.0, 5.3))) * 11.0;
+        }
+        vec3 tAlb(vec2 uv) {
+          vec2 a; vec2 b; float ra; float rb; float wgt;
+          tVar(uv, a, b, ra, rb, wgt);
+          vec2 dx = dFdx(uv); vec2 dy = dFdy(uv);
+          return mix(textureGrad(map, a, tRot(ra) * dx, tRot(ra) * dy).rgb, textureGrad(map, b, tRot(rb) * dx, tRot(rb) * dy).rgb, wgt);
+        }
+        vec3 tNrm(vec2 uv) {
+          vec2 a; vec2 b; float ra; float rb; float wgt;
+          tVar(uv, a, b, ra, rb, wgt);
+          vec2 dx = dFdx(uv); vec2 dy = dFdy(uv);
+          vec3 na = textureGrad(normalMap, a, tRot(ra) * dx, tRot(ra) * dy).xyz * 2.0 - 1.0;
+          vec3 nb = textureGrad(normalMap, b, tRot(rb) * dx, tRot(rb) * dy).xyz * 2.0 - 1.0;
+          // back from the variants' rotated texture frames; the mip-averaged slopes stay un-normalized (flatter
+          // far away, as they should) and fade out once a tile spans under a few pixels
+          vec2 xy = mix(tRot(-ra) * na.xy, tRot(-rb) * nb.xy, wgt);
+          float tilesPerPx = max(length(dx), length(dy));
+          return vec3(xy * (1.0 - smoothstep(0.08, 0.35, tilesPerPx)), 1.0);
+        }
+        float tEdge() { return smoothstep(0.8 * uHalf, 0.98 * uHalf, max(abs(vTerrP.x), abs(vTerrP.z))); }
+        vec4 terrAlbedo() {
+          vec2 p = vec2(vTerrP.x, -vTerrP.z);
+          vec3 f = tAlb(p / uFine);
+          vec3 c = tAlb(p / uCoarse + 17.0);
+          float low = 1.0 + 0.12 * (tN(p / uLow) - 0.5) + 0.04 * (tN(p / (uLow * 0.37) + 5.0) - 0.5);   // ±8 %
+          vec3 a = f * (0.45 + 0.55 * c / 0.8) * low;
+          #ifdef TERR_MARS
+          vec4 dn = terrDune();
+          a *= 1.0 - dn.w * (0.3 * step(0.8, dn.z) - 0.12 * smoothstep(0.55, 0.8, dn.z) * step(dn.z, 0.8));  // dark slip faces, pale crests
+          a *= 1.0 + vMars.z * 0.3 * (tN(p / (uFine * 3.0) + 3.0) - 0.5);                                   // mottled rock fields
+          #endif
+          return vec4(mix(a, vec3(0.8), 0.7 * tEdge()), 1.0 - uFadeA * smoothstep(0.72 * uHalf, 0.97 * uHalf, length(vTerrP.xz)));
+        }
+        vec3 terrNormal() {
+          vec2 p = vec2(vTerrP.x, -vTerrP.z);
+          vec3 nf = tNrm(p / uFine);
+          vec3 nc = tNrm(p / uCoarse + 17.0);
+          // a normal map's slopes are per tile: stretched 15× the coarse layer's must flatten by the same factor,
+          // or whole 10–30 m fields tilt away from a low sun and go black
+          vec3 n = normalize(vec3(nf.xy + (uFine / uCoarse) * nc.xy, 1.0));
+          n.xy *= 1.0 - 0.7 * tEdge();
+          return n;
+        }
+        void main() {`,
+      )
+      // (onBeforeCompile sees the #include lines, not the chunks: replace the includes themselves)
+      .replace("#include <map_fragment>", "diffuseColor *= terrAlbedo();")
+      .replace("#include <normal_fragment_maps>", "vec3 mapN = terrNormal();\nmapN.xy *= normalScale;\n#ifdef TERR_MARS\nvec4 dune = terrDune();\nmapN.xy += vec2(-dune.x, dune.y);\n#endif\nnormal = normalize( tbn * mapN );")
+      .replace("#include <fog_fragment>", "#include <fog_fragment>\nif (uHazeD > 0.0) gl_FragColor.rgb = mix(gl_FragColor.rgb, uHaze, 1.0 - exp(-length(vViewPosition) / uHazeD));")
+      .replace("#include <lights_fragment_begin>", THREE.ShaderChunk.lights_fragment_begin.replace("getDirectionalLightInfo( directionalLight, directLight );", "getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= vSunVis;"));
+  };
+  groundMat.customProgramCacheKey = () => "terrain-antitile-v5";
+  groundMat.transparent = true; // the faded rim (uFadeA): onto the far ground (Mars) or the horizon ring (Moon)
   const ground = new THREE.Mesh(geo, groundMat);
+  ground.renderOrder = -1; // first among the transparent: effects above it draw over it
   ground.name = "terrain-ground";
   ground.receiveShadow = true;
-  ground.castShadow = true;
+  ground.castShadow = false; // its own shadows are baked (sunVis); the shadow map carries the lander and boulders
   ground.raycast = () => {};
 
-  // Rocks: faceted, half buried, power-law sizes, none on the landing spot. Boulders (cast shadows) cluster
-  // on fresh crater rims as ejecta blocks; pebbles (no shadow casting) scatter near the landing spot.
+  // Rocks: faceted, half buried, power-law sizes, none on the landing spot. Boulders (cast shadows) mostly
+  // around the landing zone and as ejecta blocks on fresh crater rims; pebbles (no shadow casting) near the spot.
   const rockGeo = (detail) => {
     const g = new THREE.IcosahedronGeometry(1, detail); // non-indexed: per-face normals, faceted
     const rp = g.attributes.position;
@@ -1073,7 +1420,7 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
     let placed = 0;
     for (let i = 0; i < n * 4 && placed < n; i++) {
       const [x, z] = pick();
-      if (Math.hypot(x, z) < padRadius_u * 1.5 || Math.abs(x) > S / 2 || Math.abs(z) > S / 2) continue;
+      if (Math.hypot(x, z) < padRadius_u * 1.5 || Math.abs(x) > half * 0.8 || Math.abs(z) > half * 0.8 || Math.hypot(x, z) > half * 0.7) continue;
       const s = size();
       sc.set(s * (0.8 + 0.5 * rand()), s * (0.6 + 0.4 * rand()), s * (0.8 + 0.5 * rand()));
       q.setFromEuler(e.set(rand() * 6.3, rand() * 6.3, rand() * 6.3));
@@ -1085,8 +1432,9 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
     mesh.raycast = () => {};
     return mesh;
   };
-  const rimBlocks = craters.filter((c) => c.fresh > 0.5 && c.r > m(2));
+  const rimBlocks = craters.filter((c) => c.fresh > 0.5 && c.r > m(2) && Math.hypot(c.x, c.z) < m(700));
   const NB = mars ? 380 : 520;
+  const spread = Math.min(half, zone * 1.6);
   const rocks = scatter(
     new THREE.InstancedMesh(rockGeo(1), new THREE.MeshStandardMaterial({ color: rockColor, roughness: 0.92, metalness: 0, flatShading: true }), NB),
     NB,
@@ -1097,7 +1445,7 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
         const d = c.r * (0.95 + 0.6 * rand() ** 2);
         return [c.x + Math.cos(a) * d, c.z + Math.sin(a) * d];
       }
-      return [(rand() - 0.5) * S, (rand() - 0.5) * S];
+      return [(rand() - 0.5) * 2 * spread, (rand() - 0.5) * 2 * spread];
     },
     () => m(0.15) + m(mars ? 1.4 : 1.8) * rand() ** 4,
     0.1,
@@ -1106,7 +1454,7 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
   rocks.castShadow = true;
   rocks.receiveShadow = true;
   const NP = 2600;
-  const near = Math.min(S / 2, padRadius_u * 9);
+  const near = Math.min(half, padRadius_u * 9);
   const pebbles = scatter(
     new THREE.InstancedMesh(rockGeo(0), new THREE.MeshStandardMaterial({ color: rockColor, roughness: 0.95, metalness: 0, flatShading: true }), NP),
     NP,
@@ -1121,25 +1469,47 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
   pebbles.name = "terrain-pebbles";
   pebbles.receiveShadow = true;
 
-  const sun = new THREE.DirectionalLight(mars ? 0xffe2c4 : 0xfff3e6, mars ? 2.2 : 2.8);
-  const sd = sunDir.clone().normalize();
-  sun.position.copy(sd).multiplyScalar(S * 0.6);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  const sb = Math.max(padRadius_u * 5, S * 0.25);
-  Object.assign(sun.shadow.camera, { left: -sb, right: sb, top: sb, bottom: -sb, near: 0.1, far: S * 1.5 });
-  sun.shadow.bias = -0.0004;
-  sun.shadow.normalBias = 0.02;
-  sun.target.position.set(0, 0, 0);
-
+  let sun = null;
   const object3d = new THREE.Group();
   object3d.name = `terrain:${body}`;
-  object3d.add(ground, rocks, pebbles, sun, sun.target); // the sun moves with the terrain
+  object3d.add(ground, rocks, pebbles);
+  if (sunLight) {
+    sun = new THREE.DirectionalLight(mars ? 0xffe2c4 : 0xfff3e6, mars ? 2.2 : 2.8);
+    sun.position.copy(sd).multiplyScalar(Math.min(S * 0.6, m(400)));
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    // the shadow map covers the landing zone (lander, boulders); the terrain's own shadows are baked everywhere
+    const sb = Math.max(padRadius_u * 5, Math.min(S * 0.25, m(80)));
+    Object.assign(sun.shadow.camera, { left: -sb, right: sb, top: sb, bottom: -sb, near: 0.1, far: Math.min(S * 0.6, m(400)) * 2 });
+    sun.shadow.bias = -0.0004;
+    sun.shadow.normalBias = 0.02;
+    sun.target.position.set(0, 0, 0);
+    object3d.add(sun, sun.target); // the sun moves with the terrain
+  }
   return {
     object3d,
     sun,
+    sunDir: sd.clone(),
     heightAt,
     padRadius_u,
+    craters: craters.length,
+    prewarm(renderer) {
+      for (const t of [albedo, normal]) renderer?.initTexture?.(t);
+    },
+    // mean albedo per unit tint (vertex colour × detail), for matching the far layer's brightness (world.js)
+    albedoMean: kAvg * 0.8,
+    // aerial haze toward colour over d_u (1/e distance, scene units; 0 = none); Mars has a default
+    setHaze(colour, d_u) {
+      tu.uHaze.value.copy(colour);
+      tu.uHazeD.value = d_u;
+    },
+    // scales the vertex colours: one factor, or per channel ([r, g, b] / a THREE.Color)
+    scaleAlbedo(f = 1) {
+      const k = typeof f === "number" ? [f, f, f] : f.isColor ? [f.r, f.g, f.b] : f;
+      const c = geo.attributes.color;
+      for (let i = 0; i < c.array.length; i++) c.array[i] *= k[i % 3];
+      c.needsUpdate = true;
+    },
     dispose() {
       object3d.traverse((o) => {
         if (o.geometry) o.geometry.dispose();
@@ -1154,13 +1524,58 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
 
 // ---------- ocean ----------
 
-// createOcean({ size_u, sunDir }) -> { object3d, update(dt, { sky?, sunDir? }), setSky({ zenith, horizon }),
-//   setHull({ position, length_u, width_u, yaw } | null), bob(t), dispose() }
-// One plane: normals from scrolling noise layers (calmer with distance to avoid shimmer), Fresnel reflection of
+// A ground disc out to the horizon: a centre vertex and 56 rings of 96, radii from 2 m growing geometrically to
+// radius_u (dense near the middle). planetR_u > 0 bends it down with the planet's curvature (y −= r² / 2R) so its
+// rim meets the far layer's horizon; 0 leaves it flat (the ocean bends in its shader instead).
+// inner_u > 0 leaves a hole of that radius (a ring round a local patch).
+export function horizonDisc(radius_u, planetR_u = 0, inner_u = 0) {
+  const RINGS = 56;
+  const SEGS = 96;
+  const hole = inner_u > 0;
+  const r0 = hole ? inner_u : 2 * SCALE;
+  const base = hole ? 0 : 1; // the centre vertex
+  const pos = hole ? [] : [0, 0, 0];
+  const nrm = hole ? [] : [0, 1, 0];
+  const uv = hole ? [] : [0.5, 0.5];
+  for (let k = 0; k < RINGS; k++) {
+    const r = r0 * (radius_u / r0) ** (k / (RINGS - 1));
+    const drop = planetR_u > 0 ? (r * r) / (2 * planetR_u) : 0;
+    const tilt = planetR_u > 0 ? r / planetR_u : 0;
+    for (let j = 0; j < SEGS; j++) {
+      const a = (j / SEGS) * Math.PI * 2;
+      pos.push(Math.cos(a) * r, -drop, Math.sin(a) * r);
+      nrm.push(Math.cos(a) * tilt, 1, Math.sin(a) * tilt);
+      uv.push(0.5 + (Math.cos(a) * r) / (2 * radius_u), 0.5 - (Math.sin(a) * r) / (2 * radius_u));
+    }
+  }
+  const idx = [];
+  if (!hole) for (let j = 0; j < SEGS; j++) idx.push(0, 1 + ((j + 1) % SEGS), 1 + j);
+  for (let k = 0; k < RINGS - 1; k++) {
+    for (let j = 0; j < SEGS; j++) {
+      const a = base + k * SEGS + j;
+      const b = base + k * SEGS + ((j + 1) % SEGS);
+      idx.push(a, b, a + SEGS, b, b + SEGS, a + SEGS);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+// createOcean({ size_u, sunDir, radius_u?, planetR_u? }) -> { object3d, update(dt, { sky?, sunDir? }),
+//   setSky({ zenith, horizon }), setHull({ position, length_u, width_u, yaw } | null), bob(t), dispose() }
+// One surface: a square plane of size_u, or with radius_u a disc out to the horizon (rings spaced
+// geometrically from the centre, curving down with the planet's radius planetR_u, so it meets the far layer's
+// horizon with no gap; keep the camera's far plane beyond the horizon distance). Normals from scrolling noise
+// layers (calmer with distance to avoid shimmer), Fresnel reflection of
 // the sky colours (skyAt), a tight sun-glint path, a deep-water body colour, foam where the swell meets the
 // drone ship's hull (setHull), scene fog. bob(t) gives the ship's heave and roll: put the ship at
 // y = ship.freeboard_u + bob.y (deck above the water) with rotation (bob.rx, yaw, bob.rz). 1 draw.
-export function createOcean({ size_u = 4000, sunDir = DEFAULT_SUN } = {}) {
+export function createOcean({ size_u = 4000, sunDir = DEFAULT_SUN, radius_u = 0, planetR_u = 6371000 * SCALE } = {}) {
   const uniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.fog,
     {
@@ -1174,15 +1589,19 @@ export function createOcean({ size_u = 4000, sunDir = DEFAULT_SUN } = {}) {
       uHull: { value: new THREE.Vector4(0, 0, 0, 0) }, // centre x, z, half length, half width (0: no hull)
       uHullYaw: { value: 0 },
       uFoamW: { value: 3 * SCALE }, // foam band width outside the hull (visual)
+      uCurve: { value: radius_u > 0 ? 1 / (2 * planetR_u) : 0 }, // drop = r² / 2R
     },
   ]);
   const mat = new THREE.ShaderMaterial({
     uniforms,
     vertexShader: /* glsl */ `
       #include <fog_pars_vertex>
+      uniform float uCurve;
       varying vec3 vWorldPos;
       void main() {
-        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vec3 p = position;
+        p.y -= dot(p.xz, p.xz) * uCurve;   // the planet's curvature (0 for the flat square)
+        vec4 wp = modelMatrix * vec4(p, 1.0);
         vWorldPos = wp.xyz;
         vec4 mvPosition = viewMatrix * wp;
         gl_Position = projectionMatrix * mvPosition;
@@ -1240,7 +1659,9 @@ export function createOcean({ size_u = 4000, sunDir = DEFAULT_SUN } = {}) {
       }`,
     fog: true,
   });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size_u, size_u).rotateX(-Math.PI / 2), mat);
+  const geo = radius_u > 0 ? horizonDisc(radius_u) : new THREE.PlaneGeometry(size_u, size_u).rotateX(-Math.PI / 2);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = radius_u <= 0;
   mesh.name = "ocean";
   mesh.receiveShadow = false;
   mesh.raycast = () => {};

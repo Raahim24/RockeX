@@ -38,6 +38,23 @@ body {
   touch-action: none;
 }
 
+/* Daylight in flight (main.js toggles body.bright-sky): a faint dark scrim behind the HUD line and the legend. */
+.hud,
+.brand p.keys {
+  transition: background 600ms ease, box-shadow 600ms ease;
+  border-radius: 8px;
+}
+body.bright-sky .hud,
+body.bright-sky .brand {
+  background: rgba(6, 8, 12, 0.72);
+  box-shadow: 0 0 0 8px rgba(6, 8, 12, 0.72);
+  border-radius: 999px;
+}
+body.bright-sky .brand p.keys {
+  background: none;
+  box-shadow: none;
+}
+
 /* The fade through black between the ending's scenes (opacity from choreo.state.cut). */
 .cut {
   position: fixed;
@@ -49,8 +66,8 @@ body {
 
 .brand {
   position: fixed;
-  top: 28px;
-  left: 32px;
+  top: 22px;
+  left: 28px; /* the ROCKEX wordmark, top-left (user, round 25) */
   pointer-events: none;
   user-select: none;
 }
@@ -60,12 +77,17 @@ body {
   font-size: 22px;
   font-weight: 650;
   letter-spacing: -0.01em;
+  line-height: 0;
 }
 
 .brand-logo {
   display: block;
-  width: 200px;
-  height: auto;
+  width: 155px; /* the wordmark's 980 × 190 at 30 px tall */
+  height: 30px;
+  background: #fff;
+  -webkit-mask: var(--logo) left center / contain no-repeat;
+  mask: var(--logo) left center / contain no-repeat;
+  mask-mode: luminance;
 }
 
 .brand p {
@@ -77,7 +99,7 @@ body {
 /* Shortcut legend under the title: 2 rows of key + action. */
 .brand p.keys {
   display: grid;
-  grid-template-columns: repeat(5, max-content);
+  grid-template-columns: repeat(5, max-content); /* 10 keys: 2 rows of 5 */
   gap: 7px 18px;
   margin-top: 10px;
 }
@@ -186,7 +208,7 @@ kbd {
   padding: 0 5px;
   border: 1px solid var(--hairline);
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 15px;
   color: var(--text-2);
   white-space: nowrap;
@@ -366,10 +388,13 @@ kbd {
   transition: background 140ms;
 }
 
-:is(.detail, .rockets) .opt:hover:not(:disabled),
-:is(.detail, .rockets) .opt:focus-visible {
+:is(.detail, .rockets) .opt:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.06);
-  outline: none;
+}
+
+:is(.detail, .rockets) .opt:focus-visible {
+  outline: 2px solid var(--holo);
+  outline-offset: -2px;
 }
 
 :is(.detail, .rockets) .opt[aria-current="true"] {
@@ -426,73 +451,6 @@ kbd {
   -webkit-backdrop-filter: blur(12px);
 }
 
-/* Option shelf cards: see-through so the parts lead; a card opens (solid, a touch larger, one more line of facts)
-   on hover, keyboard focus, hovering its 3D part, or while Grok is talking about it (data-focus, set by the app). */
-.shelf-label {
-  position: absolute;
-  transform: translate(-50%, 0);
-  transform-origin: 50% 0;
-  pointer-events: auto;
-  cursor: pointer;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  padding: 4px 10px;
-  background: rgba(11, 13, 18, 0.3);
-  color: rgba(246, 247, 251, 0.82);
-  font: 600 12px/1.3 var(--font);
-  text-align: center;
-  white-space: nowrap;
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-  transition: background 150ms, border-color 150ms, color 150ms, scale 150ms;
-}
-
-.shelf-label .sl-n {
-  opacity: 0.6;
-}
-
-.shelf-label .sl-effect,
-.shelf-label .sl-warn,
-.shelf-label .sl-more {
-  display: block;
-  font-weight: 500;
-}
-
-.shelf-label .sl-effect {
-  color: rgba(169, 173, 184, 0.85);
-}
-
-.shelf-label .sl-warn {
-  color: #ff9a76;
-}
-
-.shelf-label .sl-more {
-  display: none;
-  margin-top: 4px;
-  padding-top: 4px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  color: var(--text-2);
-}
-
-.shelf-label:is(:hover, :focus-visible, [data-hover], [data-focus]) {
-  z-index: 1;
-  background: rgba(11, 13, 18, 0.9);
-  border-color: rgba(255, 255, 255, 0.32);
-  color: var(--text);
-  scale: 1.06;
-  outline: none;
-}
-
-.shelf-label:is(:hover, :focus-visible, [data-hover], [data-focus]) .sl-more {
-  display: block;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .shelf-label {
-    transition: none;
-  }
-}
-
 .rockets ul {
   list-style: none;
   margin: 0;
@@ -503,6 +461,58 @@ kbd {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The destination row (main.js rocketsHtml): Orbit · GTO · Moon · Mars for the current build. */
+.rockets li.dest-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--hairline);
+}
+.rockets .dest-btns {
+  display: flex;
+  gap: 4px;
+}
+.rockets .dest {
+  padding: 4px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rockets .dest:hover,
+.rockets .dest:focus-visible {
+  color: var(--text);
+  border-color: var(--holo);
+  outline: none;
+}
+.rockets .dest[aria-pressed="true"] {
+  color: var(--text);
+  border-color: var(--holo);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* User, round 25: only the ROCKEX logo top-left (the keys still work); the readiness panel only for the flight
+   result unless ?panel=1 (main.js body.rdy-off). */
+.brand p.keys,
+.brand .sky-toggles {
+  display: none;
+}
+body.rdy-off .rdy {
+  display: none !important;
+}
+
+.rockets li.more {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--hairline);
 }
 
 /* Landing page: a big title and one button over the planet; the rest of the UI waits (body.landing, until the
@@ -519,6 +529,13 @@ body.landing .bar,
 body.landing .detail {
   opacity: 0;
   pointer-events: none;
+}
+
+body.landing .bar {
+  visibility: hidden;
+  transition:
+    opacity 600ms ease,
+    visibility 0s linear 600ms;
 }
 
 /* The atmosphere's glow during the landing dive (opacity from ui/landing.js); over the canvas, under the UI. */
@@ -547,13 +564,6 @@ body.landing .detail {
   font-weight: 650;
   letter-spacing: -0.03em;
   line-height: 1;
-}
-
-.landing-logo {
-  display: block;
-  width: clamp(260px, 48vw, 680px);
-  height: auto;
-  filter: drop-shadow(0 4px 24px rgba(0, 0, 0, 0.55));
 }
 
 .landing-go {
@@ -649,6 +659,7 @@ body.landing .detail {
 
 /* HUD */
 .hud {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7); /* readable over the day side of the Earth in flight */
   position: fixed;
   right: 32px;
   top: 32px;
@@ -656,6 +667,7 @@ body.landing .detail {
   font-size: 12px;
   color: var(--text-2);
   text-align: right;
+  max-width: calc(100vw - 560px); /* wraps before the key legend under the title */
   pointer-events: none;
   user-select: none;
 }
@@ -673,21 +685,42 @@ body.landing .detail {
   color: var(--nogo);
 }
 
+@media (max-width: 1100px) {
+  .hud {
+    top: 124px;
+    left: 32px;
+    right: 32px;
+    max-width: none;
+    text-align: left;
+  }
+}
+
 @media (max-width: 760px) {
   .brand {
     top: 16px;
     left: 16px;
-    right: 16px;
+    right: auto;
   }
   .brand h1 {
     font-size: 18px;
+  }
+  .brand-logo {
+    width: 114px;
+    height: 22px;
   }
   .brand p,
   .brand p.keys {
     display: none;
   }
   .hud {
-    display: none;
+    top: 44px;
+    left: 16px;
+    right: 16px;
+    font-size: 11px;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
   }
   .detail {
     left: 12px;
@@ -719,6 +752,18 @@ body.landing .detail {
   }
 }
 
+/* Touch: number buttons and source links get a 24 px tall hit box; the negative margin keeps the rows' layout. */
+@media (pointer: coarse) {
+  .detail .num {
+    padding: 4px 0;
+    margin: -4px 0;
+  }
+  .detail .src a {
+    padding: 6px 0;
+    margin: -6px 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .detail,
   .detail.open,
@@ -726,3 +771,96 @@ body.landing .detail {
     transition: none;
   }
 }
+
+/* Day/Night and Clear/Cloudy toggles under the key legend (main.js). */
+.sky-toggles {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  pointer-events: auto;
+}
+.sky-toggles button {
+  padding: 4px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: rgba(10, 12, 18, 0.55);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sky-toggles button:hover,
+.sky-toggles button:focus-visible {
+  color: var(--text);
+  outline: none;
+  border-color: var(--holo);
+}
+
+/* From the team app (PR #39): option shelf cards */
+/* Option shelf cards: see-through so the parts lead; a card opens (solid, a touch larger, one more line of facts)
+   on hover, keyboard focus, hovering its 3D part, or while Grok is talking about it (data-focus, set by the app). */
+.shelf-label {
+  position: absolute;
+  transform: translate(-50%, 0);
+  transform-origin: 50% 0;
+  pointer-events: auto;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 4px 10px;
+  background: rgba(11, 13, 18, 0.3);
+  color: rgba(246, 247, 251, 0.82);
+  font: 600 12px/1.3 var(--font);
+  text-align: center;
+  white-space: nowrap;
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  transition: background 150ms, border-color 150ms, color 150ms, scale 150ms;
+}
+
+.shelf-label .sl-n {
+  opacity: 0.6;
+}
+
+.shelf-label .sl-effect,
+.shelf-label .sl-warn,
+.shelf-label .sl-more {
+  display: block;
+  font-weight: 500;
+}
+
+.shelf-label .sl-effect {
+  color: rgba(169, 173, 184, 0.85);
+}
+
+.shelf-label .sl-warn {
+  color: #ff9a76;
+}
+
+.shelf-label .sl-more {
+  display: none;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-2);
+}
+
+.shelf-label:is(:hover, :focus-visible, [data-hover], [data-focus]) {
+  z-index: 1;
+  background: rgba(11, 13, 18, 0.9);
+  border-color: rgba(255, 255, 255, 0.32);
+  color: var(--text);
+  scale: 1.06;
+  outline: none;
+}
+
+.shelf-label:is(:hover, :focus-visible, [data-hover], [data-focus]) .sl-more {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shelf-label {
+    transition: none;
+  }
+}
+

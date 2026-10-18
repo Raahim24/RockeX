@@ -1,66 +1,79 @@
 // Launch complex around the pad (Kennedy LC-39 style, generic: no logos, no text). Supersedes anchors.js
 // visually and keeps its API shape so the integrator can swap one for the other.
 //
-//   createLaunchComplex({ baseRadius_u, stackHeight_u, scale, manifest, lightingSun, cameraAzimuth?, spotLights?, pad? })
-//     -> { object3d, setVisible(bool), update(t), setLook("painted" | "xray"), setRssAngle(deg),
-//          tower, arms, person, human, masts, waterTower, rss, towerFrame, towerHeight_u, lamps, cableTray, trench,
-//          hardstand, apron, lights, groundY_u, hardstandY_u, radius_u, fogRange(cameraDistance), adoptPad(pad),
-//          dispose() }
+//   createLaunchComplex({ baseRadius_u, stackHeight_u, scale = SCALE, manifest, lightingSun,
+//                         cameraAzimuth = 0.58, spotLights = true, pad = null, look = "minimal" })
+//     -> { object3d, setVisible(bool), update(t), setLook("painted" | "xray"), setRssAngle(deg), dispose(),
+//          tower, arms, person (= human), masts, waterTower, rss, towerFrame, towerHeight_u, lamps, lights,
+//          cableTray, trench, hardstand, apron, groundY_u, hardstandY_u, radius_u, height_u, rssAngle, rssMaxDeg,
+//          rssInfo, fogRange(cameraDistance), adoptPad(padOrGroup) }
+//   Same arguments as createAnchors (scale: units per metre; manifest: layout.js PartSpecs for the arm heights and
+//   the vehicle's radius; lightingSun: Vector3 toward the sun or a light (position − target), default night).
 //
 // What it builds (1 scene unit = 4 m at SCALE 0.25; m() below turns metres into units):
-//   (1) fixed service structure (FSS, `tower`): square red-oxide lattice, 1.15 × the stack height, 10-14 levels of
-//       crossbeams (one InstancedMesh) with grating floors, 9 columns, X-bracing, a clad elevator shaft, stairs,
-//       vertical propellant lines and a hammerhead crane with its antenna on top. It stands on the hardstand at the
-//       anchors.js azimuth family (left of the home view) with its local +X pointing away from the rocket, origin at
-//       deck level, like anchors.js. Umbilical `arms` = one per stage joint (interstage middle) and the payload
+//   (1) fixed service structure (FSS, `tower`, a Group): square red-oxide lattice, 1.15 × the stack height, 10–14
+//       levels of crossbeams (one InstancedMesh) with grating floors, 9 columns, X/K bracing, a clad elevator shaft,
+//       stairs, propellant lines up its outer face and a hammerhead crane (jib parked pointing away from the
+//       rocket: nothing over the flight path) with an antenna on top. It stands on the
+//       hardstand left of the home view and 24° behind (anchors.js stood 20° behind), local +x pointing away from
+//       the rocket, origin at deck level. Umbilical `arms` = one per stage joint (interstage middle) and the payload
 //       adapter, each { mesh, y_u, reach_u, partId } with the mesh origin on its hinge at the tower face, so the
-//       director swings them with mesh.rotation.y (as with anchors.js).
-//   (2) rotating service structure (RSS, `rss`, a Group child of `tower`): hinged at the FSS base on the side away
-//       from the camera; setRssAngle(deg), 0 = parked (default, behind the FSS) … 120 = mated against the vehicle
-//       (its inner face then clears the widest part over its span). Clear of the arms' ±70° swing when parked.
-//   (3) water tower (sound suppression) 1.5 × the FSS height from the pad axis, its roof at 0.85 × the FSS height,
-//       with a down pipe along the apron, up the hardstand and into the pad's plinth wall.
-//   (4) four lightning towers at the hardstand corners, tops at 1.3 × the stack height, with sagging catenary wires
-//       between their tops and down to ground anchors (LineSegments).
-//   (5) the hardstand: a raised concrete platform (top at y = −plinthH, the pad's own ground level, so the
-//       existing createPad deck stays at y = 0 with its padRadius) rising 13 m above the apron, grass slopes, a
-//       crawlerway ramp leaving behind the pad (gravel lanes, grass median, the pad's rails continued down it).
+//       director swings them with mesh.rotation.y as before.
+//   (2) rotating service structure (RSS, `rss`, a Group child of `tower`, hinged just outboard of the FSS's back
+//       corner): setRssAngle(deg) 0 = parked (default; behind the FSS from the home view) … 120 = mated (its open
+//       side then passes the widest part over its span with a 1 m gap). A solver widens the hinge offset until the
+//       body clears the FSS at every angle, the arms' swing when parked and the arms at rest when mated; its support
+//       column stays off the pad deck (rssInfo reports the result).
+//   (3) water tower (sound suppression) 1.5 × the FSS height from the pad axis (never on the hardstand for very
+//       short stacks), roof at 0.85 × the FSS height, with a down pipe along the apron, up the hardstand slope,
+//       up the plinth wall and onto the deck edge.
+//   (4) four lightning towers near the hardstand corners, tops at 1.3 × the stack height, with sagging catenary
+//       wires between the tops and down to ground anchors (LineSegments). Kept clear of the director's low pad
+//       camera ray (choreo.js padCamPose: tower azimuth ± 1.15 rad).
+//   (5) the hardstand: a raised concrete platform whose top is the pad's own ground level (y = −plinthH), so the
+//       createPad deck stays at y = 0 with its padRadius; 13 m above the apron, grass slopes, a crawlerway ramp
+//       leaving behind the pad (gravel lanes, grass median, the pad's rails continued down it).
 //   (6) the flame trench extended from the pad's plinth exit: a channel cut through the hardstand down to grade,
-//       flared wing walls, an exit deflector, scorch on the channel, the hardstand edge and a fan on the apron.
+//       flared wing walls, an exit deflector; scorch on the channel, along the hardstand edge and fanning out on
+//       the apron (shader).
 //   (7) propellant farm: two horizontal tanks and two spheres behind an earth berm, a pipe rack (instanced bents)
 //       to the hardstand and up to the FSS.
-//   (8) floodlight banks on the lightning towers and the FSS (instanced lamp heads with lit faces, glow sprites as
-//       Points, faint additive beams), red obstruction beacons that blink, and up to 2 warm SpotLights (spotLights:
-//       true; no shadows). Night by default; a lightingSun above the horizon dims them.
+//   (8) floodlight banks on the lightning towers and the FSS (instanced lamp heads with lit lenses, glow sprites as
+//       Points, faint additive beams), blinking red obstruction beacons, and 2 warm SpotLights (no shadows;
+//       spotLights: false for none). A lightingSun above the horizon dims all of it.
 //   (9) perimeter fence (instanced posts + wire lines), light poles (instanced), service buildings (boxes with roof
-//       lines, lit windows: an integration hangar at the foot of the ramp, a pad terminal room, a pump house, a
-//       guard house, farm shelters).
-//  (10) the apron: a 1.5 km plane with a faint concrete texture, macro stains, darkening away from the pad and
-//       warm light pools under the floodlights (one shader hook shared by the ground pieces), fog on.
+//       lines, lit windows): an integration hangar at the foot of the ramp, a pad terminal room, a generator shed,
+//       a pump house, a guard house, a farm shelter.
+//  (10) the apron: a 1.5 km plane with a faint concrete texture, macro stains, darkening away from the pad (night:
+//       only the pad is lit) and warm light pools under the floodlights, fog on. The structures share the same
+//       night falloff (shader hooks on the painted materials).
 //   Plus the 1.8 m person on the deck (as anchors.js) for scale.
 //
-// Looks: painted PBR by default (vertex-coloured steel and cladding, textured concrete/gravel, faint peach edge
-// lines: 0.15 on solid structures, 0.07 on dense lattices) and the x-ray look (dark steel, dark ground, peach lines
-// at 0.35) through mesh.userData.looks twins, so parts.js setPropLook(root, look) switches it like the pad;
-// setLook(look) does that plus the lights. Same draw count in both looks.
-// Draws: ~40 (Falcon 9, 2 arms; ≤ 110 for every preset, see scripts/check-complex.mjs). Shadows: only the FSS (+
-// beams, arms, RSS), the water tower and the buildings cast; the ground pieces receive. Nothing is pickable
-// (raycast no-op, userData.nonPickable = true). Every material has fog on.
+// Looks: painted PBR by default (vertex-coloured steel and cladding, textured concrete / gravel, faint peach edge
+// lines at 0.15 on solid structures and 0.07 on dense lattices) and the x-ray look (dark steel, dark ground, peach
+// lines at 0.35, lattices 0.18) through mesh.userData.looks twins, so parts.js setPropLook(root, look) switches it
+// like the pad; setLook(look) does that and dims the lights. Same draw count in both looks.
+// Budget: 34 draws (Falcon 9, 2 arms) to 36 (Saturn V, 3 arms), ≤ 110 for every preset; rebuild ~3 ms (node).
+// Shadows: only the FSS (+ crossbeams, arms, RSS), the water tower and the buildings cast; the hardstand, trench
+// and roads receive (the apron does not: it is matte Lambert for fill cost). Nothing is pickable (raycast no-op,
+// userData.nonPickable = true). Every material has fog on. See scripts/check-complex.mjs and complex-harness.html.
 //
 // Integration notes (main.js is not touched here):
 //   - Add object3d under the pad group (as anchors.js). On "added" to a parent named "pad" the complex adopts it:
 //     it hides the pad's own ground disc ("pad-ground") and polar grid (they would float above the lowered apron
-//     and z-fight with the hardstand top) and lowers an "fx-ground-map" sibling to just under the apron. dispose()
-//     and setVisible(false) restore them. adoptPad(padOrGroup) does the same explicitly.
-//   - The builder's fog band (main.js: dist ± a few stack radii) hides everything past the pad; fogRange(dist)
-//     returns a band that shows the complex ({ near, far }, scene units).
-//   - The FSS is a fixed structure: drive the arms (mesh.rotation.y) but not tower.rotation.z (the anchors.js
-//     strongback lean would tip the whole FSS).
+//     and z-fight with the hardstand top) and sinks an "fx-ground-map" sibling under the apron. dispose() and
+//     setVisible(false) restore them; adoptPad(padOrGroup) does the same explicitly.
+//   - The builder's fog band (main.js: dist − 0.6 R … dist + 6 R, R = stack radius) blacks out everything a few
+//     units past the rocket; fogRange(dist) returns a band that shows the complex ({ near, far }, scene units).
+//   - The FSS is fixed: drive the arms (mesh.rotation.y), not tower.rotation.z (the anchors.js strongback lean
+//     would tip the whole FSS). tower.visible = false hides the FSS, arms and RSS; setVisible(false) hides all
+//     (the 2 spots stay in the scene at intensity 0, so the light count never changes; `visible` reads it back).
 // Sizes are visual proportions (named constants below) or real-world orders of magnitude for a generic pad; none
 // is shown on screen as a fact.
 import * as THREE from "three";
 import { SCALE } from "./layout.js";
 import { LOOK, disposeLooks, padLayout, paintProp, peachLineMaterial, propMaterial, propMaterials, setPropLook } from "./parts.js";
+import { horizonDisc } from "./planet.js";
 
 // ---------- visual proportions (shape only, never shown as facts) ----------
 const TOWER_SHARE = 1.15; // FSS lattice top / stack height
@@ -78,7 +91,6 @@ const RAMP_GRADE = 0.075; // crawlerway ramp
 const APRON_M = 1500;
 const RSS_SPAN = [0.45, 0.92]; // RSS body, share of the stack height
 const RSS_MAX_DEG = 120;
-const ARM_SWING_DEG = 70; // the director's arm swing (choreo.js), kept clear of the parked RSS
 
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
@@ -276,6 +288,174 @@ function nightHook(shader) {
 const nightKey = () => "complex-night-v1";
 
 let SH = null;
+// ---------- (11) the coast (round 22): the site's shore out to the horizon ----------
+// One disc (planet.js horizonDisc, curving with the Earth) just under the apron, its middle cut away under the
+// apron: the Atlantic ~1.4 km east of the pad (wave normals at two scales, Fresnel toward a sky reflection, sun
+// glitter, a surf line, shallow water lighter and greener), beach, a dune line and scrub inland, a lagoon band
+// ~4 km west (calm water), a haze toward the horizon colour; it fades out as the camera climbs past ~3–9 km (the
+// far layer takes over). Lit from the sky recipe (setSky / setDaylight), not by scene lights. Visual model:
+// every distance and colour est.
+const COAST_VERT = /* glsl */ `
+  #include <common>
+  #include <fog_pars_vertex>
+  varying vec3 vW;
+  varying vec3 vWorld;
+  void main() {
+    vW = position;
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vWorld = wp.xyz;
+    vec4 mvPosition = viewMatrix * wp;
+    gl_Position = projectionMatrix * mvPosition;
+    #include <fog_vertex>
+  }
+`;
+const COAST_FRAG = /* glsl */ `
+  #include <common>
+  #include <fog_pars_fragment>
+  uniform float uTime, uM, uApronR, uDay, uCloudy, uFadeLo, uFadeHi;
+  uniform vec3 uSun, uSunCol, uAmb, uSky, uHorizon;
+  varying vec3 vW;
+  varying vec3 vWorld;
+  // (cells wrap every 1024: the hash keeps its precision kilometres out)
+  float cH(vec2 p) { p = mod(p, 1024.0); return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float cN(vec2 p) {
+    vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cH(i), cH(i + vec2(1.0, 0.0)), f.x), mix(cH(i + vec2(0.0, 1.0)), cH(i + vec2(1.0, 1.0)), f.x), f.y);
+  }
+  // wave height (metres-ish) at p (metres): swell, wind waves, ripples drifting with time
+  float waves(vec2 p, float calm, float fine) {
+    float a = cN(p / 22.0 + vec2(uTime * 0.35, uTime * 0.12));
+    float b = cN(p / 7.0 + vec2(-uTime * 0.5, uTime * 0.3));
+    float c = cN(p / 140.0 + vec2(uTime * 0.05, -uTime * 0.03));
+    return (a * 0.6 * fine + b * 0.18 * fine + c * 1.6) * calm;
+  }
+  void main() {
+    if (length(vW.xz) < uApronR) discard;
+    vec2 pm = vW.xz / uM;                                   // metres, +x east, +y south
+    float shore = 1400.0 + 260.0 * sin(pm.y / 3100.0) + 90.0 * (cN(vec2(3.0, pm.y / 700.0)) - 0.5);
+    float s = pm.x - shore;                                 // > 0: the Atlantic
+    float lag0 = -3600.0 + 200.0 * sin(pm.y / 2300.0 + 1.0);
+    float lag = min(pm.x - (lag0 - 1400.0), lag0 - pm.x);  // > 0: the lagoon band
+    float water = max(s, lag);
+    vec3 V = normalize(cameraPosition - vWorld);
+    float dist = length(cameraPosition - vWorld);
+    float fw = length(fwidth(pm));                          // metres per pixel
+    vec3 sunLit = uSunCol * max(uSun.y, 0.0) * uDay + uAmb;
+    vec3 col;
+    if (water > 0.0) {
+      float calm = lag > 0.0 ? 0.35 : 1.0;
+      float fine = 1.0 - smoothstep(2.0, 12.0, fw);        // ripples fade once sub-pixel
+      float swell = 1.0 - smoothstep(20.0, 90.0, fw);
+      float h0 = waves(pm, calm, fine);
+      vec2 g = vec2(waves(pm + vec2(0.6, 0.0), calm, fine) - h0, waves(pm + vec2(0.0, 0.6), calm, fine) - h0) / 0.6;
+      g *= swell;
+      vec3 N = normalize(vec3(-g.x * 2.5, 1.0, -g.y * 2.5));
+      float F = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+      vec3 R = reflect(-V, N);
+      vec3 sky = mix(uHorizon, uSky, smoothstep(0.0, 0.35, R.y));
+      float shallow = lag > 0.0 ? 0.5 : 1.0 - smoothstep(0.0, 600.0, s);
+      vec3 body = mix(vec3(0.007, 0.032, 0.07), vec3(0.02, 0.11, 0.12), shallow);
+      col = mix(body * sunLit, sky, F);
+      float rs = max(dot(R, uSun), 0.0);
+      col += uSunCol * (pow(rs, 400.0) * 40.0 + pow(rs, 60.0) * 0.6) * uDay * (1.0 - 0.85 * uCloudy);
+      // surf: a broken white line where the waves reach the beach
+      float surf = lag > 0.0 ? 0.0 : (1.0 - smoothstep(0.0, 25.0, s)) * (0.5 + 0.5 * cN(pm / 9.0 + uTime * 0.4));
+      col = mix(col, vec3(0.85, 0.88, 0.9) * sunLit, surf * 0.8);
+    } else {
+      float e = -s;                                         // metres inland from the ocean shore
+      float n1 = mix(cN(pm / 45.0), 0.5, smoothstep(12.0, 40.0, fw));       // mottling fades once sub-pixel
+      float n2 = mix(cN(pm / 330.0 + 7.0), 0.5, smoothstep(90.0, 300.0, fw));
+      vec3 scrub = mix(vec3(0.1, 0.12, 0.06), vec3(0.17, 0.155, 0.095), n1 * 0.6 + n2 * 0.4);
+      // patches a few hundred metres across: dry sandy scrub, darker wet hammocks
+      float n3 = mix(cN(pm / 900.0 + 11.0), 0.5, smoothstep(250.0, 800.0, fw));
+      scrub = mix(scrub, vec3(0.2, 0.18, 0.11), smoothstep(0.6, 0.75, n3));
+      scrub = mix(scrub, vec3(0.045, 0.065, 0.035), 1.0 - smoothstep(0.25, 0.38, n3));
+      // sandy tracks: a loose grid of wandering dirt roads (~1.8 × 2.3 km), gone once thinner than a pixel
+      float tz = abs(fract(pm.y / 1800.0 + 0.08 * cN(vec2(pm.x / 900.0, 5.0))) - 0.5) * 1800.0;
+      float tx = abs(fract(pm.x / 2300.0 + 0.08 * cN(vec2(9.0, pm.y / 900.0))) - 0.5) * 2300.0;
+      float track = (1.0 - smoothstep(2.5, 5.0, min(tz, tx))) * (1.0 - smoothstep(4.0, 14.0, fw));
+      scrub = mix(scrub, vec3(0.45, 0.4, 0.3), track * 0.8);
+      vec3 sand = vec3(0.62, 0.56, 0.44);
+      float dune = smoothstep(55.0, 70.0, e) * (1.0 - smoothstep(130.0, 190.0, e + 40.0 * (n1 - 0.5)));
+      vec3 alb = mix(scrub, mix(sand, scrub, smoothstep(0.45, 0.7, n1)), dune);
+      alb = mix(alb, sand * 1.08, 1.0 - smoothstep(50.0, 62.0, e));     // the beach
+      alb = mix(alb, sand * 0.7, 1.0 - smoothstep(0.0, 14.0, e));       // wet sand
+      alb = mix(alb, vec3(0.08, 0.1, 0.06), 1.0 - smoothstep(0.0, 60.0, -lag)); // marsh on the lagoon banks
+      float crest = smoothstep(60.0, 75.0, e) * (1.0 - smoothstep(75.0, 95.0, e)) * max(uSun.x, 0.0);
+      col = alb * (1.0 + 0.25 * crest) * sunLit;
+    }
+    float hz = 1.0 - exp(-dist / (uM * mix(26000.0, 9000.0, uCloudy)));
+    col = mix(col, uHorizon, hz);
+    gl_FragColor = vec4(col, 1.0 - smoothstep(uFadeLo, uFadeHi, cameraPosition.y - vWorld.y));
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+    #include <fog_fragment>
+  }
+`;
+const DAY_SUN = new THREE.Vector3(-0.34, 0, 0.94).normalize().multiplyScalar(Math.cos((27 * Math.PI) / 180)).setY(Math.sin((27 * Math.PI) / 180));
+function createCoast({ m, y, apronR }) {
+  const u = {
+    uTime: { value: 0 },
+    uM: { value: m(1) },
+    uApronR: { value: apronR },
+    uDay: { value: 1 },
+    uCloudy: { value: 0 },
+    uFadeLo: { value: m(2500) },
+    uFadeHi: { value: m(9000) },
+    uSun: { value: DAY_SUN.clone() },
+    uSunCol: { value: new THREE.Color(1.0, 0.91, 0.78).multiplyScalar(4.8 / Math.PI) },
+    uAmb: { value: new THREE.Color(0.38, 0.55, 0.92).multiplyScalar((0.55 / Math.PI) * 1.6) },
+    uSky: { value: new THREE.Color(0.07, 0.21, 0.64) },
+    uHorizon: { value: new THREE.Color(0.5, 0.65, 0.86) },
+  };
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {},
+    vertexShader: COAST_VERT,
+    fragmentShader: COAST_FRAG,
+    fog: false, // its own haze to the horizon: main's builder fog band (a few stack heights) would swamp it
+    transparent: true, // only while it fades out with height
+  });
+  Object.assign(mat.uniforms, u);
+  const R_KM = 6371;
+  const mesh = new THREE.Mesh(horizonDisc(m(120000), m(R_KM * 1000)), mat);
+  mesh.name = "complex-coast";
+  mesh.position.y = y;
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -1; // first among the transparent: never over the effects above it
+  mesh.raycast = () => {};
+  mesh.userData.nonPickable = true;
+  const night = { sky: new THREE.Color(0.0015, 0.002, 0.005), horizon: new THREE.Color(0.008, 0.022, 0.07), amb: new THREE.Color(0.56, 0.65, 0.78).multiplyScalar(0.02) };
+  return {
+    mesh,
+    uniforms: u,
+    // the recipe from world.setSky (colours, sun, cloud) or just day / night
+    setSky(r) {
+      const day = r.time === "day" || r.time === "dusk"; // dusk: a low warm sun, a glitter line on the dark sea
+      u.uDay.value = day ? 1 : 0;
+      u.uCloudy.value = r.weather === "cloudy" ? 1 : 0;
+      if (day) {
+        u.uSun.value.copy(r.sunDir).normalize();
+        u.uSunCol.value.copy(r.key.color).multiplyScalar(r.key.intensity / Math.PI);
+        u.uAmb.value.copy(r.hemi.sky).multiplyScalar((r.hemi.intensity / Math.PI) * 1.6);
+        u.uSky.value.copy(r.sky?.zenith ?? r.fog.color);
+        u.uHorizon.value.copy(r.sky?.horizon ?? r.fog.color);
+      } else this.setDaylight(false);
+    },
+    setDaylight(day) {
+      u.uDay.value = day ? 1 : 0;
+      if (!day) {
+        u.uAmb.value.copy(night.amb);
+        u.uSky.value.copy(night.sky);
+        u.uHorizon.value.copy(night.horizon);
+      } else if (u.uSky.value.equals(night.sky)) {
+        u.uAmb.value.setRGB(0.38, 0.55, 0.92).multiplyScalar((0.55 / Math.PI) * 1.6);
+        u.uSky.value.setRGB(0.07, 0.21, 0.64);
+        u.uHorizon.value.setRGB(0.5, 0.65, 0.86);
+      }
+    },
+  };
+}
+
 function shared() {
   if (SH) return SH;
   const tex = {
@@ -842,6 +1022,7 @@ export function createLaunchComplex({
   cameraAzimuth = 0.58,
   spotLights = true,
   pad = null,
+  look: look0 = "minimal",
 } = {}) {
   const S = shared();
   const L = padLayout({ baseRadius_u, cameraAzimuth });
@@ -860,6 +1041,7 @@ export function createLaunchComplex({
   else if (lightingSun?.isObject3D) sunDir = lightingSun.position.clone().sub(lightingSun.target?.position ?? v3());
   const night = !(sunDir && sunDir.lengthSq() > 1e-9 && sunDir.normalize().y > 0.08);
   const floodK = night ? 1 : 0.25;
+  let daylight = !night; // runtime day / night (setDaylight / setSky)
 
   const object3d = new THREE.Group();
   object3d.name = "launch-complex";
@@ -890,8 +1072,8 @@ export function createLaunchComplex({
   const arms0 = armSpecs(manifest, sc);
   const maxReach = Math.max(m(6), ...arms0.map((a) => Math.max(0.05, dT - hw - a.r - 0.03)));
   // Hinge just outboard of the FSS's back corner (local +x out, +z away from the home camera), so the parked
-  // RSS hides behind the FSS from the home view; the gap grows until the body clears the FSS at every angle, the arms' ±70° swing
-  // when parked and the arms at rest when mated.
+  // RSS hides behind the FSS from the home view; the gap grows until the body clears the FSS at every angle,
+  // the arms' swing discs (any yaw, covers the director's ±70°) when parked and the arms at rest when mated.
   let gapR = m(1.5);
   const hinge = { x: hw + 0.7 * hwR, z: 0 };
   const armH = Math.max(m(2.6), 0.024 * tH);
@@ -933,15 +1115,15 @@ export function createLaunchComplex({
   };
   const armsInSpan = arms0.filter((a) => a.y + armH > yR0 && a.y - armH < yR1);
   const rssClear = () => {
-    const pad = m(1);
+    const margin = m(1);
     for (let k = 0; k <= 12; k++) {
       const th = rss.thM + ((rss.thP - rss.thM) * k) / 12;
       for (const [x, z] of bodyPts(th)) {
-        if (Math.abs(x) < hw + pad && Math.abs(z) < hw + pad) return false; // into the FSS
-        if (k === 0) for (const a of armsInSpan) if (x < -hw && x > -dT + a.r && Math.abs(z) < armW / 2 + pad) return false; // mated: over an arm
+        if (Math.abs(x) < hw + margin && Math.abs(z) < hw + margin) return false; // into the FSS
+        if (k === 0) for (const a of armsInSpan) if (x < -hw && x > -dT + a.r && Math.abs(z) < armW / 2 + margin) return false; // mated: over an arm
       }
     }
-    for (const [x, z] of bodyPts(rss.thP)) if (Math.hypot(x + hw, z) < maxReach + pad) return false; // parked: in an arm's swing
+    for (const [x, z] of bodyPts(rss.thP)) if (Math.hypot(x + hw, z) < maxReach + margin) return false; // parked: in an arm's swing
     return true;
   };
   solveRss();
@@ -1056,7 +1238,7 @@ export function createLaunchComplex({
   const WT = [dW * Math.cos(wAng), dW * Math.sin(wAng)];
   const farmHalfX = m(46);
   const farmHalfZ = m(34);
-  const farm = [-(xL + HS + m(84) + farmHalfX * 0), -(zB + HS + m(14))]; // berm (outer slope ~10 m) clear of the back-left tower
+  const farm = [-(xL + HS + m(84)), -(zB + HS + m(14))]; // its berm (outer slope ~10 m) stays clear of the back-left tower
   const hangar = { x: rampHalf + m(34) + m(24), z: -(zB + rampLen + m(30)), w: m(48), d: m(84), h: m(26) };
 
   // Ground uniforms shared by every ground material of this complex.
@@ -1164,7 +1346,7 @@ export function createLaunchComplex({
     const k3 = v3(xE + kL, groundY + kH, -kw);
     quadUp(tr, k0, k3, k2, k1, C.saddle);
     tr.loop([k0, k1, k2, k3]);
-    tr.quad(v3(xE + kL, groundY, -kw), v3(xE + kL, groundY, kw), k2, k3, C.trench); // back face
+    tr.quad(v3(xE + kL, groundY, kw), v3(xE + kL, groundY, -kw), k3, k2, C.trench); // back face (+x)
     tr.tri(v3(xE, groundY, kw), v3(xE + kL, groundY, kw), k2, C.trench); // cheeks
     tr.tri(v3(xE + kL, groundY, -kw), v3(xE, groundY, -kw), k3, C.trench);
   }
@@ -1187,6 +1369,8 @@ export function createLaunchComplex({
   const gapB = m(18);
   bermSection(ap, [fx0 - farmHalfX, fz0 + farmHalfZ], [fx0 + farmHalfX - gapB, fz0 + farmHalfZ], groundY, bermH, bermTop, bermBase, C.berm, true, true);
   bermSection(ap, [fx0 + farmHalfX, fz0 + farmHalfZ - gapB], [fx0 + farmHalfX, fz0 - farmHalfZ], groundY, bermH, bermTop, bermBase, C.berm, true, true);
+  const coast = createCoast({ m, y: groundY - m(2.5), apronR: half * 0.98 });
+  object3d.add(coast.mesh);
   const apron = lookMesh(ap, "complex-apron", S.apron, { xray: () => xGround(1), ground: groundOf(1, 1, 1, 1), lines: false, receive: false });
   site.add(apron);
 
@@ -1307,26 +1491,28 @@ export function createLaunchComplex({
   // Propellant / pneumatic lines up the outer face to the top arm level.
   const topArmY = Math.max(lvY(2), ...arms0.map((a) => a.y));
   for (const [i, z] of [-hw * 0.55, -hw * 0.38, -hw * 0.22].entries()) fssB.cyl(v3(hw + cw, topY, z), v3(hw + cw, topArmY, z), m(0.28 - i * 0.05), m(0.28 - i * 0.05), 8, C.pipe, { caps: false });
-  // Hammerhead crane: slewing deck, mast, jib over the rocket, counter-jib, counterweight, cab, hook.
+  // Hammerhead crane: slewing deck, mast, main jib parked pointing away from the rocket (nothing over the flight
+  // path, launch or a landing back on the pad), short counter-jib with its counterweight, cab, hook.
   const cBase = tH;
   fssB.aabb(0, cBase + m(0.5), 0, wF * 0.7, m(1), wF * 0.7, C.deck);
   const mastH = m(10);
   fssB.aabb(0, cBase + m(1) + mastH / 2, 0, m(3), mastH, m(3), C.crane);
   const jibY = cBase + m(1) + mastH;
-  const jibL = dT + m(6);
+  const jibL = m(30);
   const jibB = m(1.6);
-  for (const z of [-jibB / 2, jibB / 2]) fssB.strut(v3(m(1.5), jibY + jibB, z), v3(-jibL, jibY + jibB * 0.7, z), m(0.35), m(0.35), C.crane);
-  fssB.strut(v3(m(1.5), jibY, 0), v3(-jibL, jibY + jibB * 0.15, 0), m(0.4), m(0.4), C.crane);
+  const jib0 = -m(1.5);
+  for (const z of [-jibB / 2, jibB / 2]) fssB.strut(v3(jib0, jibY + jibB, z), v3(jibL, jibY + jibB * 0.7, z), m(0.35), m(0.35), C.crane);
+  fssB.strut(v3(jib0, jibY, 0), v3(jibL, jibY + jibB * 0.15, 0), m(0.4), m(0.4), C.crane);
   for (let i = 0; i < 10; i++) {
-    const xa = m(1.5) - ((jibL + m(1.5)) * i) / 10;
-    const xb = m(1.5) - ((jibL + m(1.5)) * (i + 1)) / 10;
+    const xa = jib0 + ((jibL - jib0) * i) / 10;
+    const xb = jib0 + ((jibL - jib0) * (i + 1)) / 10;
     for (const z of [-jibB / 2, jibB / 2]) fssB.strut(v3(xa, jibY + jibB * (1 - 0.3 * (i / 10)), z), v3(xb, jibY + jibB * 0.08, z * 0.2), m(0.18), m(0.18), C.crane, null, false);
   }
-  const cjL = 0.38 * jibL;
-  fssB.aabb(cjL / 2, jibY + jibB / 2, 0, cjL, jibB * 0.8, jibB, C.crane);
-  fssB.aabb(cjL - m(2.5), jibY - m(1), 0, m(5), m(4), jibB * 1.6, C.counterweight);
+  const cjL = m(8); // toward the rocket, ending well clear of its axis
+  fssB.aabb(-cjL / 2, jibY + jibB / 2, 0, cjL, jibB * 0.8, jibB, C.crane);
+  fssB.aabb(-cjL + m(2), jibY - m(1), 0, m(4), m(4), jibB * 1.6, C.counterweight);
   fssB.aabb(m(2.6), jibY - m(1.2), m(1.4), m(2.2), m(2.2), m(2), C.crane);
-  const hookX = -jibL * 0.82;
+  const hookX = jibL * 0.72;
   fssB.strut(v3(hookX, jibY, 0), v3(hookX, jibY - m(14), 0), m(0.08), m(0.08), C.deck, v3(1, 0, 0), false);
   fssB.aabb(hookX, jibY - m(14.8), 0, m(1), m(1.6), m(0.8), C.counterweight);
   // Antenna mast on the crane mast (beacon on top).
@@ -1419,6 +1605,67 @@ export function createLaunchComplex({
     tower.add(mesh);
     return { mesh, y_u: a.y, reach_u: reach, partId: a.id };
   });
+
+  // ---------- (1b) strongback (round 22): a Falcon-9-style transporter-erector beside the stack ----------
+  // A white lattice mast on the far side of the stack from the FSS, hinged at its base on the pad deck, with three
+  // cradle arm pairs hugging the stage. setStrongback(k): the cradles open (k 0 → 0.4) and the mast leans back
+  // ~10° away from the vehicle (k 0.2 → 1). Three meshes (mast, left and right cradles), no edge lines. Visual
+  // proportions (est.).
+  const sbR = Math.max(0.05, baseRadius_u, ...(manifest ?? []).map((sp) => sp.radius ?? 0)); // the widest part
+  const sbPw = Math.max(m(0.6), 0.22 * sbR); // cradle prong width
+  const sbW = 2 * (sbR + sbPw / 2 + m(0.2)); // mast width: the prongs pass just clear of either side of the stage
+  const sbD = Math.max(m(2.4), 0.8 * sbR); // mast depth
+  const sbGap = Math.max(m(1.2), 0.25 * sbR); // mast face → vehicle wall
+  const sbH = 0.9 * H;
+  const sbPivot = new THREE.Group();
+  sbPivot.name = "complex-strongback";
+  sbPivot.position.set(-dT - sbR - sbGap - sbD, 0, 0); // hinge: the mast's back edge on the deck; +x faces the stage
+  tower.add(sbPivot);
+  {
+    const B = new Builder(m(2));
+    const cs = Math.max(m(0.35), 0.1 * sbD); // member size
+    for (const x of [cs / 2, sbD - cs / 2]) for (const z of [-sbW / 2 + cs / 2, sbW / 2 - cs / 2]) B.aabb(x, sbH / 2, z, cs, sbH, cs, C.mastTop, false);
+    const nL = Math.max(3, Math.round(sbH / Math.max(m(5), sbW)));
+    const y0 = cs * 0.4; // the lowest tie sits on the deck
+    for (let i = 0; i <= nL; i++) {
+      const y = y0 + ((sbH - y0) * i) / nL;
+      for (const z of [-sbW / 2 + cs / 2, sbW / 2 - cs / 2]) B.aabb(sbD / 2, y, z, sbD, cs * 0.7, cs * 0.7, C.mastTop, false);
+      for (const x of [cs / 2, sbD - cs / 2]) B.aabb(x, y, 0, cs * 0.7, cs * 0.7, sbW, C.mastTop, false);
+      if (i < nL) {
+        const y1 = y0 + ((sbH - y0) * (i + 1)) / nL;
+        for (const z of [-sbW / 2 + cs / 2, sbW / 2 - cs / 2]) B.strut(v3(cs / 2, y, z), v3(sbD - cs / 2, y1, z), cs * 0.5, cs * 0.5, C.mastTop, v3(0, 0, Math.sign(z)), false);
+        B.strut(v3(cs / 2, y, -sbW / 2 + cs / 2), v3(cs / 2, y1, sbW / 2 - cs / 2), cs * 0.5, cs * 0.5, C.mastTop, v3(-1, 0, 0), false);
+      }
+    }
+    const mast = lookMesh(B, "complex-strongback-mast", S.steel, { night: nightU, lines: false, cast: true, receive: true });
+    sbPivot.add(mast);
+  }
+  // the cradles: one mesh per side, hinged on the mast's front corner; each prong runs past the stage's far side
+  const sbLen = sbGap + 2 * sbR + sbPw;
+  const sbProngs = [-1, 1].map((side) => {
+    const B = new Builder(m(2));
+    const ph = Math.max(m(0.5), 0.15 * sbR);
+    for (const f of [0.3, 0.56, 0.8]) {
+      const y = sbH * f;
+      B.aabb(sbLen / 2, y, 0, sbLen, ph, sbPw, C.mastTop, false);
+      B.aabb(sbGap + sbR, y, -side * sbPw * 0.3, sbR * 0.6, ph * 1.5, sbPw * 0.4, C.hood, false); // the pad facing the stage
+    }
+    const mesh = lookMesh(B, `complex-strongback-cradle:${side < 0 ? "left" : "right"}`, S.steel, { night: nightU, lines: false, cast: true, receive: true });
+    mesh.position.set(sbD, 0, side * sbW / 2);
+    sbPivot.add(mesh);
+    return { mesh, side };
+  });
+  let strongback = 0;
+  function setStrongback(k = 0) {
+    strongback = clamp(Number(k) || 0, 0, 1);
+    const open = strongback / 0.4 >= 1 ? 1 : (strongback / 0.4) ** 2 * (3 - 2 * (strongback / 0.4));
+    const t = clamp((strongback - 0.2) / 0.8, 0, 1);
+    const lean = t * t * (3 - 2 * t);
+    for (const p of sbProngs) p.mesh.rotation.y = -p.side * open * THREE.MathUtils.degToRad(65); // swing outward
+    sbPivot.rotation.z = lean * THREE.MathUtils.degToRad(10); // the top moves away from the vehicle
+    return strongback;
+  }
+  setStrongback(0);
 
   // ---------- (2) RSS (Group on the hinge; its mesh in RSS-local: +x along the arm of the structure) ----------
   const rssGroup = new THREE.Group();
@@ -1541,9 +1788,11 @@ export function createLaunchComplex({
     if (pointInPoly(foot.x, foot.z, footPoly)) break;
   }
   const topEdge = foot.clone().addScaledVector(dirToPad, HS + m(1)).setY(topY + pipeR + m(0.2));
-  const enterR = padR + m(0.2);
+  const enterR = padR + pipeR * 1.25 + m(0.15); // the riser stands just off the plinth wall
   const end = dirToPad.clone().multiplyScalar(-enterR).setY(topY + pipeR + m(0.2));
-  const pipePts = [start, foot, topEdge, end];
+  const riser = end.clone().setY(pipeR + m(0.1)); // up the plinth wall to the deck
+  const header = dirToPad.clone().multiplyScalar(-(padR - m(2.5))).setY(pipeR + m(0.1)); // onto the deck edge
+  const pipePts = [start, foot, topEdge, end, riser, header];
   for (let i = 0; i < pipePts.length - 1; i++) wB.cyl(pipePts[i], pipePts[i + 1], pipeR, pipeR, 12, C.waterPipe, { caps: false, lines: true });
   for (const p of pipePts.slice(1, -1)) wB.sphere(p, pipeR * 1.18, C.waterPipe, 12, 8);
   // pipe saddles every ~12 m on the apron run
@@ -2006,7 +2255,7 @@ export function createLaunchComplex({
   site.add(beamsLit);
   // Beacons: red obstruction lights on the tower tops, the FSS antenna, the crane jib tip and the water tower.
   const [antX, antZ] = towerToSite(0, 0);
-  const [jibX, jibZ] = towerToSite(-jibL, 0);
+  const [jibX, jibZ] = towerToSite(jibL, 0);
   const beaconPts = [...mastTops.map((p) => p.clone().add(v3(0, m(0.6), 0))), v3(antX, antTop + m(0.5), antZ), v3(jibX, jibY + jibB + m(0.4), jibZ), v3(wc.x, wTop + m(0.6), wc.z)];
   const beaconGeo = new THREE.BufferGeometry().setFromPoints(beaconPts);
   beaconGeo.setAttribute("color", new THREE.Float32BufferAttribute(new Float32Array(beaconPts.length * 3).fill(1), 3));
@@ -2026,7 +2275,15 @@ export function createLaunchComplex({
   groundU.uGFar.value.set(siteR * 0.75, Math.max(m(60), Rf * 0.55), 0.16, 1 / m(60));
   nightU.uNight.value.set(siteR * 0.9, Math.max(m(70), Rf * 0.6), 0.2, 0);
   // Real lights: two warm spots (front-left bank: the key's side; back-right: a rim on the vehicle), no shadows.
+  // They hang in their own group (site frame) that setVisible never hides: a light leaving the scene changes the
+  // renderer's light count and relinks every lit program (a 0.3–0.75 s stall when Compare opens), so hidden they
+  // go to intensity 0 instead.
   const lights = [];
+  const rig = new THREE.Group();
+  rig.name = "complex-lights";
+  rig.rotation.copy(site.rotation);
+  object3d.add(rig);
+  let shown = true;
   if (spotLights) {
     for (const [i, kI] of [
       [3, 1.15],
@@ -2043,7 +2300,7 @@ export function createLaunchComplex({
       spot.distance = d * 3;
       spot.angle = clamp(Math.atan((0.62 * H) / d), 0.2, 0.65);
       spot.castShadow = false;
-      site.add(spot, spot.target);
+      rig.add(spot, spot.target);
       lights.push(spot);
     }
   }
@@ -2059,12 +2316,15 @@ export function createLaunchComplex({
 
   // ---------- pad adoption (hide the pad's own ground, lower the ground map) ----------
   const adopted = [];
+  let groundMap = null;
   function restorePad() {
     for (const a of adopted) {
       if ("visible" in a) a.o.visible = a.visible;
       if ("y" in a) a.o.position.y = a.y;
     }
     adopted.length = 0;
+    if (groundMap) groundMap.visible = true;
+    groundMap = null;
   }
   function adoptPad(target = null) {
     restorePad();
@@ -2082,22 +2342,84 @@ export function createLaunchComplex({
         });
         if (y0 === null) continue;
         adopted.push({ o, y: o.position.y });
+        groundMap = o;
+        o.visible = !daylight;
         o.position.y = groundY - m(1.5) - y0; // well under the apron: a hair's gap z-fights at a distance
       }
     }
     return true;
   }
   object3d.addEventListener("added", () => {
-    if (object3d.parent?.name === "pad" && object3d.visible) adoptPad(object3d.parent);
+    if (object3d.parent?.name === "pad" && shown) adoptPad(object3d.parent);
   });
   object3d.addEventListener("removed", restorePad);
   if (pad) adoptPad(pad);
 
+  // ---------- catch (round 22): SpaceX-style "chopsticks" ----------
+  // catchArms(k, { y_u }), k 0 → 1: the two lowest arms ride to y_u (tower-local = pad-local height; default the
+  // lower arm's height), step out to either side of the stack axis and swing open (k ≤ 0.4), then close straight
+  // in, lengthened so they straddle the stage either side of the axis (k = 1). k = 0 restores the pose they had at
+  // the first call. catchPoint_u: the stack axis at the arms' height, tower-local (anchors.tower.localToWorld(
+  // point.clone()) for world); it follows y_u. Nothing else may write the arms' rotation, position or scale while
+  // a catch runs (a launch swing tween would undo it every frame).
+  const catchList = [...arms].sort((p, q) => p.y_u - q.y_u).slice(0, 2);
+  const catchY = catchList[0]?.y_u ?? topY;
+  const catchPoint = v3(-dT, catchY, 0);
+  const catchRest = new Map();
+  const ease = (x) => x * x * (3 - 2 * x);
+  function catchArms(k = 1, { y_u = catchY } = {}) {
+    k = clamp(Number(k) || 0, 0, 1);
+    const ty = Number.isFinite(y_u) ? y_u : catchY;
+    catchPoint.y = ty;
+    const ride = ease(Math.min(1, k / 0.4));
+    const close = ease(Math.max(0, (k - 0.4) / 0.6));
+    catchList.forEach((a, i) => {
+      if (!catchRest.has(a)) catchRest.set(a, { p: a.mesh.position.clone(), r: a.mesh.rotation.y, s: a.mesh.scale.x });
+      const r0 = catchRest.get(a);
+      const side = i ? 1 : -1;
+      const stretch = (dT - hw + baseRadius_u * 0.9) / a.reach_u;
+      a.mesh.position.set(r0.p.x, r0.p.y + (ty - r0.p.y) * ride, r0.p.z + side * (baseRadius_u + armW * 0.6) * ride);
+      const open = r0.r + (side * 1.0 - r0.r) * ride;
+      a.mesh.rotation.y = open * (1 - close);
+      a.mesh.scale.x = r0.s + (stretch - r0.s) * ride;
+    });
+    return k;
+  }
+
   // ---------- API ----------
+  const shownWas = new Map(); // each child's visibility while the complex is hidden
+  const setSpots = () => {
+    for (const s of lights) s.intensity = shown ? s.userData.intensity0 * (look === "xray" ? 0.4 : 1) * (daylight ? 0.25 : 1) : 0;
+  };
+  // Day or night at runtime (world.setSky): by day no night falloff on the apron and structures, dim light
+  // pools and spots, no lamp glows or beams (intensities and visibility only; the light count never changes).
+  function applyDaylight() {
+    const k = daylight ? 0.25 : 1;
+    coast.setDaylight(daylight);
+    lampMat.emissiveIntensity = daylight ? 0 : S.lamp.emissiveIntensity * (look === "xray" ? 0.6 : 1);
+    if (groundMap) groundMap.visible = !daylight; // the line-art map would draw grid lines over the coast
+    groundU.uGFar.value.z = daylight ? 1 : 0.16;
+    nightU.uNight.value.z = daylight ? 1 : 0.2;
+    groundU.uGPoolColor.value.setRGB(1.0, 0.78, 0.55).multiplyScalar(0.9 * k);
+    glowCore.visible = glowHalo.visible = beamsLit.visible = !daylight;
+    setSpots();
+  }
   let look = "painted";
+  applyDaylight();
+  // Minimal (the default, round 22): the pad, hardstand, trench, apron and roads, the FSS with its arms, the water
+  // tower and the lightning masts; the farm, pipe racks, buildings, fence, light poles and the RSS are hidden (the
+  // chase camera flew through them). "full" shows everything.
+  const CLUTTER = ["complex-farm", "complex-rack-bents", "complex-buildings", "complex-windows", "complex-fence-posts", "complex-fence-wires", "complex-light-poles", "complex-rss"];
+  const clutter = CLUTTER.map((n) => object3d.getObjectByName(n)).filter(Boolean);
+  let minimal = look0 !== "full";
+  const applyClutter = () => {
+    for (const o of clutter) o.visible = !minimal;
+  };
+  applyClutter();
   const beaconCol = beaconGeo.attributes.color;
   const padC = new THREE.Vector3();
   function update(t = 0) {
+    coast.uniforms.uTime.value = t;
     nightU.uNightC.value.copy(object3d.getWorldPosition(padC));
     // beacons: 1.6 s cycle, alternate towers half a cycle apart, soft on/off
     for (let i = 0; i < beaconCol.count; i++) {
@@ -2145,16 +2467,57 @@ export function createLaunchComplex({
       return { near: Math.max(0.1, dist * 0.9), far: dist + Rf * 1.25 };
     },
     adoptPad,
+    // Hides everything but the light rig (whose spots go dark): the light count never changes. Each child's own
+    // visibility (e.g. tower.visible = false) comes back as it was.
     setVisible(on) {
-      object3d.visible = !!on;
+      on = !!on;
+      if (on !== shown) {
+        shown = on;
+        for (const c of object3d.children) {
+          if (c === rig) continue;
+          if (!on) shownWas.set(c, c.visible);
+          c.visible = on ? (shownWas.get(c) ?? true) : false;
+        }
+        if (on) shownWas.clear();
+        setSpots();
+      }
       if (!on) restorePad();
       else if (object3d.parent?.name === "pad") adoptPad(object3d.parent);
     },
+    get visible() {
+      return shown;
+    },
+    catchArms,
+    catchPoint_u: catchPoint,
+    // k 0: upright against the stage, cradles closed; 1: leaned back ~10°, cradles open
+    setStrongback,
+    get strongback() {
+      return strongback;
+    },
+    strongbackObject: sbPivot,
+    setDaylight(day = true) {
+      daylight = !!day;
+      applyDaylight();
+    },
+    // world.setSky's recipe: day / night, the coast's sun, sky and cloud
+    setSky(r) {
+      if (!r) return;
+      daylight = r.time === "day";
+      applyDaylight();
+      coast.setSky(r);
+    },
+    coast: coast.mesh,
+    // "minimal" | "full": what stands (painted look); "painted" | "xray": the look only, keeping what stands
     setLook(next = "painted") {
+      if (next === "minimal" || next === "full") {
+        minimal = next === "minimal";
+        applyClutter();
+        next = "painted";
+      }
       look = next === "xray" ? "xray" : "painted";
       setPropLook(object3d, look);
-      for (const s of lights) s.intensity = s.userData.intensity0 * (look === "xray" ? 0.4 : 1);
-      lampMat.emissiveIntensity = S.lamp.emissiveIntensity * floodK * (look === "xray" ? 0.6 : 1);
+      setSpots();
+      lampMat.emissiveIntensity = daylight ? 0 : S.lamp.emissiveIntensity * (look === "xray" ? 0.6 : 1);
       return look;
     },
     update,
@@ -2183,8 +2546,6 @@ function quadUp(B, a, b, c, d, color, lines = false) {
 }
 // Quad tA, tB (top edge) → gB, gA (ground edge) facing away from the hardstand.
 function quadOut(B, tA, tB, gB, gA, color) {
-  const ux = tB.x - tA.x;
-  const uz = tB.z - tA.z;
   const ox = (gA.x + gB.x) / 2 - (tA.x + tB.x) / 2;
   const oz = (gA.z + gB.z) / 2 - (tA.z + tB.z) / 2;
   // normal of (tA → gA → gB → tB) = (gA − tA) × (tB − tA); we want it along the outward offset
@@ -2198,8 +2559,6 @@ function quadOut(B, tA, tB, gB, gA, color) {
     const nz = (b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x);
     return nx * ox + nz * oz;
   };
-  void ux;
-  void uz;
   const q = n(q1) > 0 ? q1 : q2;
   return B.quad(q[0], q[1], q[2], q[3], color);
 }

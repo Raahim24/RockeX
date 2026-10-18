@@ -18,6 +18,81 @@ import * as THREE from "three";
 import { createPlanet } from "../planet.js";
 import { createCloudLayer } from "../fx/launchfx.js";
 
+// ROCKEX branding over the planet: the wordmark as the title (the user dropped the logo badge). The PNG is
+// white on black; the black is keyed out once at load (brightness -> alpha, same look as a screen blend over
+// black). mix-blend-mode would not work here: the fixed, fading .landing-page isolates its children. The URLs use
+// new URL(..., import.meta.url) like planet.js: Vite hashes the files, and the team's Next/Turbopack build handles
+// the same pattern (a plain PNG import returns an object there).
+const BRAND = {
+  wordmark: new URL("../assets/brand/rockex-wordmark.png", import.meta.url).href,
+};
+const BRAND_CSS = `
+.landing-page h1.rkx-title { margin: 0; font-size: 0; line-height: 0; opacity: 0; transform: translateY(8px);
+  transition: opacity 700ms ease-out, transform 700ms ease-out; }
+.landing-page h1.rkx-title img { display: block; height: 76px; width: auto;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45)) drop-shadow(0 0 14px rgba(0, 0, 0, 0.28)); } /* legible on the day sky */
+.landing-page.rkx-ready h1.rkx-title { opacity: 1; transform: none; }
+@media (max-width: 760px) {
+  .landing-page h1.rkx-title img { height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) { .landing-page h1.rkx-title { transition: none; } }
+`;
+// A PNG on black -> a data URL with the black transparent (alpha = the brightest channel, colour un-premultiplied),
+// trimmed to what is visible (plus a 4 % margin) so the sizes above are the artwork's, not its black border.
+// Falls back to the original file if the canvas is unavailable.
+function keyOutBlack(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = () => {
+      try {
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        const g = c.getContext("2d", { willReadFrequently: true });
+        g.drawImage(img, 0, 0);
+        const d = g.getImageData(0, 0, c.width, c.height);
+        const px = d.data;
+        for (let i = 0; i < px.length; i += 4) {
+          const a = Math.max(px[i], px[i + 1], px[i + 2]);
+          px[i + 3] = a;
+          if (a > 0 && a < 255) {
+            const k = 255 / a;
+            px[i] = Math.min(255, px[i] * k);
+            px[i + 1] = Math.min(255, px[i + 1] * k);
+            px[i + 2] = Math.min(255, px[i + 2] * k);
+          }
+        }
+        g.putImageData(d, 0, 0);
+        let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1;
+        for (let y = 0; y < c.height; y++)
+          for (let x = 0; x < c.width; x++)
+            if (px[(y * c.width + x) * 4 + 3] > 24) {
+              if (x < x0) x0 = x;
+              if (x > x1) x1 = x;
+              if (y < y0) y0 = y;
+              if (y > y1) y1 = y;
+            }
+        if (x1 < 0) return resolve(c.toDataURL("image/png"));
+        const m = Math.round(0.04 * Math.max(x1 - x0, y1 - y0));
+        x0 = Math.max(0, x0 - m);
+        y0 = Math.max(0, y0 - m);
+        x1 = Math.min(c.width - 1, x1 + m);
+        y1 = Math.min(c.height - 1, y1 + m);
+        const t = document.createElement("canvas");
+        t.width = x1 - x0 + 1;
+        t.height = y1 - y0 + 1;
+        t.getContext("2d").drawImage(c, x0, y0, t.width, t.height, 0, 0, t.width, t.height);
+        resolve(t.toDataURL("image/png"));
+      } catch {
+        resolve(url);
+      }
+    };
+    img.onerror = () => resolve(url);
+    img.src = url;
+  });
+}
+
 const R0 = 40; // the globe's radius in the landing shot
 const SPAN_VH = 1.2; // viewport heights of scrolling for the whole dive
 const JUMP_S = 5.5; // a click / key: the whole dive in this long
@@ -64,7 +139,7 @@ function monotone(xs, ys) {
 
 export function createLanding({ scene, camera, controls, root, stars, canvas, groundY = () => -0.6, groundMap = () => null, endPose, view, onState = () => {} }) {
   let G = groundY(); // the ground under the pad (the pole sits just below it); read again on every take-over
-  const bg0 = scene.background.clone();
+  const bg0 = new THREE.Color(0x0b0d12); // black space whatever the sky setting (the day recipe is for the pad)
   const fog0 = scene.fog.color.clone();
   const starOpacity = stars?.material.opacity ?? 0.8;
 
@@ -93,8 +168,19 @@ export function createLanding({ scene, camera, controls, root, stars, canvas, gr
 
   const el = document.createElement("div");
   el.className = "landing landing-page"; // styled as .landing-page only: body.landing is the page state
-  el.innerHTML = `<h1><img class="landing-logo" src="/rockex-logo.png" alt="Rockex" width="926" height="127" /></h1><button type="button" class="landing-go">Build a rocket</button>`;
+  el.innerHTML = `<h1 class="rkx-title"><img alt="ROCKEX"></h1><button type="button" class="landing-go">Build a rocket</button>`;
   document.body.appendChild(el);
+  if (!document.querySelector("style[data-landing-brand]")) {
+    const css = document.createElement("style");
+    css.setAttribute("data-landing-brand", "");
+    css.textContent = BRAND_CSS;
+    document.head.append(css);
+  }
+  // The wordmark keyed, then it fades in.
+  keyOutBlack(BRAND.wordmark).then((word) => {
+    el.querySelector(".rkx-title img").src = word;
+    requestAnimationFrame(() => el.classList.add("rkx-ready"));
+  });
   el.querySelector(".landing-go").addEventListener("click", () => enter());
 
   let on = false;
@@ -245,6 +331,7 @@ export function createLanding({ scene, camera, controls, root, stars, canvas, gr
   // Wheel / trackpad scroll while the landing is on (capture: the scrub and OrbitControls never see it), and the
   // inertia tail right after handing over.
   function onWheel(e) {
+    if (e.target !== canvas && !e.target.closest?.(".landing-page")) return; // not over the host page's own UI
     if (!on && performance.now() > quietUntil) return;
     if (e.ctrlKey) return; // pinch zoom stays the browser's
     e.preventDefault();

@@ -172,7 +172,10 @@ function orbitOf(x, y, vx, vy) {
 }
 
 // One flight. record=false skips samples and stops as soon as the outcome is known (used by the kick search).
-function fly(stages, payload_kg, fairing, increment_ms, { kick_deg, targetAlt_m, maxQThrottle, gLimit, record, sampleEvery_s, dt: DT_RUN, tMax, stopAtSep = false, towerClear_m = 0 }) {
+function fly(stages, payload_kg, fairing, increment_ms, { kick_deg, targetAlt_m, maxQThrottle, gLimit, record, sampleEvery_s, dt: DT_RUN, tMax: tCap, stopAtSep = false, towerClear_m = 0 }) {
+  // a recorded flight that ran dry just below orbital speed can glide a long way: its fall is followed to the
+  // ground (the cap grows in 10 min steps, at most to 4 h)
+  let tMax = tCap;
   const samples = [];
   const events = [];
   let x = 0;
@@ -278,6 +281,7 @@ function fly(stages, payload_kg, fairing, increment_ms, { kick_deg, targetAlt_m,
   sample(true);
 
   while (t < tMax - 1e-9 && phase !== "done") {
+    if (record && phase === "ballistic" && t > tMax - 1 && tMax < 4 * 3600) tMax += 600;
     const r = Math.hypot(x, y);
     const h = r - RE;
     const ur = [x / r, y / r];
@@ -852,7 +856,206 @@ export function returnFromSpace(build, catalog, stageIndex, state, prop_kg) {
   return { ...res, modelled: [...used.out, ...(used.extra ? [used.extra] : [])], dry_kg: st0.dry };
 }
 
+// ---------- calibration to the verdict (round 21; est.) ----------
+// The team rule: the verdict (physics.js evaluateBuild, the app's physics) decides. Its delta-v T is the ideal
+// rocket-equation total against the mission table, which builds every mission as L = 9,400 m/s to LEO (losses
+// included) plus a beyond-LEO increment; this trajectory sim computes its own gravity, drag and steering losses,
+// which differ from the table's, so the two could disagree (a NO-GO build making GTO, or a GO build falling).
+// Calibration: every stage's Isp is scaled by one factor k (thrust kept, so the mass flow scales by 1/k). A quick
+// probe flight measures the physical delta-v P this vehicle needs to make the parking orbit; then k = P / L, so a
+// build with exactly L just reaches orbit and one short of it by X runs dry X below what orbit needs and falls.
+// A build that reaches orbit has the verdict's T - L left for the mission, so its departure burn is short (or
+// not) by exactly the verdict's M - T: a NO-GO build that has the LEO share (e.g. an Atlas tank under Falcon 9,
+// 11,792 of 11,900 m/s for GTO) reaches the parking orbit and its departure burn runs dry 108 m/s short; one
+// without it (below 9,400) never reaches orbit; a GO build always gets its mission (Head 1's rule, round 21).
+// A few nudges of k (2 % each) make reaching orbit match T >= L where the probe's estimate was not exact.
+// summary.calibration records it (est.); opts.calibrate = false flies the build uncalibrated.
+// The first stage's way home for the director (round 23, "a rocket the whole time"): the booster the ascent already
+// recovered (summary.booster), or, for a first stage the ascent did not recover (no landing legs, or no margin),
+// the same booster model flown from the recorded separation with a reserve that the ascent did not pay for
+// (modelled, est.; listed). mode: "rtls" back to the pad / tower, "droneship" where the arc comes down; the other
+// mode is tried if that one does not land. -> booster summary (as summary.booster) + modelled[], or null.
+export function boosterStory(build, catalog, summary, { mode = "rtls", only = false } = {}) {
+  // round 24: only = true keeps to that mode (every Earth ending is the tower catch); if no reserve lands there, the
+  // stage's own landing (wherever its arc comes down) is used and its last kilometres are moved to the tower
+  // (relocated: true, listed as a story choice)
+  if (summary?.booster?.returns && (!only || summary.booster.mode === mode)) return { ...summary.booster, modelled: [] };
+  const sep = summary?._sep0;
+  const st0 = stagesOf(build, catalog)[0];
+  if (!sep || !st0 || build.stages.length < 2) return null;
+  const legs = (catalog.visuals?.tanks?.[build.stages[0].tankId]?.features ?? []).includes("landing-legs");
+  const cfg = BOOSTER;
+  const modes = only ? [mode] : [mode, mode === "rtls" ? "droneship" : "rtls"];
+  const tries = [];
+  // as built first; then with the landing thrust capped at 3 g of the stage (deep throttling, modelled), for a
+  // big engine on a light empty core that the hoverslam cannot null at its 40 % minimum throttle
+  for (const capped of [false, true]) for (const frac of [0.08, 0.15, 0.25, 0.35, 0.5]) for (const m of modes) tries.push([frac, m, capped]);
+  const attempt = (frac, m, capped) => {
+    const limit = 3 * G0 * (st0.dry + frac * st0.prop);
+    const st = capped && st0.Fsl > limit ? { ...st0, Fsl: limit, Fvac: Math.min(st0.Fvac, limit * (st0.Fvac / st0.Fsl)) } : st0;
+    if (capped && st === st0) return null;
+    const r = returnBooster(sep, st, frac * st0.prop, cfg, true, m);
+    return r.landed && (m !== "rtls" || Math.abs(r.landingX_m) <= cfg.padRadius_m) ? r : null;
+  };
+  let found = null;
+  for (const [frac, m, capped] of tries) {
+    const r = attempt(frac, m, capped);
+    if (r) {
+      found = { r, frac, m, capped, relocated: false };
+      break;
+    }
+  }
+  if (!found && only) {
+    // no reserve brings it back to the pad: fly it where its arc comes down, and move the final descent
+    for (const capped of [false, true]) for (const frac of [0.08, 0.15, 0.25]) {
+      if (found) break;
+      const r = attempt(frac, "droneship", capped);
+      if (r) found = { r, frac, m: mode, capped, relocated: true };
+    }
+  }
+  if (!found) return null;
+  const { r, frac, m, capped, relocated } = found;
+  const hot = r.samples.filter((x) => x.heat > 0.25);
+  return {
+    returns: true,
+    mode: m,
+    sea: false,
+    relocated,
+    heating: hot.length ? { start_t: hot[0].t, end_t: hot.at(-1).t, peak_t: r.samples.find((x) => x.heat === 1)?.t ?? null } : null,
+    events: r.events,
+    samples: r.samples,
+    propellantReserve_kg: frac * st0.prop,
+    reserveFraction: frac,
+    touchdownSpeed_ms: r.touchdownSpeed_ms,
+    landingDownrange_m: relocated ? 0 : r.landingX_m,
+    arcDownrange_m: r.landingX_m,
+    propellantLeft_kg: r.prop_kg,
+    note: summary?.booster?.reason ?? null,
+    modelled: [
+      "reserve not taken from the ascent",
+      ...(legs ? [] : ["caught at the tower (no landing legs)"]),
+      ...(capped ? ["throttle"] : []),
+      ...(relocated ? ["final descent moved to the tower and drawn straight down (story; the arc comes down downrange)"] : []),
+    ],
+    est: true,
+  };
+}
+
 export function simulateAscent(build, catalog, opts = {}) {
+  const raw = (o) => flyAscent(build, catalog, { ...opts, ...o });
+  if (opts.calibrate === false || opts.ignoreVerdict) return raw({});
+  const first = raw({ boosterReturn: false });
+  if (first.summary.outcome === "blocked" || first.summary.error) return first;
+  const verdict = evaluateBuild(build, catalog);
+  const mission = byId(catalog.missions, build.missionId);
+  const leo = byId(catalog.missions, "leo");
+  const T = verdict.totalDeltaV_ms;
+  if (!mission || !leo || !(T > 0)) return raw({});
+  const M = mission.requiredDeltaV_ms;
+  const L = leo.requiredDeltaV_ms;
+  const wantOrbit = T + 1e-6 >= L; // the parking orbit needs the LEO share; the rest is the departure burn's
+  const Teff = T;
+  const base = stagesOf(build, catalog);
+  const scaled = (k) => base.map((st) => ({ ...st, ispSl: st.ispSl * k, ispVac: st.ispVac * k }));
+  // the probe: the physical delta-v spent to make orbit (scale up until it does, at most 3x)
+  let probe = first;
+  let kp = 1;
+  let kNo = 0;
+  while (probe.summary.remainingDeltaV_ms == null && kp < 3) {
+    kNo = kp;
+    kp *= 1.5;
+    probe = raw({ boosterReturn: false, _stages: scaled(kp) });
+  }
+  if (probe.summary.remainingDeltaV_ms == null) {
+    // cannot make orbit at any sensible scale (3x its Isp): flown as is; the verdict agrees when it is short of LEO
+    const res0 = raw({});
+    res0.summary.calibration = {
+      ispScale: 1,
+      physicalToOrbit_ms: null,
+      verdictDeltaV_ms: Math.round(T),
+      missionDeltaV_ms: M,
+      leoDeltaV_ms: L,
+      flownAs_ms: Math.round(T),
+      shortBy_ms: Math.max(0, Math.round(M - T)),
+      orbitShortBy_ms: Math.max(0, Math.round(L - T)),
+      matchesVerdict: (res0.summary.remainingDeltaV_ms != null) === wantOrbit,
+      note: "est.: no orbit even at 3x its Isp; flown uncalibrated",
+    };
+    return res0;
+  }
+  let Pneed = kp * T - probe.summary.remainingDeltaV_ms;
+  // A probe that reached orbit with (nearly) nothing left (a last stage that burns to depletion, e.g. a single
+  // stage, never cuts off early) only bounds P from above: find the scale that just makes orbit by bisection.
+  if (probe.summary.remainingDeltaV_ms < 50) {
+    let lo = kNo;
+    let hi = kp;
+    for (let i = 0; i < 8; i++) {
+      const mid = (lo + hi) / 2;
+      if (raw({ boosterReturn: false, _stages: scaled(mid) }).summary.remainingDeltaV_ms != null) hi = mid;
+      else lo = mid;
+    }
+    Pneed = hi * T;
+  }
+  let k = (Teff / L) * (Pneed / T);
+  const fly = (kk) => raw({ _stages: scaled(kk), _incrementScale: Pneed / L });
+  // every scale tried, and whether it reached orbit (the bounds for the bisection below)
+  const tried = [[kp, true], ...(kNo > 0 ? [[kNo, false]] : [])];
+  let res = fly(k);
+  tried.push([k, res.summary.remainingDeltaV_ms != null]);
+  for (let i = 0; i < 3; i++) {
+    const inOrbit = res.summary.remainingDeltaV_ms != null;
+    if (inOrbit === wantOrbit) break;
+    k *= wantOrbit ? 1.02 : 0.98;
+    res = fly(k);
+    tried.push([k, res.summary.remainingDeltaV_ms != null]);
+  }
+  // Still the wrong side: the delta-v this vehicle needs for orbit depends on k (a heavy payload on a low-thrust
+  // upper stage: a higher Isp means a longer burn and more gravity loss), so the one-shot estimate missed. Find
+  // the scale k_th that just reaches orbit by bisection between a scale that fails and one that reaches it, and
+  // fly k = k_th * T / L (T = L just reaches orbit, more has more margin, less falls short).
+  if ((res.summary.remainingDeltaV_ms != null) !== wantOrbit) {
+    let lo = Math.max(0, ...tried.filter(([, ok]) => !ok).map(([kk]) => kk));
+    let hi = Math.min(...tried.filter(([, ok]) => ok).map(([kk]) => kk));
+    if (!(lo > 0)) lo = hi / 2;
+    for (let i = 0; i < 10 && hi - lo > 0.002 * hi; i++) {
+      const mid = (lo + hi) / 2;
+      if (raw({ boosterReturn: false, _stages: scaled(mid) }).summary.remainingDeltaV_ms != null) hi = mid;
+      else lo = mid;
+    }
+    k = wantOrbit ? hi * Math.max(1, T / L) * 1.002 : lo * Math.min(1, T / L) * 0.998;
+    Pneed = hi * T;
+    res = fly(k);
+  }
+  const s = res.summary;
+  const inOrbit = s.remainingDeltaV_ms != null;
+  const calibration = {
+    ispScale: round(k, 4),
+    physicalToOrbit_ms: Math.round(Pneed),
+    verdictDeltaV_ms: Math.round(T),
+    missionDeltaV_ms: M,
+    leoDeltaV_ms: L,
+    flownAs_ms: Math.round(Teff),
+    shortBy_ms: Math.max(0, Math.round(M - T)), // the verdict's shortfall against the mission
+    orbitShortBy_ms: Math.max(0, Math.round(L - T)), // ... and against the LEO share (> 0: it cannot reach orbit)
+    matchesVerdict: inOrbit === wantOrbit,
+    note: "est.: Isp scaled so the trajectory agrees with the verdict and the mission table",
+  };
+  if (inOrbit && wantOrbit) {
+    // what is left for the mission is the verdict's, so it is met (or short) exactly as the verdict says
+    s.remainingDeltaV_ms = T - L;
+    const short = Math.max(0, M - T);
+    s.outcome = short > 1e-6 ? "shortfall" : "orbit";
+    if (s.mission) s.mission = { ...s.mission, shortBy_ms: short };
+    res.events = res.events.filter((e) => e.type !== "shortfall");
+    const orbitEv = res.events.find((e) => e.type === "orbit");
+    if (short > 1e-6 && orbitEv) res.events.push({ ...orbitEv, type: "shortfall" });
+    res.events.sort((a, b) => a.t - b.t);
+  }
+  s.calibration = calibration;
+  return res;
+}
+
+function flyAscent(build, catalog, opts = {}) {
   if (!opts.ignoreVerdict) {
     const verdict = evaluateBuild(build, catalog);
     const blocking = verdict.warnings.filter((w) => !NON_BLOCKING.has(w) && !FLIGHT_EXEMPT.some((re) => re.test(w)));
@@ -879,7 +1082,7 @@ export function simulateAscent(build, catalog, opts = {}) {
       };
     }
   }
-  const stagesFull = stagesOf(build, catalog);
+  const stagesFull = opts._stages ?? stagesOf(build, catalog);
   const payload = byId(catalog.payloads, build.payloadId);
   const mission = byId(catalog.missions, build.missionId);
   const leo = byId(catalog.missions, "leo");
@@ -892,7 +1095,9 @@ export function simulateAscent(build, catalog, opts = {}) {
   if (stagesFull.some((s) => !s)) return empty("unknown engine or tank id");
   const payload_kg = payload?.mass_kg ?? 0;
   const exposed = catalog.visuals?.payloads?.[payload?.id]?.exposed === true;
-  const increment_ms = mission && leo ? Math.max(0, mission.requiredDeltaV_ms - leo.requiredDeltaV_ms) : 0;
+  // calibrated runs (simulateAscent) measure the mission increment in the same physical units as the scaled
+  // trajectory (x P / L), so "mission met" inside the sim (e.g. what a booster reserve may cost) matches the verdict
+  const increment_ms = (mission && leo ? Math.max(0, mission.requiredDeltaV_ms - leo.requiredDeltaV_ms) : 0) * (opts._incrementScale ?? 1);
   const base = {
     targetAlt_m: opts.targetAlt_m ?? TARGET_ALT,
     maxQThrottle: opts.maxQThrottle ?? true,
@@ -959,9 +1164,13 @@ export function simulateAscent(build, catalog, opts = {}) {
     // The reserve may not make the flight worse: a mission success must stay one; a build that already falls
     // short of its mission must still reach the parking orbit.
     const baseline = flyWith(stagesFull, kickR, false);
+    // Calibrated (simulateAscent): the verdict decides the mission, and it knows nothing of booster recovery, so
+    // the reserve may take what it needs as long as the stack still reaches orbit (est.); missions beyond LEO try
+    // the drone ship first (as Falcon 9 does on GTO), LEO missions the pad.
+    const calibrated = opts._incrementScale != null;
     const keepsOrbit = (frac) => {
       const r = frac > 0 ? flyWith(withReserve(frac * st0.prop), kickR, false) : baseline;
-      return baseline.outcome === "orbit" ? r.outcome === "orbit" : r.remaining != null;
+      return calibrated ? r.remaining != null : baseline.outcome === "orbit" ? r.outcome === "orbit" : r.remaining != null;
     };
     const sepState = (frac) => flyWith(withReserve(frac * st0.prop), kickR, false, { dt: DT, stopAtSep: true }).sep0;
     const lands = (frac, mode) => {
@@ -985,7 +1194,8 @@ export function simulateAscent(build, catalog, opts = {}) {
       }
       const fMax = lo;
       const tried = [];
-      for (const mode of cfg.modes) {
+      const modes = calibrated && increment_ms > 0 ? ["droneship", "rtls"] : cfg.modes;
+      for (const mode of modes) {
         if (!lands(fMax, mode)) {
           tried.push(`${mode === "rtls" ? "return to the pad" : "drone ship"} needs more than the ${Math.round(fMax * 100)} % the orbit allows`);
           continue;
@@ -1006,7 +1216,7 @@ export function simulateAscent(build, catalog, opts = {}) {
         for (const extra of [0.01, 0.03, 0.05]) {
           frac = Math.min(fMax, b + extra);
           asc = flyWith(withReserve(frac * st0.prop), kickR, true);
-          const ok = (baseline.outcome === "orbit" ? asc.outcome === "orbit" : asc.remaining != null) && asc.sep0;
+          const ok = (calibrated ? asc.remaining != null : baseline.outcome === "orbit" ? asc.outcome === "orbit" : asc.remaining != null) && asc.sep0;
           ret = ok ? returnBooster(asc.sep0, st0, frac * st0.prop, cfg, true, mode) : null;
           if (ret && ret.landed && (mode !== "rtls" || Math.abs(ret.landingX_m) <= cfg.padRadius_m)) break;
           ret = null;
@@ -1056,6 +1266,7 @@ export function simulateAscent(build, catalog, opts = {}) {
       targetAlt_km: base.targetAlt_m / 1000,
       stackHeight_m: round(stackHeight_m, 1),
       remainingDeltaV_ms: res.remaining,
+      _sep0: res.sep0 ?? null, // the stack at the first separation (2-D state), for boosterStory
       mission: mission
         ? {
             id: mission.id,

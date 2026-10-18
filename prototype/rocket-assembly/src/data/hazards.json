@@ -108,13 +108,14 @@
   ],
 
   "spaceWeather": {
-    "url": "https://www.swpc.noaa.gov/noaa-scales-explanation",
-    "pdf": "https://www.swpc.noaa.gov/sites/default/files/images/NOAAscales.pdf",
+    "url": "https://www.spaceweather.gov/noaa-scales-explanation",
+    "pdf": "https://www.spaceweather.gov/sites/default/files/images/NOAAscales.pdf",
     "tier": "official: NOAA Space Weather Prediction Center, NOAA Space Weather Scales",
     "cycleQuote": "Average Frequency (1 cycle = 11 years)",
     "geomagnetic": {
       "measure": "Kp",
       "measureQuote": "Geomagnetic Storms Kp values*",
+      "measureUrl": "https://www.spaceweather.gov/sites/default/files/images/NOAAscales.pdf",
       "levels": [
         { "level": 1, "name": "Minor", "kp": 5, "threshold": { "value": 5, "unit": "Kp", "quoted": "Kp = 5" }, "daysPerCycle": 900, "frequencyQuoted": "900 days per cycle",
           "quote": "Spacecraft operations: Minor impact on satellite operations possible.",
@@ -136,7 +137,7 @@
     "radiation": {
       "measure": "flux of >= 10 MeV particles, pfu",
       "measureQuote": "Flux levels are 5 minute averages. Flux in particles·s-1·ster-1·cm-2",
-      "measureUrl": "https://www.swpc.noaa.gov/sites/default/files/images/NOAAscales.pdf",
+      "measureUrl": "https://www.spaceweather.gov/sites/default/files/images/NOAAscales.pdf",
       "levels": [
         { "level": 1, "name": "Minor", "threshold": { "value": 10, "unit": "pfu", "quoted": "10" }, "eventsPerCycle": 50, "frequencyQuoted": "50 per cycle",
           "quote": "Satellite operations: None. Other systems: Minor impacts on HF radio in the polar regions. 10 50 per cycle" },
@@ -154,7 +155,7 @@
     "radioBlackout": {
       "measure": "GOES X-ray peak flux, W/m2",
       "measureQuote": "Flux, measured in the 0.1-0.8 nm range, in W· m-2",
-      "measureUrl": "https://www.swpc.noaa.gov/sites/default/files/images/NOAAscales.pdf",
+      "measureUrl": "https://www.spaceweather.gov/sites/default/files/images/NOAAscales.pdf",
       "levels": [
         { "level": 1, "name": "Minor", "flareClass": "M1", "threshold": { "value": 1e-5, "unit": "W/m2", "quoted": "M1 (10 -5 )" }, "daysPerCycle": 950, "frequencyQuoted": "950 days per cycle",
           "quote": "HF Radio: Weak or minor degradation of HF radio communication on sunlit side, occasional loss of radio contact. Navigation: Low-frequency navigation signals degraded for brief intervals. M1 (10 -5 ) 2000 per cycle (950 days per cycle)" },
@@ -240,7 +241,7 @@
         "threshold": { "value": 1e-7, "unit": "Pc", "quoted": "1E‑07", "compare": "greater than" },
         "mitigation": { "value": 1e-4, "unit": "Pc", "quoted": "1E-04" },
         "quote": "At NASA CARA, Pc values greater than 1E‑07 merit operational attention, and values greater than 1E-04 require mitigation actions.",
-        "url": "https://www.nasa.gov/cara/close-approach-risk-assessment/",
+        "url": "https://www.nasa.gov/cara/step-2-close-approach-risk-assessment/",
         "tier": "official: NASA Conjunction Assessment Risk Analysis (CARA), Close Approach Risk Assessment",
         "note": "On-orbit spacecraft practice (maneuver at 1E-04), not a launch rule; hazards.js shows Pc above 1E-07 as a caution. The quote's first hyphen is a non-breaking hyphen on the page."
       }
@@ -296,11 +297,11 @@
     ],
     "planeChange": {
       "formula": "dv = 2 v sin(di / 2)",
-      "quote": "Where both orbits are circular (i.e. e = 0) and have the same radius the Delta-v (Δv_i) required for an inclination change (Δi) can be calculated using: Δv_i = 2v sin(Δi/2) where v is the orbital velocity and has the same units as Δv_i.",
+      "quote": "Where both orbits are circular (i.e. e = 0 … and have the same radius the Delta-v … required for an inclination change … can be calculated using: … is the orbital velocity and has the same units as",
       "quote2": "In general, inclination changes can take a very large amount of delta-v to perform, and most mission planners try to avoid them whenever possible to conserve fuel.",
       "url": "https://en.wikipedia.org/w/index.php?title=Orbital_inclination_change&oldid=1296348363",
       "tier": "secondary: Wikipedia, Orbital inclination change (revision 1296348363), citing Braeunig, Basics of Space Flight: Orbital Mechanics",
-      "note": "A formula, not a rule of thumb: hazards.planeChangeDeltaV_ms(v, di) computes it (derived)."
+      "note": "A formula, not a rule of thumb: hazards.planeChangeDeltaV_ms(v, di) computes it (derived). The quote leaves out the page's maths markup (\"…\" marks each formula); the formula itself is in `formula`."
     }
   }
 }

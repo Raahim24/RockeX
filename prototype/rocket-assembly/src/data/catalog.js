@@ -12,7 +12,7 @@ import referenceRockets from "./reference-rockets.json";
 import visuals from "./visuals.json";
 import presets from "./presets.json";
 import gcat from "./gcat-rockets.json";
-import { evaluateBuild, isVacuumOnly, rocketDistance, sanitizeEngineCount } from "../physics.js";
+import { RULES, evaluateBuild, isVacuumOnly, rocketDistance, sanitizeEngineCount } from "../physics.js";
 
 // Base + extra payloads, one record per id: the team's payloads.json now carries apollo-csm-lm too, so a refresh
 // must not list it twice. The base (team) record wins.
@@ -154,4 +154,47 @@ export function twinLine(rocket) {
   const years = rocket.firstLaunchYear === rocket.lastLaunchYear ? `${rocket.firstLaunchYear}` : `${rocket.firstLaunchYear}–${rocket.lastLaunchYear}`;
   const name = rocket.variant ? `${rocket.name} (${rocket.variant})` : rocket.name;
   return `${name} · ${rocket.length_m} m · ${plural(rocket.launches, "launch", "launches")}, ${plural(rocket.failures, "failure", "failures")} (${years})`;
+}
+
+// ---------- destination picker + launch readiness (mirrors SpaxeX main src/components/specs/LaunchReadiness.tsx) ----------
+// destinations(): one mission per destination, the mission ids the presets use.
+const DESTINATIONS = [
+  { id: "orbit", label: "Orbit", missionId: "leo", to: "to orbit" },
+  { id: "gto", label: "GTO", missionId: "gto", to: "to GTO" },
+  { id: "moon", label: "Moon", missionId: "moon-transfer", to: "to the Moon" },
+  { id: "mars", label: "Mars", missionId: "mars-transfer", to: "to Mars" },
+];
+export const destinations = () => DESTINATIONS.filter((d) => byId(catalog.missions, d.missionId)).map(({ id, label, missionId }) => ({ id, label, missionId }));
+// The team panel's wording and rounding: speed() is m/s under 1,000, else km/s to one decimal; the push needs
+// RULES.TWR_OK; parts problems in plain words (the same table as voiceTools.ts PLAIN_PROBLEM), once each, the
+// push left to its own line.
+const speed = (ms) => (Math.abs(ms) < 1000 ? `${Math.round(Math.abs(ms))} m/s` : `${(Math.abs(ms) / 1000).toFixed(1)} km/s`);
+const PLAIN_PROBLEM = [
+  [/propellant differ/, "wrong fuel for this tank"],
+  [/vacuum-only/, "can't work at sea level"],
+  [/don't fit/, "too many to fit"],
+  [/engine count/, "not a valid engine count"],
+  [/dry mass/, "tank too flimsy"],
+  [/TWR below 1\.0/, "too heavy to lift off"],
+];
+const plainProblem = (w) => PLAIN_PROBLEM.find(([re]) => re.test(w))?.[1] ?? w;
+// readiness(verdict, mission) -> { ready, title, to, lines: [{ key: "speed" | "push" | "parts", ok, text }], toFix }
+// verdict: physics.js evaluateBuild of the finished rocket; mission: a missions.json record (or its id), or none.
+export function readiness(verdict, mission) {
+  const m = typeof mission === "string" ? byId(catalog.missions, mission) : mission ?? null;
+  const problems = [...new Set(verdict.warnings.filter((w) => !/TWR/.test(w)).map(plainProblem))];
+  const dvOk = Boolean(m) && verdict.deltaVOk;
+  const twrOk = verdict.twrOk;
+  const rulesOk = problems.length === 0;
+  const twr = verdict.liftoffTWR.toFixed(2);
+  const lines = [
+    m
+      ? { key: "speed", ok: dvOk, text: dvOk ? `Speed: +${speed(verdict.marginDeltaV_ms)} spare` : `Speed: short ${speed(verdict.marginDeltaV_ms)}` }
+      : { key: "speed", ok: false, text: "Destination: not picked" },
+    { key: "push", ok: twrOk, text: twrOk ? `Push: ${twr}× weight` : `Push: ${twr}× · need ${RULES.TWR_OK}×` },
+    { key: "parts", ok: rulesOk, text: rulesOk ? "Parts: all good" : `Parts: ${problems.length} problem${problems.length === 1 ? "" : "s"}: ${problems[0]}` },
+  ];
+  const ready = Boolean(verdict.feasible);
+  const dest = m && DESTINATIONS.find((d) => d.missionId === m.id);
+  return { ready, title: ready ? "LAUNCH READY" : "NOT READY YET", to: m ? dest?.to ?? `to ${m.name}` : null, lines, toFix: lines.filter((l) => !l.ok).length };
 }

@@ -130,6 +130,13 @@ function dataTexture(w, h, fill, { srgb = false, channel = 0, tile_m = 0 } = {})
   return t;
 }
 
+// The roll pattern's black areas on normalized shell UVs (u around, v along): alternating eighths on the lower
+// part and a counter-phased band at the top. Shared by the textures and the rivet layout (no rivets on black).
+const rollBlack = (u, v) => {
+  const sector = Math.floor(u * 8);
+  return (v < 0.3 && sector % 2 === 0) || (v > 0.93 && sector % 2 === 1);
+};
+
 let TEX = null;
 function textures() {
   if (TEX) return TEX;
@@ -214,19 +221,11 @@ function textures() {
     roll: dataTexture(
       W,
       512,
-      (u, v) => {
-        const sector = Math.floor(u * 8);
-        const black = (v < 0.3 && sector % 2 === 0) || (v > 0.93 && sector % 2 === 1);
-        return black ? [0.06, 0.06, 0.065] : [0.92, 0.92, 0.9];
-      },
+      (u, v) => (rollBlack(u, v) ? [0.06, 0.06, 0.065] : [0.92, 0.92, 0.9]),
       { srgb: true },
     ),
     // Alpha for the roll pattern on x-ray shells: black bands opaque, the rest at the shell opacity (G channel).
-    rollAlpha: dataTexture(W, 512, (u, v) => {
-      const sector = Math.floor(u * 8);
-      const black = (v < 0.3 && sector % 2 === 0) || (v > 0.93 && sector % 2 === 1);
-      return black ? [1, 1, 1] : [SHELL_OPACITY, SHELL_OPACITY, SHELL_OPACITY];
-    }),
+    rollAlpha: dataTexture(W, 512, (u, v) => (rollBlack(u, v) ? [1, 1, 1] : [SHELL_OPACITY, SHELL_OPACITY, SHELL_OPACITY])),
     // Sprayed foam: mottled orange-brown (colour, sRGB); its red channel doubles as the bump. 3 m tile on uv1.
     foam: dataTexture(
       W,
@@ -388,6 +387,8 @@ export function createMaterials() {
 // Frost (same hook): a matte blue-white layer over cryogenic tank skin above an edge at mesh-local y, the edge
 // wavering with 3D noise and drifting slowly in time; patchy inside. material.frost = { value: Vector4(edgeY,
 // waver, amount, softness) } (amount 0 = none). The time uniform is shared and set before each frosted draw.
+// Instanced detail on a shell (its rivets) takes the same hook with its host's uniforms (see createPart), so the
+// rivets soot and frost with the skin they sit on.
 const frostTime = { value: 0 };
 const tickFrost = () => (frostTime.value = (typeof performance !== "undefined" ? performance.now() : Date.now()) / 1000);
 function sootHook(shader) {
@@ -396,7 +397,16 @@ function sootHook(shader) {
   shader.uniforms.uFrostT = frostTime;
   shader.vertexShader = shader.vertexShader
     .replace("#include <common>", "#include <common>\nvarying vec2 vSoot;\nvarying vec3 vSootP;")
-    .replace("#include <begin_vertex>", "#include <begin_vertex>\nvSoot = vec2(position.y, atan(position.x, position.z));\nvSootP = position;");
+    .replace(
+      "#include <begin_vertex>",
+      `#include <begin_vertex>
+      vec3 sootP = position;
+      #ifdef USE_INSTANCING
+        sootP = (instanceMatrix * vec4(position, 1.0)).xyz; // instanced detail: in its host piece's frame
+      #endif
+      vSoot = vec2(sootP.y, atan(sootP.x, sootP.z));
+      vSootP = sootP;`,
+    );
   shader.fragmentShader = shader.fragmentShader
     .replace(
       "#include <common>",
@@ -439,7 +449,7 @@ function sootHook(shader) {
       #endif`,
     );
 }
-const sootKey = () => "paint-soot-frost-v3";
+const sootKey = () => "paint-soot-frost-v4";
 
 // Bell glow: an emissive ramp on the nozzle while it fires, orange at the lip to dull red at the throat, the
 // inside (back faces) brightest. Chained after any hook the material already has (the x-ray shell's rim).
@@ -501,10 +511,10 @@ function paintedMaterials(t, classic) {
     Object.assign(c, po);
     return c;
   };
-  const white = sooty(paint(0xe9eae6));
+  const white = sooty(paint(0xc4c6c2)); // light grey, so the shading reads in the sun (round 22: no flat white)
   return {
     body: white,
-    roll: sooty(paint(0xe9e9e5, { map: t.roll })),
+    roll: sooty(paint(0xc4c4c0, { map: t.roll })),
     foam: sooty(phys({ color: 0xffffff, map: t.foam, bumpMap: t.foam, bumpScale: 1.6, roughness: 0.82, clearcoat: 0.05 })),
     bronze: sooty(paint(0xa65f35, { metalness: 0.15, roughness: 0.45 })),
     silver: sooty(paint(0xb9bdc2, { metalness: 0.7, roughness: 0.35 })),
@@ -1020,6 +1030,16 @@ function rivetTint(mesh) {
   return (c.getHSL({}).l > 0.35 ? c.multiplyScalar(0.8) : c.multiplyScalar(1.7).addScalar(0.04)).getHex();
 }
 const rivetsOn = (finish) => finish !== "orange-foam"; // sprayed foam shows no rivets
+// Drops rivets that would sit on the roll pattern's black areas (they take the white paint's tint). For quarter
+// shells whose UVs span u = phi / 2π over [0, π/2] and v = y / H; the rivets' piece-local azimuth folds into it.
+function offRoll(list, H) {
+  const q = Math.PI / 2;
+  return list.filter((m) => {
+    const [x, y, z] = [m.elements[12] / S, m.elements[13] / S, m.elements[14] / S];
+    const phi = ((Math.atan2(x, z) % q) + q) % q;
+    return !rollBlack(phi / TAU, y / H);
+  });
+}
 
 // ---------- engines ----------
 
@@ -1658,7 +1678,7 @@ function buildTank(spec, mats) {
     }
     const d0 = (0.02 * D) / R;
     list.push(...rivetArc(R, ya, d0, Math.PI / 2 - d0, pitch, rv), ...rivetArc(R, yb, d0, Math.PI / 2 - d0, pitch, rv));
-    rivets = instAttr(list);
+    rivets = instAttr(g.finish === "white-black-roll" && !g.enclosed ? offRoll(list, H) : list);
   }
   for (let q = 0; q < 4; q++) {
     const ry = (q * Math.PI) / 2;
@@ -1723,8 +1743,8 @@ function buildTank(spec, mats) {
 // joint at the tip (pre-tilted so it lies flat once the leg is out), a two-stage telescoping piston per leg
 // (outer tube pinned on the body, polished rod pinned on the leg; both follow the leg, see applyDeploy), hidden
 // inside the folded leg, and the upper brackets on the skin. Sizes are visual ratios.
-function legs(out, mats, R, H, D, shellDist, y0) {
-  const len = Math.min(0.24 * H, 2.6 * D); // visual
+function legs(out, mats, R, H, D, shellDist, y0, lenIn = null) {
+  const len = lenIn ?? Math.min(0.24 * H, 2.6 * D); // visual
   const w0 = 0.2 * D;
   const w1 = 0.11 * D;
   const t0 = 0.1 * D;
@@ -1904,7 +1924,7 @@ function buildInterstage(spec, mats) {
     rl.push(...rivetRow(o.clone().multiplyScalar(rAt(ya)).setY(ya), o.clone().multiplyScalar(rAt(yb)).setY(yb), pitch, rv));
   }
   for (const y of [ya - 0.012 * D, yb + 0.012 * D]) rl.push(...rivetArc(rAt(y), y, 2 * dl, Math.PI / 2 - 2 * dl, pitch, rv));
-  const rivets = rivetsOn(g.finish) ? instAttr(rl) : null;
+  const rivets = rivetsOn(g.finish) ? instAttr(g.finish === "white-black-roll" ? offRoll(rl, H) : rl) : null;
   for (let q = 0; q < 4; q++) {
     const ry = (q * Math.PI) / 2;
     const pc = P(iqRibbed, mat, { ry, order: 1 + q * 0.02, dir: radialPhi(ry + Math.PI / 4), dist: shellDist, side: DS, kind: "shell", lineGeo: ribGeo, fineGeo: iq });
@@ -1946,7 +1966,9 @@ function buildInterstage(spec, mats) {
 
 // ---------- payloads ----------
 
-// Payload pieces are tagged in group "p": the main body is the core, small bits stack above or below it.
+// Payload pieces are tagged in group "p": the main body is the core, small bits stack above or below it. The
+// adapter section (attach fitting and clamp band, or the capsule's instrument ring and its equipment) carries
+// mesh.userData.adapter = true: hide by that tag when the payload flies or lands on its own.
 function adapterPieces(out, mats, g) {
   const Rt = g.stageD_m / 2;
   const Rp = g.D_m / 2;
@@ -1954,6 +1976,7 @@ function adapterPieces(out, mats, g) {
   if (g.archetype === "capsule") {
     // Instrument-unit style ring at the stage diameter (visual).
     out.push(piece(machinedRing(Rt * 0.94, Rt, h, 0), mats.trim, { order: 0, dir: DOWN, dist: 0.12, ax: ["p", -1, 9], sym: true, edges: true }));
+    out.at(-1).mesh.userData.adapter = true;
     return;
   }
   // Payload attach fitting (cone) + machined clamp band at the payload interface.
@@ -1963,6 +1986,7 @@ function adapterPieces(out, mats, g) {
   const cb = Math.max(0.015, 0.012 * rtop);
   const clampRing = machinedRing(rtop * 0.85, rtop * 1.05, h * 0.1, h * 0.9);
   out.push(piece(merge([clampRing.clone(), boltRing(rtop * 1.06, h * 0.95, 24, cb, cb, cb * 0.8)]), mats.machined, { order: 0.05, dir: DOWN, dist: 0.07, ax: ["p", -1, 8], sym: true, edges: true, lineGeo: clampRing }));
+  for (const p of out.slice(-2)) p.mesh.userData.adapter = true;
 }
 
 function buildPayload(spec, mats) {
@@ -2330,7 +2354,7 @@ function capsule(P, mats, g, y0) {
   const Rt = g.stageD_m / 2;
   const iu = [];
   for (let i = 0; i < 8; i++) iu.push(box(0.035 * Rt, 0.55 * y0, 0.16 * Rt, Rt * 0.9, 0.5 * y0, 0).rotateY((-(i + 0.5) * TAU) / 8));
-  P(projectUV(merge(iu)), mats.darkMetal, { order: 0.05, dir: DOWN, dist: 0.12, ax: [-1, 9] });
+  P(projectUV(merge(iu)), mats.darkMetal, { order: 0.05, dir: DOWN, dist: 0.12, ax: [-1, 9] }).mesh.userData.adapter = true;
   // Lander folded inside the adapter, below the SPS bell (only seen when the panels open).
   const rIn = (y) => lerp(Rb, Rs, y / slaH);
   const lmTop = Math.min(0.62 * slaH, slaH - spsH - 0.05 * slaH);
@@ -2462,6 +2486,12 @@ function capsule(P, mats, g, y0) {
   P(projectUV(lathe(cm, 48).translate(0, yCm, 0)), mats.mliSilver, { order: 1.4, dist: 0.8, ax: [1, 0], sym: true, edges: true, dock: true });
   const lesH = g.lesH_m ?? 0;
   if (lesH > 0) {
+    // every tower piece is tagged (userData.escapeTower) so the director can drop it at "les-jettison"
+    const T = (geo, mat, o) => {
+      const pc = P(geo, mat, o);
+      pc.mesh.userData.escapeTower = true;
+      return pc;
+    };
     // tower: four tapering longerons, ring frames at five levels, X-bracing on every face of every bay
     const yL = yCm + cmH * 0.95;
     const tr = dims.les_base_diameter_m ? dims.les_base_diameter_m / 2 : 0.3 * Rc;
@@ -2481,24 +2511,24 @@ function capsule(P, mats, g, y0) {
         truss.push(rod(corner(i, levels[b]), corner((i + 1) % 4, levels[b + 1]), lr * 0.5, 1), rod(corner((i + 1) % 4, levels[b]), corner(i, levels[b + 1]), lr * 0.5, 1));
       }
     }
-    P(projectUV(merge(truss)), mats.darkMetal, { order: 1.5, dist: 1.0, ax: [1, 1] });
+    T(projectUV(merge(truss)), mats.darkMetal, { order: 1.5, dist: 1.0, ax: [1, 1] });
     // escape motor case with its four canted nozzles at the base, then the jettison motor, the canard
     // section (canards folded) and the nose, each its own lens layer
     const yM = yL + tH;
     const caseGeo = lathe([[0.001, 0], [0.13 * Rc, 0], [0.13 * Rc, 0.38 * lesH]], 24).translate(0, yM, 0);
-    P(projectUV(caseGeo.clone()), mats.trim, { order: 1.6, dist: 1.1, side: DS, ax: [1, 2], sym: true, edges: true, lineGeo: caseGeo });
+    T(projectUV(caseGeo.clone()), mats.trim, { order: 1.6, dist: 1.1, side: DS, ax: [1, 2], sym: true, edges: true, lineGeo: caseGeo });
     const nozzles = [];
     for (let i = 0; i < 4; i++) {
       const o = radial((i * TAU) / 4);
       nozzles.push(nozzle(o.clone().multiplyScalar(0.1 * Rc).setY(yM + 0.02 * lesH), o.clone().multiplyScalar(0.55).add(DOWN), 0.06 * lesH, 0.045 * Rc));
     }
-    P(projectUV(merge(nozzles.map(indexed))), mats.darkMetal, { order: 1.605, dist: 1.1, side: DS, ax: [1, 2] });
+    T(projectUV(merge(nozzles.map(indexed))), mats.darkMetal, { order: 1.605, dist: 1.1, side: DS, ax: [1, 2] });
     const jet = lathe([[0.13 * Rc, 0.38 * lesH], [0.135 * Rc, 0.4 * lesH], [0.135 * Rc, 0.42 * lesH], [0.09 * Rc, 0.46 * lesH]], 24).translate(0, yM, 0);
-    P(projectUV(jet.clone()), mats.trim, { order: 1.61, dist: 1.15, side: DS, ax: [1, 3], sym: true, edges: true, lineGeo: jet });
+    T(projectUV(jet.clone()), mats.trim, { order: 1.61, dist: 1.15, side: DS, ax: [1, 3], sym: true, edges: true, lineGeo: jet });
     const canards = [lathe([[0.09 * Rc, 0.46 * lesH], [0.09 * Rc, 0.5 * lesH], [0.06 * Rc, 0.54 * lesH]], 24).translate(0, yM, 0)];
     for (let i = 0; i < 4; i++) canards.push(box(0.08 * Rc, 0.03 * lesH, 0.006 * Rc, 0.12 * Rc, yM + 0.47 * lesH, 0).rotateY((-i * TAU) / 4));
-    P(projectUV(merge(canards)), mats.trim, { order: 1.62, dist: 1.2, side: DS, ax: [1, 4], sym: true });
-    P(projectUV(merge([lathe([[0.06 * Rc, 0.54 * lesH], [0.03 * Rc, 0.58 * lesH], [0.001, 0.6 * lesH]], 24).translate(0, yM, 0), new THREE.SphereGeometry(0.035 * Rc, 12, 8).translate(0, yM + 0.585 * lesH, 0)])), mats.darkMetal, { order: 1.63, dist: 1.25, side: DS, ax: [1, 5], sym: true });
+    T(projectUV(merge(canards)), mats.trim, { order: 1.62, dist: 1.2, side: DS, ax: [1, 4], sym: true });
+    T(projectUV(merge([lathe([[0.06 * Rc, 0.54 * lesH], [0.03 * Rc, 0.58 * lesH], [0.001, 0.6 * lesH]], 24).translate(0, yM, 0), new THREE.SphereGeometry(0.035 * Rc, 12, 8).translate(0, yM + 0.585 * lesH, 0)])), mats.darkMetal, { order: 1.63, dist: 1.25, side: DS, ax: [1, 5], sym: true });
   }
 }
 
@@ -2721,6 +2751,28 @@ export function createPart(spec, mats) {
       p.mesh.onBeforeRender = tickFrost;
     }
   }
+  // Rivets on a sooty / frosty skin take the skin's hook and uniforms, so they darken and frost with it. The
+  // part's rivet material is shared by its quarters (equal values); a rivet set whose host differs gets its own.
+  const same = (a, b) => (!a && !b) || (a && b && a.value.equals(b.value));
+  for (const p of pieces) {
+    const host = p.mesh.userData.looks?.painted;
+    if (!host?.userData.soot) continue;
+    for (const d of p.mesh.userData.details ?? []) {
+      if (d.userData.detail !== "rivet") continue;
+      let m = d.userData.looks?.painted ?? d.material;
+      if (m.soot && same(m.soot, host.soot) && same(m.frost, host.frost)) continue;
+      if (m.soot) {
+        m = m.clone();
+        if (d.userData.looks) d.userData.looks = { ...d.userData.looks, painted: m };
+        if (d.material !== d.userData.looks?.xray) d.material = m;
+      }
+      m.soot = host.soot;
+      m.frost = host.frost;
+      m.onBeforeCompile = sootHook;
+      m.customProgramCacheKey = sootKey;
+      if (host.frost) d.onBeforeRender = tickFrost;
+    }
+  }
   axisOffsets(pieces, clamp(0.035 * spec.height, 0.04, 0.3));
   pieces.sort((a, b) => a.order - b.order || a.bottomY - b.bottomY);
   assignSpins(pieces, spec.id);
@@ -2728,7 +2780,9 @@ export function createPart(spec, mats) {
     delete p.ax;
     delete p.sym;
   }
-  return { ...spec, group, pieces, built: false, busy: false };
+  const part = { ...spec, group, pieces, built: false, busy: false };
+  registerForDetail(part);
+  return part;
 }
 
 // Pieces with an articulated deploy (see the header for the hinge formula), in deploy order.
@@ -2749,6 +2803,62 @@ export function applyDeploy(piece, k) {
   piece.mesh.quaternion.copy(hingeQ).multiply(piece.rest.quaternion);
   for (const f of piece.followers ?? []) poseFollower(f);
 }
+// Landing legs for any stage that lands (round 22: the S-IVB on the Moon, an upper stage on Mars): four of the
+// Falcon-style legs above, folded up the part's sides and hinged near its base, long enough that once deployed
+// (~30° off vertical) the feet are below_u under the part's base (default 0.6 × its diameter; pass the engine's
+// length so the bell stays off the ground). They join the part like built-in legs (part.pieces, part.group,
+// painted look from mats): deployables(part) lists them, applyDeploy(leg, k) swings them out with their pistons.
+//   addLandingLegs(part, mats, { below_u }) -> { legs (the four deployables), pieces (legs, pistons, brackets),
+//     footY_u (underside of the feet, part frame, fully out) }   — idempotent (the same object again).
+// Visual proportions (est.).
+export function addLandingLegs(part, mats, { below_u = null } = {}) {
+  if (part.landingLegs) return part.landingLegs;
+  const R = part.radius / S;
+  const H = part.height / S;
+  const D = 2 * R;
+  const y0 = 0.04 * H;
+  const below = below_u != null ? below_u / S : 0.6 * D;
+  const len = Math.max(Math.min(0.24 * H, 2.6 * D), (below + y0 + 0.08 * D) / Math.cos(Math.PI / 6));
+  const built = [];
+  legs(built, mats, R, H, D, 0.4, y0, len);
+  const entries = built.map((p, i) => {
+    const bb = p.mesh.geometry.boundingBox;
+    p.mesh.userData.partId = part.id;
+    p.mesh.name = `${part.id}:landing-leg-${i}`;
+    part.group.add(p.mesh);
+    return { mesh: p.mesh, index: part.pieces.length + i, order: p.order ?? 3 + i * 0.01, engine: p.engine, kind: p.kind, bottomY: bb.min.y + p.mesh.position.y, topY: bb.max.y + p.mesh.position.y, rest: { position: p.mesh.position.clone(), quaternion: p.mesh.quaternion.clone() }, explode: p.explode, deploy: p.deploy, follow: p.follow, axisOffset: 0, spin: 0 };
+  });
+  for (const e of entries) {
+    if (!e.follow) continue;
+    const leader = entries[built.indexOf(e.follow.leader)];
+    e.follow = { ...e.follow, leader };
+    (leader.followers ??= []).push(e);
+  }
+  part.pieces.push(...entries);
+  const legPieces = entries.filter((e) => e.deploy);
+  // the feet's underside fully out (part frame)
+  let footY = Infinity;
+  const box = new THREE.Box3();
+  for (const leg of legPieces) {
+    applyDeploy(leg, 1);
+    leg.mesh.updateMatrix();
+    footY = Math.min(footY, box.copy(leg.mesh.geometry.boundingBox).applyMatrix4(leg.mesh.matrix).min.y);
+    applyDeploy(leg, 0);
+  }
+  part.landingLegs = { legs: legPieces, pieces: entries, footY_u: footY };
+  return part.landingLegs;
+}
+
+// The payload's launch escape tower (Apollo: truss, escape motor and nozzles, jettison motor, canards, nose), for
+// the "les-jettison" event: { pieces, meshes, bottomY_u, topY_u } (part frame) or null. To drop it, move the
+// meshes into a group of your own with Object3D.attach (world transforms kept) and fly that off; the rest of the
+// part stays as it is.
+export function escapeTowerOf(part) {
+  const pieces = part.pieces.filter((p) => p.mesh.userData.escapeTower);
+  if (!pieces.length) return null;
+  return { pieces, meshes: pieces.map((p) => p.mesh), bottomY_u: Math.min(...pieces.map((p) => p.bottomY)), topY_u: Math.max(...pieces.map((p) => p.topY)) };
+}
+
 // Landable sub-part of a payload (the Apollo LM: descent stage, ascent stage, four legs), or null. Returns a
 // separate group made of copies of those pieces (shared geometry, own materials, both looks) with its origin
 // at the centre of the descent stage's base:
@@ -2884,6 +2994,66 @@ export function setShellOpacity(part, value) {
     for (const e of [p.mesh.userData.edges, p.mesh.userData.edgesFine]) if (e) e.material.opacity = clamp((e.userData.base * value) / SHELL_OPACITY, 0, 1);
   }
 }
+
+// ---------- detail level (frame-time guard, ?lite=1) ----------
+
+// setDetailLevel(level, target?): 2 = everything; 1 = instanced detail (rivets, bolts, clamps, straps) hidden
+// and edge lines only on shells; 0 = no instanced detail, no lines, and the smallest 40 % of each part's
+// "detail"-kind pieces (by bounding radius) not drawn. Hiding moves an object to HIDDEN_LAYER, which no camera,
+// shadow camera or default Raycaster sees: nothing recompiles, `visible` stays the choreography's (build
+// animations and the look switch keep working), hidden pieces keep animating and are never picked, and the
+// original layers come back exactly on the way up. target: a part, an array of parts, or none for every live
+// part (createPart registers them and applies the current level to new parts). Returns the level set.
+const HIDDEN_LAYER = 31;
+let detailLevel = 2;
+const liveParts = new Set(); // WeakRef<part>
+function registerForDetail(part) {
+  // the smallest 40 % of the detail-kind pieces, by bounding radius (scene units)
+  const small = part.pieces
+    .filter((p) => p.kind === "detail")
+    .map((p) => {
+      const g = p.mesh.geometry;
+      if (!g.boundingSphere) g.computeBoundingSphere();
+      return [p, g.boundingSphere.radius];
+    })
+    .sort((a, b) => a[1] - b[1]);
+  part.lodSmall = new Set(small.slice(0, Math.floor(small.length * 0.4)).map(([p]) => p));
+  if (typeof WeakRef !== "undefined") liveParts.add(new WeakRef(part));
+  if (detailLevel !== 2) applyDetailLevel(part, detailLevel);
+}
+function hideOn(o, hide) {
+  if (!o) return;
+  const u = (o.userData.lod ??= { mask: o.layers.mask });
+  o.layers.mask = hide ? 1 << HIDDEN_LAYER : u.mask;
+}
+function applyDetailLevel(part, level) {
+  for (const p of part.pieces) {
+    const m = p.mesh;
+    hideOn(m, level === 0 && part.lodSmall?.has(p));
+    const shell = m.userData.kind === "shell";
+    for (const e of [m.userData.edges, m.userData.edgesFine]) hideOn(e, level === 0 || (level === 1 && !shell));
+    for (const d of m.userData.details ?? []) hideOn(d, level < 2);
+  }
+  part.detailLevel = level;
+}
+export function setDetailLevel(level = 2, target = null) {
+  const lv = Number.isFinite(+level) ? clamp(Math.round(+level), 0, 2) : 2;
+  let parts;
+  if (target) parts = [].concat(target);
+  else {
+    detailLevel = lv;
+    parts = [];
+    for (const ref of liveParts) {
+      const part = ref.deref();
+      if (part) parts.push(part);
+      else liveParts.delete(ref);
+    }
+  }
+  for (const part of parts) if (part?.pieces) applyDetailLevel(part, lv);
+  return lv;
+}
+export const getDetailLevel = () => detailLevel;
+export const DETAIL_HIDDEN_LAYER = HIDDEN_LAYER;
 
 // ---------- environment ----------
 
