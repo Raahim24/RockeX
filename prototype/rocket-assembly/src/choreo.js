@@ -1506,6 +1506,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   const bump = (u) => (u <= 0 || u >= 1 ? 0 : Math.sin(Math.PI * u) ** 2);
   const ease1 = (x, goal, dt, tau) => x + (goal - x) * (1 - Math.exp(-dt / tau));
   const chaseV = new THREE.Vector3();
+  const chaseUp = new THREE.Vector3();
+  const qChase = new THREE.Quaternion();
+  const qIdentity = new THREE.Quaternion();
   const chaseP = new THREE.Vector3();
   const goalDir = new THREE.Vector3();
   const rotAxis = new THREE.Vector3();
@@ -1598,9 +1601,13 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     // From the cruise on (Moon / Mars) the frame is the target's: up away from its centre, forward along the
     // velocity relative to it. Continuous from the cruise into orbit and the descent: no turn at insertion, the
     // target below and growing (Head 1, round 25: it swung 420° in 10 s there).
-    const dest = L.kind === "moon" || L.kind === "mars" ? L.kind : null;
+    // (only a flight that gets there: a failed transfer's coast stays in Earth's frame)
+    const dest = (L.kind === "moon" || L.kind === "mars") && ["landed", "in-orbit-of"].includes(L.F.endState?.type) ? L.kind : null;
     const toward = dest && (seg0 === "transfer" || seg0 === "coast" || L.smp.body === dest);
-    const live = toward || /reentry|landing|braking|approach|vertical|entry|parachute|deorbit|booster-descent|lunar-orbit|mars-orbit/.test(seg0);
+    // (Earth after the climb: the local frame too, so the stage stays in frame while Earth turns beneath in a
+    // time-lapse; side-on like the climb's tracker, so SECO hands over without a visible move)
+    const earthOrbit = L.kind === "earth" && seg0 !== "ascent" && L.smp.body !== "space";
+    const live = toward || earthOrbit || /reentry|landing|braking|approach|vertical|entry|parachute|deorbit|booster-descent|lunar-orbit|mars-orbit/.test(seg0);
     c.lockK = ease1(c.lockK ?? 0, live ? 0 : 1, dt, 0.8); // 1 = locked
     const centre = bodyCentre(toward ? dest : L.smp.body === "space" ? "earth" : L.smp.body, L.smp);
     const upNow = spNow.copy(L.V).sub(centre).normalize().applyQuaternion(L.QnInv);
@@ -1645,8 +1652,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     // (eased, so a segment change never steps the framing: in the local frame the view follows it exactly)
     const black2 = state.cut >= 0.98 || c.spEl == null;
-    c.spEl = black2 ? THREE.MathUtils.degToRad(low ? 10 : toward ? 8 : away ? 14 : 24) : ease1(c.spEl, THREE.MathUtils.degToRad(low ? 10 : toward ? 8 : away ? 14 : 24), dt, 1.2);
-    c.spDist = black2 ? (low ? 1.3 : 1.6) : ease1(c.spDist, low ? 1.3 : 1.6, dt, 1.2);
+    const elGoal = THREE.MathUtils.degToRad(low ? 10 : toward || earthOrbit ? 8 : away ? 14 : 24);
+    const distGoal = low ? 1.3 : earthOrbit ? 1 : 1.6;
+    c.spEl = black2 ? elGoal : ease1(c.spEl, elGoal, dt, 1.2);
+    c.spDist = black2 ? distGoal : ease1(c.spDist, distGoal, dt, 1.2);
     const el = c.spEl;
     const dist = L.trackDist * c.spDist;
     // Riding the target's local frame (orbit, braking, the descent): the stage steady in frame, the surface moving
@@ -1660,8 +1669,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     // read as the stage turning; Mars turns side-on over its entry for the chute)
     // (Earth orbit beats after SECO, the payload release among them, the same three-quarter view: from straight
     // behind the stage reads end-on)
-    const orbitBeat = !away && !low && L.smp.body !== "space" && L.smp.segment !== "ascent";
-    const yawGoal = L.kind === "mars" && low ? Math.PI / 2 : away || orbitBeat ? THREE.MathUtils.degToRad(35) : 0;
+    // Earth orbit: side-on on the climb camera's side (its azimuth in the site frame)
+    spSide.crossVectors(spFwd, spUp).normalize();
+    const climbSide = Math.sign(spSide.x * Math.sin(c.azSide) + spSide.z * Math.cos(c.azSide)) || 1;
+    const yawGoal = L.kind === "mars" && low ? Math.PI / 2 : earthOrbit && !low ? (climbSide * Math.PI) / 2 : away ? THREE.MathUtils.degToRad(35) : 0;
     c.spYaw = black2 ? yawGoal : ease1(c.spYaw ?? yawGoal, yawGoal, dt, 1.5);
     const yaw = c.spYaw;
     spSide.crossVectors(spFwd, spUp).normalize();
@@ -1690,8 +1701,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       spGoal.copy(spLook).add(new THREE.Vector3(Math.sin(az) * Math.cos(e), Math.sin(e), Math.cos(az) * Math.cos(e)).multiplyScalar(d));
     }
     // In space, aim a little below the vehicle so the Earth and its limb fill the lower part of the frame.
-    if (!low && !toward) spLook.addScaledVector(spUp, -0.12 * dist); // (toward the target: level, its surface in the lower part)
-    c.space = state.cut >= 0.98 ? 1 : Math.min(1, (c.space ?? 0) + dt / 2.5); // blend in from the ascent framing over 2.5 s (at once on a black frame)
+    if (!low && !toward && !earthOrbit) spLook.addScaledVector(spUp, -0.12 * dist); // (toward the target / Earth orbit: level, the surface in the lower part)
+    // blend in from the ascent framing over 2.5 s (at once on a black frame, and on Earth, where the climb's tracker
+    // already stands where the orbit framing does)
+    c.space = state.cut >= 0.98 || earthOrbit ? 1 : Math.min(1, (c.space ?? 0) + dt / 2.5);
     const k = c.space * c.space * (3 - 2 * c.space);
     camera.position.lerp(spGoal, k);
     camera.up.copy(Y).lerp(spUp, k).normalize(); // the horizon level with the planet below
@@ -1716,7 +1729,17 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     chaseDown.set(0, -1, 0);
     chaseLook.copy(chaseT).addScaledVector(chaseDown, c.look * c.dist);
     // Vehicle-anchored position, and the pad-anchored one riding down with the deck.
-    chaseV.set(Math.sin(c.az) * Math.cos(c.el), Math.sin(c.el), Math.cos(c.az) * Math.cos(c.el)).multiplyScalar(c.dist).add(chaseT);
+    chaseV.set(Math.sin(c.az) * Math.cos(c.el), Math.sin(c.el), Math.cos(c.az) * Math.cos(c.el)).multiplyScalar(c.dist);
+    // Off the deck on the timeline the tracker keeps to the vehicle's local vertical (away from Earth's centre), not
+    // the pad's: the same frame the orbit framing uses, so SECO hands over with no move (one shot after the climb).
+    if (L.F && L.smp?.segment === "ascent" && c.anchor > 0) {
+      chaseUp.copy(L.V).normalize().applyQuaternion(L.QnInv);
+      qChase.setFromUnitVectors(Y, chaseUp);
+      qChase.slerp(qIdentity, 1 - c.anchor);
+      chaseV.applyQuaternion(qChase);
+      camera.up.copy(Y).applyQuaternion(qChase);
+    }
+    chaseV.add(chaseT);
     const p = chaseP.copy(L.padCam.pose.position);
     if (L.pad) p.applyQuaternion(L.pad.quaternion).add(L.pad.position); // rides with the pad as it falls away
     // Off the deck for good once the blend is nearly done, and never more than a few chase distances behind
@@ -1777,7 +1800,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     else skyF.copy(L.bg0).lerp(NIGHT_HAZE, 0.5 * haze);
     const dist = camera.position.distanceTo(controls.target);
     const below = L.pad ? Math.max(0, -L.pad.position.y) : 0;
-    state.sky = { w: L.skyW, horizon: skyF, stars: 1, near: dist + 5, far: dist + 300 + below * 1.5 };
+    // (airless Moon: no near fog at all; Mars: its dust haze, far out, the ground near the stage crisp)
+    if (body === "moon") state.sky = { w: L.skyW, horizon: skyF, stars: 1, near: 1e7, far: 2e7 };
+    else if (body === "mars") state.sky = { w: L.skyW, horizon: skyF, stars: 1, near: dist + 2500, far: dist + 30000 };
+    else state.sky = { w: L.skyW, horizon: skyF, stars: 1, near: dist + 5, far: dist + 300 + below * 1.5 };
   }
   // Where the near origin is above the pad (km, world axes): it rides up with the vehicle (the pad drops away).
   const originKm = new THREE.Vector3();
@@ -1965,7 +1991,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     L.landingReady = true;
     const body = L.F.endState.body ?? L.kind;
     L.landBody = body;
-    L.turnSeg = L.F.segments.find((x) => x.name === (body === "earth" ? "deorbit-coast" : "transfer"));
+    // (the near axes turn to the landing site's frame across the cruise: UI 2's one cut after the climb, "cruise";
+    // without it they would stand in the site's frame from the countdown, the climb seen tilted)
+    L.turnSeg = L.F.segments.find((x) => x.name === (body === "earth" ? "deorbit-coast" : "transfer")) ?? (body === "earth" ? null : L.F.segments.find((x) => x.name === "cruise"));
     if (body === "earth") {
       // Back on Earth: the launch pad itself, or UI4's local ocean with the drone ship at the landing point.
       const land = L.F.endState.landing ?? {};
@@ -2317,11 +2345,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const prev = (L.flipPrev ??= flipA.clone());
     const rate = dt > 0 ? THREE.MathUtils.radToDeg(prev.angleTo(flipA)) / dt : 0;
     prev.copy(flipA);
-    const exempt = smp.segment === "ascent" || L.tumbling || L.brokenUp || L.F.endState?.type === "lost" || L.real < 0;
+    const exempt = smp.segment === "ascent" || L.tumbling || L.brokenUp || L.F.endState?.type === "lost" || L.real < 0 || L.real < (L.lapseUntil ?? -Infinity);
     L.flipping = !exempt && rate > 15;
     if (L.flipping && !L.cut) {
       const until = L.real + 2;
-      L.cut = { t: 0, up: 0, fired: false, hold: 1, wait: () => L.flipping && L.real < until, fn: () => {} };
+      L.cut = { why: "turn", t: 0, up: 0, fired: false, hold: 1, wait: () => L.flipping && L.real < until, fn: () => {} };
     }
   }
   // ---------- picture-in-picture (user, round 25): the first stage's catch beside the release ----------
@@ -2367,13 +2395,19 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         L.catch.burst.fire(L.pad.worldToLocal(I.g.getWorldPosition(new THREE.Vector3())), stackRadius());
       }
     }
-    // Its camera: the catch framing (from the pad camera's side, on the stage high up, widening over the last
-    // ~3 km to take in the tower and its arms).
-    const near = 1 - THREE.MathUtils.smoothstep(Math.max(0, b.alt_km * 1000), 300, 3000);
-    I.g.localToWorld(iLook.set(0, I.H * 0.55, 0));
-    const d = THREE.MathUtils.lerp(I.H * 2.4, Math.max(I.H * 2.4, (L.catch?.armY ?? 0) * 2.6), near);
-    const az = L.chase.azSide;
-    const e = THREE.MathUtils.degToRad(9);
+    // Its camera (Head 1, round 25): low, across the tower–stage line (the tower and its arms beside the booster,
+    // nothing in front of it: the leaned strongback stands on the far side), the booster ~60 % of the frame height.
+    if (I.az == null) {
+      // the tower's bearing from the stage, in the near frame (world positions: the tower's own is complex-local)
+      const tw = L.anchors?.tower ? L.anchors.tower.getWorldPosition(new THREE.Vector3()).sub(I.g.getWorldPosition(new THREE.Vector3())) : null;
+      const phiT = tw ? Math.atan2(tw.x, tw.z) : L.chase.azSide - Math.PI / 2;
+      const off = (a) => Math.abs(Math.atan2(Math.sin(a - L.chase.azSide), Math.cos(a - L.chase.azSide)));
+      I.az = off(phiT + Math.PI / 2) <= off(phiT - Math.PI / 2) ? phiT + Math.PI / 2 : phiT - Math.PI / 2;
+    }
+    I.g.localToWorld(iLook.set(0, I.H * 0.58, 0));
+    const d = (I.H / 0.6) / (2 * Math.tan(THREE.MathUtils.degToRad(insetCam.fov / 2)));
+    const az = I.az;
+    const e = THREE.MathUtils.degToRad(4);
     iDir.set(Math.sin(az) * Math.cos(e), Math.sin(e), Math.cos(az) * Math.cos(e));
     insetCam.position.copy(iLook).addScaledVector(iDir, d);
     insetCam.up.set(0, 1, 0);
@@ -2383,7 +2417,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   // For main: the inset's camera and caption while the booster's catch plays (null otherwise).
   function insetView() {
     const I = L?.inset;
-    if (!I?.smp || L.done) return null;
+    if (!I?.smp) return null; // (held at the end on the caught booster until R)
     const b = I.smp;
     const caught = [...I.beats].some((x) => x.type === "touchdown");
     const what = caught ? " · CAUGHT" : b.throttle > 0.01 ? " · LANDING BURN" : "";
@@ -2403,31 +2437,37 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       const tEnd = cruiseSegs.length ? cruiseSegs[cruiseSegs.length - 1].t1_screen : null;
       if (tEnd != null && L.real >= tEnd - CUT_DOWN && L.real < tEnd + 0.3) {
         L.cruiseEndCut = true;
-        if (!L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < tEnd + 0.05, fn: () => {} };
+        if (!L.cut) L.cut = { why: "cruise-end", t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < tEnd + 0.05, fn: () => {} };
       }
     }
     // Round 24: where the vehicle on screen changes (f._cuts, story time: the release → the booster's final
     // descent), the same quick fade; the swap happens on the black frame once the sample is the booster's.
-    for (const ct of F._cuts ?? []) {
+    for (const ct of F.booster?.inset ? [] : F._cuts ?? []) { // (none with the picture-in-picture: no cut in the main view)
       const ts = F.simToScreen(ct);
       if ((L.cutsDone ??= new Set()).has(ct) || L.real < ts - CUT_DOWN || L.real > ts + 0.3) continue;
       L.cutsDone.add(ct);
-      if (!L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < ts + 0.03, fn: () => {} };
+      if (!L.cut) L.cut = { why: "vehicle", t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < ts + 0.03, fn: () => {} };
     }
     // UI 2's time-skips (coasts cut out of the story): a quick fade to black just before, held black while the
     // vehicle jumps (≤ 0.5 s), back up after; the camera snaps to its new view on the black frame.
     for (const e of F.events) {
-      if (e.type !== "time-skip" || e.cutDone || L.real < e.t_screen - CUT_DOWN || L.real > e.t_screen + 0.3) continue;
+      if (e.type !== "time-skip" || e.cutDone || L.real < e.t_screen - CUT_DOWN - 0.05 || L.real > e.t_screen + 0.3) continue;
       e.cutDone = true;
       const until = e.to_t_screen ?? e.t_screen;
+      if (L.kind === "earth") {
+        clearDebris(); // an Earth coast plays as a time-lapse on the same camera: no black frame (user, round 25)
+        L.lapseUntil = until + 0.2; // (the turn guard stands down through it: a time-lapse lands in its next attitude)
+        continue;
+      }
       if (until - e.t_screen > 0.6) {
         // the Moon / Mars cruise (~2 s) is shown: a quick fade at its start only, the camera taking the target's
         // frame on the black frame
         const t1 = e.t_screen + 0.15;
-        if (!L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < t1, fn: clearDebris };
+        if (!L.cut) L.cut = { why: "cruise", t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < t1, fn: clearDebris };
         continue;
       }
-      if (!L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 0, wait: () => L.real < until, fn: clearDebris };
+      // (fully black from just before the jump until a beat after it: the attitude and the camera re-place unseen)
+      if (!L.cut) L.cut = { why: "skip", t: 0, up: 0, fired: false, hold: 2, wait: () => L.real < until + 0.06, fn: clearDebris };
     }
     if (!L.done) L.real += dt;
     const tS = L.real;
@@ -2443,7 +2483,12 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     if (smp.segment !== "ascent") prepareLanding();
     if (smp.segment === "booster-descent" && !L.boosterOn) showBooster();
-    if (F.booster?.inset && !L.inset && L.real >= F.booster.start_screen && !L.done) startInset();
+    // (from just before the landing burn: the burn, the arms, the catch; user, round 25)
+    if (F.booster?.inset && !L.inset && !L.done) {
+      const burn = F.booster.beats?.find((b) => b.type === "landing-burn-start");
+      const from = F.booster.start_screen + Math.max(0, (burn?.t_local ?? 0) - 0.8);
+      if (L.real >= from) startInset();
+    }
     flipGuard(smp, dt);
     placeFlight(smp);
     if (L.inset) updateInset(); // (after the near origin moved: the booster and the pad from the same vehicle position)

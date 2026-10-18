@@ -994,6 +994,23 @@ function* detailSteps(body) {
   return out;
 }
 
+// Airless ground (round 23): no sky to light it, so a scene's sky fill (hemisphere / ambient, e.g. the pad's dusk
+// recipe still on at the Moon) must not wash it blue-grey: hemisphere and ambient irradiance × k, no environment
+// reflection. airlessLights(chunk, k) patches lights_fragment_begin (k a GLSL expression or uniform name);
+// airlessMaterial(m, k = 0.08) does it to a MeshStandardMaterial (the horizon ring round a Moon patch).
+export const airlessLights = (chunk, k) =>
+  chunk
+    .replace("irradiance += getHemisphereLightIrradiance( hemisphereLights[ i ], geometryNormal );", `irradiance += ${k} * getHemisphereLightIrradiance( hemisphereLights[ i ], geometryNormal );`)
+    .replace("vec3 irradiance = getAmbientLightIrradiance( ambientLightColor );", `vec3 irradiance = ${k} * getAmbientLightIrradiance( ambientLightColor );`);
+export function airlessMaterial(m, k = 0.08) {
+  m.envMapIntensity = 0;
+  m.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace("#include <lights_fragment_begin>", airlessLights(THREE.ShaderChunk.lights_fragment_begin, k.toFixed(3)));
+  };
+  m.customProgramCacheKey = () => `airless-${k.toFixed(3)}`;
+  return m;
+}
+
 // createTerrain({ body: "moon" | "mars", size_u, seed, padRadius_u, sunDir, tint, sunLight = true })
 //   -> { object3d, sun (null with sunLight: false), sunDir (site frame, unit), heightAt(x, z), padRadius_u,
 //        prewarm(renderer), setHaze(colour, d_u), dispose() }
@@ -1285,7 +1302,7 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
   normal.needsUpdate = true;
   const groundMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: albedo, normalMap: normal, normalScale: new THREE.Vector2(1.6, 1.6), roughness: 0.97, metalness: 0 });
   // haze: aerial perspective toward uHaze over uHazeD (1/e distance, scene units; 0 = none), Mars by default
-  const tu = { uFine: { value: m(4) }, uCoarse: { value: m(60) }, uLow: { value: m(220) }, uHalf: { value: half }, uWind: { value: new THREE.Vector2(wx, wz) }, uDuneL: { value: m(42) }, uDuneH: { value: m(4) }, uBigL: { value: DUNE_BIG_L }, uBigH: { value: DUNE_BIG_H }, uHaze: { value: mars ? skyAt(0, sd, "mars").horizon : new THREE.Color() }, uHazeD: { value: mars ? m(30000) : 0 }, uFadeA: { value: 1 } };
+  const tu = { uFine: { value: m(4) }, uCoarse: { value: m(60) }, uLow: { value: m(220) }, uHalf: { value: half }, uWind: { value: new THREE.Vector2(wx, wz) }, uDuneL: { value: m(42) }, uDuneH: { value: m(4) }, uBigL: { value: DUNE_BIG_L }, uBigH: { value: DUNE_BIG_H }, uHaze: { value: mars ? skyAt(0, sd, "mars").horizon : new THREE.Color() }, uHazeD: { value: mars ? m(30000) : 0 }, uFadeA: { value: 1 }, uAmbK: { value: mars ? 1 : 0.08 } };
   if (mars) groundMat.defines = { TERR_MARS: "" };
   groundMat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, tu);
@@ -1296,7 +1313,7 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
       .replace(
         "void main() {",
         /* glsl */ `
-        uniform float uFine, uCoarse, uLow, uHalf, uHazeD, uFadeA;
+        uniform float uFine, uCoarse, uLow, uHalf, uHazeD, uFadeA, uAmbK;
         uniform vec3 uHaze;
         varying float vSunVis;
         varying vec3 vTerrP;
@@ -1385,9 +1402,10 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
       .replace("#include <map_fragment>", "diffuseColor *= terrAlbedo();")
       .replace("#include <normal_fragment_maps>", "vec3 mapN = terrNormal();\nmapN.xy *= normalScale;\n#ifdef TERR_MARS\nvec4 dune = terrDune();\nmapN.xy += vec2(-dune.x, dune.y);\n#endif\nnormal = normalize( tbn * mapN );")
       .replace("#include <fog_fragment>", "#include <fog_fragment>\nif (uHazeD > 0.0) gl_FragColor.rgb = mix(gl_FragColor.rgb, uHaze, 1.0 - exp(-length(vViewPosition) / uHazeD));")
-      .replace("#include <lights_fragment_begin>", THREE.ShaderChunk.lights_fragment_begin.replace("getDirectionalLightInfo( directionalLight, directLight );", "getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= vSunVis;"));
+      .replace("#include <lights_fragment_begin>", airlessLights(THREE.ShaderChunk.lights_fragment_begin, "uAmbK").replace("getDirectionalLightInfo( directionalLight, directLight );", "getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= vSunVis;"));
   };
-  groundMat.customProgramCacheKey = () => "terrain-antitile-v5";
+  groundMat.customProgramCacheKey = () => "terrain-antitile-v6";
+  if (!mars) groundMat.envMapIntensity = 0; // airless: no sky to reflect
   groundMat.transparent = true; // the faded rim (uFadeA): onto the far ground (Mars) or the horizon ring (Moon)
   const ground = new THREE.Mesh(geo, groundMat);
   ground.renderOrder = -1; // first among the transparent: effects above it draw over it
@@ -1451,6 +1469,7 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
     0.1,
   );
   rocks.name = "terrain-boulders";
+  if (!mars) airlessMaterial(rocks.material);
   rocks.castShadow = true;
   rocks.receiveShadow = true;
   const NP = 2600;
@@ -1467,6 +1486,7 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
     0,
   );
   pebbles.name = "terrain-pebbles";
+  if (!mars) airlessMaterial(pebbles.material);
   pebbles.receiveShadow = true;
 
   let sun = null;

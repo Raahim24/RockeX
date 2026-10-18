@@ -31,7 +31,7 @@ import { mountReadiness } from "./ui/readiness.js";
 import { prepareTerrain } from "./planet.js";
 import { createGroundMap } from "./fx/launchfx.js";
 import { createWorld } from "./world.js";
-import { flightTimeline, flightSummaryText } from "./flight.js";
+import { flightTimeline, flightSummaryText, lightingFor } from "./flight.js";
 import { assessLaunch, effectsForFlight, CALM_CONDITIONS } from "./hazards.js";
 import { createLightning, createAurora } from "./fx/launchfx.js";
 import * as f from "./ui/format.js";
@@ -454,7 +454,9 @@ const PANEL_ON = new URLSearchParams(location.search).get("panel") === "1";
 // story (the release, then a cut to the booster's descent).
 const PIP_ON = new URLSearchParams(location.search).get("pip") !== "0";
 const readyUi = mountReadiness({ hud: shell.hud, destinations: DESTINATIONS, onDestination: (missionId) => setMission(missionId) });
-const panelPhase = (phase) => document.body.classList.toggle("rdy-off", !PANEL_ON && phase !== "result");
+// (user, round 25: no FLIGHT RESULT card either: the end line stays in the HUD, the sentences go to Grok in
+// assembly:report, and the booster's catch holds in the picture-in-picture where the card was)
+const panelPhase = () => document.body.classList.toggle("rdy-off", !PANEL_ON);
 panelPhase("pad");
 const rangeUi = {
   setPhase: (phase) => {
@@ -575,6 +577,21 @@ const skyBar = document.createElement("div");
 skyBar.className = "sky-toggles";
 skyBar.innerHTML = `<button type="button" data-sky="time"></button><button type="button" data-sky="weather"></button>`;
 shell.brand.appendChild(skyBar);
+let destLit = null;
+function lightForBody(body) {
+  const lt = lightingFor(body);
+  key.color.set(body === "moon" ? 0xffffff : 0xffe8d0); // the sun through no air / through dust
+  keyBase = key.intensity = 3.4;
+  fill.color.set(0xffffff);
+  fill.intensity = lt.ambient * 4;
+  hemi.color.set(lt.skyColour);
+  hemi.groundColor.set(body === "moon" ? 0x2a2a2a : 0x4a3424);
+  hemi.intensity = lt.ambient * 3;
+  scene.environmentIntensity = body === "moon" ? 0.04 : 0.25;
+  renderer.toneMappingExposure = body === "moon" ? 1.15 : 1; // (the low sun is the Moon's only light: grey regolith, not dark)
+  skyFog = null;
+  FOG0.set(lt.skyColour);
+}
 function skyButtons() {
   skyBar.querySelector('[data-sky="time"]').textContent = { day: "Day", dusk: "Dusk", night: "Night" }[skyState.time] ?? "Dusk";
   skyBar.querySelector('[data-sky="weather"]').textContent = skyState.weather === "clear" ? "Clear" : "Cloudy";
@@ -1806,9 +1823,18 @@ function frame() {
     const up = viewerKm.copy(vv.pos_km);
     const alt = up.length() - world.bodies.earth.radius_km;
     bright = alt < 120 && up.normalize().dot(world.sunDir) > -0.08;
-    if (keyBase != null) key.intensity = keyBase * (1 - 0.25 * THREE.MathUtils.smoothstep(alt, 2, 10));
+    if (keyBase != null) key.intensity = destLit ? keyBase : keyBase * (1 - 0.25 * THREE.MathUtils.smoothstep(alt, 2, 10)); // (not at the destination: alt is Earth's)
   } else if (keyBase != null && key.intensity !== keyBase) {
     key.intensity = keyBase;
+  }
+  // At the destination the scene is lit as that body is (arrival.js lightingFor; Head 1, round 25): the Moon
+  // airless (black sky to the horizon, no fog, almost no sky light: crisp grey regolith), Mars under its dust
+  // haze; none of the pad's sky recipe (dusk blue, its fog band and exposure). Back on the pad (R) it returns.
+  const destBody = choreo.state.launch && (telemetry.body === "moon" || telemetry.body === "mars") ? telemetry.body : null;
+  if (destBody !== destLit) {
+    destLit = destBody;
+    if (destBody) lightForBody(destBody);
+    else applySky();
   }
   // Under Mars' butterscotch sky (below ~60 km) the HUD line and the logo keep their dark scrim too.
   if (vv && choreo.state.launch && telemetry.body === "mars" && telemetry.alt_m < 60000) bright = true;

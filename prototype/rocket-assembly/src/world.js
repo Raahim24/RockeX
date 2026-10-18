@@ -36,7 +36,7 @@
 // Scattering coefficients, cloud height, haze and colours are visual.
 import * as THREE from "three";
 import { atmosphereFor, lightingFor } from "./arrival.js";
-import { planetTexture, createTerrain, createOcean, horizonDisc, skyAt as daySkyAt } from "./planet.js";
+import { planetTexture, createTerrain, createOcean, horizonDisc, airlessMaterial, skyAt as daySkyAt } from "./planet.js";
 import { createCloudLayer } from "./fx/launchfx.js";
 import { SCALE } from "./layout.js";
 
@@ -991,7 +991,8 @@ export function createWorld({ renderer = null } = {}) {
       // shows below the horizon: black sky right down to the ground, no seam
       if (!b.atmo) {
         const am = inner.albedoMean;
-        horizonRing = new THREE.Mesh(horizonDisc(120 * NEAR_U_PER_KM, RADIUS_KM[name] * NEAR_U_PER_KM, size_u * 0.35), new THREE.MeshStandardMaterial({ color: new THREE.Color(tint.r * am * ch("r"), tint.g * am * ch("g"), tint.b * am * ch("b")), roughness: 0.97, metalness: 0 }));
+        // (airless: lit by the sun alone, like the patch; a scene's sky fill would wash it into a pale plane)
+        horizonRing = new THREE.Mesh(horizonDisc(120 * NEAR_U_PER_KM, RADIUS_KM[name] * NEAR_U_PER_KM, size_u * 0.35), airlessMaterial(new THREE.MeshStandardMaterial({ color: new THREE.Color(tint.r * am * ch("r"), tint.g * am * ch("g"), tint.b * am * ch("b")), roughness: 0.97, metalness: 0 })));
         horizonRing.position.y = -0.001 * NEAR_U_PER_KM; // 1 m under the patch's rim
         horizonRing.frustumCulled = false;
         horizonRing.name = "world-local-horizon";

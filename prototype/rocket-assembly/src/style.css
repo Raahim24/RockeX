@@ -469,8 +469,8 @@ kbd {
   position: fixed;
   top: 60px;
   right: 32px;
-  width: 320px;
-  height: 180px;
+  width: min(480px, 30vw);
+  aspect-ratio: 16 / 9;
   border: 1px solid var(--hairline);
   border-radius: 8px;
   box-shadow: 0 0 0 1px rgba(6, 8, 12, 0.35), 0 8px 24px rgba(0, 0, 0, 0.35);
@@ -499,8 +499,7 @@ kbd {
   .pip {
     top: 72px;
     right: 16px;
-    width: 200px;
-    height: 112px;
+    width: 260px;
   }
 }
 

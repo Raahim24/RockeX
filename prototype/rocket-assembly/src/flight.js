@@ -88,6 +88,14 @@
 //   to_t_screen, segment }; segments[].skip marks them. Earth coasts take at most 0.5 s on screen and the vehicle
 //   is seen moving at most ~10 deg around Earth between SECO and entry; a Moon / Mars transfer is a 2.6 s cruise.
 //   The sim is unchanged. Also: "chute-deploy" (Mars) and "landing-burn-start" events; breakup.pieces 2-3.
+// - Round 27d (user: "after launch Saturn V keeps changing the image 2-3 times; make it once"): after the climb a
+//   flight has at most ONE cut. Every skip after the ascent, with everything between, is one 0.5 s "cruise" skip
+//   (one "time-skip" event): Moon / Mars from SECO straight to PDI / the entry interface (or into the orbit), the
+//   parking orbit, departure burn, transfer and insertion inside it (their events kept, at the cut's screen time).
+//   A failed transfer cuts to 2 s before its failing beat (the burn running dry, the Moon passing by) and ends
+//   1.5 s after it, in real time; the orbit it is left on is endState (apogee_km, perigee_km). Earth missions have
+//   no skip: the coast to the payload release is drawn (a time-lapse), then the one story cut to the booster
+//   (none with opts.boosterInset).
 // - Insertion burns are impulsive: throttle reads 1 for the 2 s around them, and `burn` names them, as a visual
 //   cue only. Between burns the vehicle turns smoothly (over the last quarter of each coast) to the attitude the
 //   next phase starts with, so the axis never jumps at a coast's end.
@@ -151,12 +159,17 @@ const LIFTOFF_REAL_S = 1.5; // s of real time from T0 before the climb's ramp st
 // landing's drawn attitude slews toward the modelled one at most SLEW_DEG_S per screen second (in the frame of
 // the local vertical and the ground track): a rate limit (est.), not a modelled attitude control system.
 const SLEW_DEG_S = 3.4;
+// Round 27d (user: "after launch Saturn V keeps changing the image 2-3 times; make it once"): after the climb a
+// flight has at most one cut. A failed transfer cuts to FAIL_LEAD_S before the beat where it fails and ends
+// FAIL_TAIL_S after it, all in real time (its fate after that is the result text).
+const FAIL_LEAD_S = 2;
+const FAIL_TAIL_S = 1.5;
 // Beats in space ramp faster (sim speed e^14 per screen second, about 26 % per frame), so the coasts stay short on
 // screen (Earth missions: everything after the ascent within 20 s; a transfer within 4 s) and nothing is seen
 // going round; the ascent and the descents keep the gentle ramp. Screen time only: the sim is unchanged.
 const LAMBDA_SPACE = 14;
 // ("reentry" counts: most of it is high, thin air; the landing burn keeps the gentle ramp)
-const SPACE_SEGMENTS = new Set(["payload-release", "orbit", "orbit-coast", "parking-orbit", "departure-burn", "transfer", "coast", "lunar-orbit", "mars-orbit", "escape", "deorbit-burn", "deorbit-coast", "reentry"]);
+const SPACE_SEGMENTS = new Set(["cruise", "payload-release", "orbit", "orbit-coast", "parking-orbit", "departure-burn", "transfer", "coast", "lunar-orbit", "mars-orbit", "escape", "deorbit-burn", "deorbit-coast", "reentry"]);
 const SOFT_P = 4; // soft-minimum exponent between the window ramps and the base rate
 const DROP = { speed_ms: 2, duration_s: 2 }; // model choice
 const BURN_CUE_S = 1;
@@ -166,14 +179,16 @@ const SHARE = {
   booster: { ascent: 16, "orbit-coast": 0.3, "payload-release": 3.5, "booster-descent": 10 }, // ~30-34: rocket, release, catch
   boosterInset: { ascent: 16, "orbit-coast": 0.3, "payload-release": 10 }, // the release beat as long as the booster's descent beside it
   // round 22: every coast is a skip (a cut) of at most 0.5 s; what is shown is the story's beats
-  earth: { ascent: 16, orbit: 2.6, "orbit-coast": 0.3, "deorbit-burn": 1, "deorbit-coast": 0.3, reentry: 6, landing: 4.5 }, // ~37 (LEO, then home)
-  gto: { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 0.05, "deorbit-burn": 0.5, "deorbit-coast": 0.3, reentry: 5.5, landing: 4 }, // ~34
+  // (round 27d: the skipped stretch after the climb is one "cruise" skip, 0.5 s on screen, wherever it is)
+  earth: { ascent: 16, orbit: 2.6, cruise: 0.5, reentry: 6, landing: 4.5 }, // ~37 (LEO, then home)
+  gto: { ascent: 16, cruise: 0.5, reentry: 5.5, landing: 4 }, // ~34
   // (round 27c: the lunar orbit before the descent is a cut: the insertion burn in real time, then straight to PDI)
-  moon: { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 2.6, "lunar-orbit": 0.8, braking: 10, approach: 7, vertical: 11.1 }, // ~52-56
-  "moon-orbit": { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 2.6, "lunar-orbit": 5 }, // ~31
-  mars: { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 2.6, entry: 12, parachute: 8.5, approach: 8.5, vertical: 10.1 }, // ~65
-  "mars-orbit": { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 2.6, "mars-orbit": 5 }, // ~31.6
-  failed: { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 2.6, coast: 0.5 }, // ~25 (27.6 with a Moon pass)
+  moon: { ascent: 16, cruise: 0.5, braking: 10, approach: 7, vertical: 11.1 }, // ~48-52
+  "moon-orbit": { ascent: 16, cruise: 0.5, "lunar-orbit": 5 }, // ~27
+  mars: { ascent: 16, cruise: 0.5, entry: 12, parachute: 8.5, approach: 8.5, vertical: 10.1 }, // ~59-63
+  "mars-orbit": { ascent: 16, cruise: 0.5, "mars-orbit": 5 }, // ~27
+  // a failed transfer: the climb, the cut, the failing beat in real time (FAIL_LEAD_S + FAIL_TAIL_S)
+  failed: { ascent: 16, cruise: 0.5, "parking-orbit": 2, "departure-burn": 2, transfer: 2, coast: 1.5 }, // ~20-25
   lost: { ascent: 35 },
 };
 const FAILED_ASCENT_S = 35; // a flight that never reaches orbit is all ascent
@@ -417,7 +432,8 @@ function buildClock(segs, windows) {
     for (const j of [w - 1, w, w + 1]) {
       const x = win[j];
       if (!x) continue;
-      if (t >= x[0] && t <= x[1]) {
+      // (a tolerance: a segment's own grid point can land a rounding error outside the window it starts)
+      if (t >= x[0] - 1e-7 && t <= x[1] + 1e-7) {
         acc = Infinity;
         break;
       }
@@ -882,7 +898,8 @@ export function flightTimeline(build, catalog, opts = {}) {
       // SECO, then a cut to the release; the release in real time (3.5 s); then a cut to the booster
       const rel0 = tRel - 1.75;
       const rel1 = inset ? rel0 + SHARE.boosterInset["payload-release"] : tRel + 1.75;
-      pieces.push({ name: "orbit-coast", body: "earth", t0: tEndAscent, t1: rel0, fn: relState, skip: true });
+      // (round 27d: drawn, a time-lapse on the same camera, not a cut)
+      pieces.push({ name: "orbit-coast", body: "earth", t0: tEndAscent, t1: rel0, fn: relState });
       pieces.push({ name: "payload-release", body: "earth", t0: rel0, t1: rel1, fn: relState });
       ev("payload-release", tRel, { body: "earth", stage: upper });
       win(rel0, rel1, LAMBDA_SPACE);
@@ -1330,6 +1347,60 @@ export function flightTimeline(build, catalog, opts = {}) {
     return t0 + T;
   }
 
+  // ---- round 27d: one cut after the climb. Every skip after the ascent, and everything between them, becomes one
+  // skip ("cruise"): Moon / Mars from SECO straight to PDI / the entry interface (or into the orbit); a failed
+  // transfer to FAIL_LEAD_S before its failing beat, the timeline ending FAIL_TAIL_S after it. The skipped beats
+  // keep their events (HUD, result text), at the cut's screen time; windows inside it go.
+  {
+    const failAt = endState?.type === "transfer-failed" ? events.find((e) => e.type === "transfer-failed")?.t_sim : null;
+    if (failAt != null) {
+      // the timeline ends a moment after the failing beat (the coast after it, hours long, is the result text)
+      const tEndNew = failAt + FAIL_TAIL_S;
+      for (let i = pieces.length - 1; i >= 1; i--) {
+        if (pieces[i].t0 >= tEndNew) pieces.splice(i, 1);
+        else if (pieces[i].t1 > tEndNew) pieces[i].t1 = tEndNew;
+      }
+      for (let i = events.length - 1; i >= 0; i--) if (events[i].t_sim > tEndNew + 1e-6 && events[i].type !== "end") events.splice(i, 1);
+      const endEv = events.find((e) => e.type === "end");
+      if (endEv) endEv.t_sim = round(tEndNew, 3);
+      for (let i = stageDrops.length - 1; i >= 0; i--) if (stageDrops[i].t_sim > tEndNew) stageDrops.splice(i, 1);
+      win(failAt - FAIL_LEAD_S, tEndNew, LAMBDA_SPACE); // the failing beat in real time
+    }
+    const after = pieces.slice(1);
+    const i0 = after.findIndex((p) => p.skip);
+    if (i0 >= 0) {
+      const i1 = failAt != null ? after.length - 1 : after.length - 1 - [...after].reverse().findIndex((p) => p.skip);
+      const r0 = after[i0].t0;
+      const r1 = failAt != null ? Math.max(r0, failAt - FAIL_LEAD_S) : after[i1].t1;
+      if (r1 - r0 > 1) {
+        // the pieces in [r0, r1] (a piece across r1 is split: its drawn rest keeps its name)
+        const inner = [];
+        const out = [pieces[0]];
+        for (const p of after) {
+          if (p.t0 >= r1 - 1e-9 && failAt != null) out.push({ ...p, skip: false }); // the failing beat is drawn
+          else if (p.t1 <= r0 + 1e-9 || p.t0 >= r1 - 1e-9) out.push(p);
+          else if (p.t1 <= r1 + 1e-9) inner.push(p);
+          else {
+            inner.push({ ...p, t1: r1 });
+            out.push({ ...p, t0: r1, skip: false });
+          }
+        }
+        const cruiseFn = (t) => {
+          const q = inner.find((x) => t <= x.t1 + 1e-9) ?? inner.at(-1);
+          return q.fn(Math.max(q.t0, Math.min(q.t1, t)));
+        };
+        const k = out.findIndex((p) => p.t0 >= r1 - 1e-9);
+        out.splice(k < 0 ? out.length : k, 0, { name: "cruise", body: "space", t0: r0, t1: r1, fn: cruiseFn, coast: true, skip: true });
+        pieces.splice(0, pieces.length, ...out.sort((a, b) => a.t0 - b.t0));
+        for (let i = windows.length - 1; i >= 0; i--) {
+          const w = windows[i];
+          if (w[0] >= r0 - 1e-9 && w[1] <= r1 + 1e-9) windows.splice(i, 1);
+          else if (w[0] < r1 && w[1] > r1) w[0] = r1; // e.g. the entry interface: shown from the cut on
+        }
+      }
+    }
+  }
+
   // coasts turn, over their last quarter, to the attitude the next piece starts with
   for (let i = 0; i < pieces.length - 1; i++) {
     const p = pieces[i];
@@ -1624,8 +1695,11 @@ export function flightSummaryText(f) {
     out.push(`In our story ending the stage de-orbits and lands on ${L.site === "pad" ? "the pad" : "the drone ship"} (est.); real upper stages are not recovered.`);
     return { headline: `${mission} reached · stage brought home (story)`, sentences: out };
   }
-  // Moon / Mars
-  const coast = days("transfer");
+  // Moon / Mars: the coast from the departure cutoff to the insertion / entry interface, from the events' sim times
+  // (round 27d folded the drawn transfer into the one cut, so it is no longer a segment of its own)
+  const tArrive = (at("lunar-orbit-insertion") ?? at("mars-orbit-insertion") ?? at("entry-interface"))?.t_sim;
+  const tLeave = (at("departure-cutoff") ?? at("depleted"))?.t_sim;
+  const coast = tArrive != null && tLeave != null && tArrive > tLeave ? (tArrive - tLeave) / 86400 : days("transfer") ?? 0;
   out.push(est(`The departure burn added ${num(dep.dv_ms)} m/s; the coast to ${BODY_NAME[f.kind]} took ${coast < 2 ? `${num(coast * 24)} hours` : `${coast.toFixed(1)} days`}${f.kind === "mars" ? " on a shortened, not-to-scale path" : ""}`));
   if (e.type === "in-orbit-of") {
     out.push(est(`It braked into a ${f.kind === "moon" ? num(LUNAR_ORBIT_ALT) : num(MARS_ORBIT_ALT)} km orbit of ${BODY_NAME[f.kind]} with its own engine`));
