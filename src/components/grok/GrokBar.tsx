@@ -141,6 +141,13 @@ body:has(#btn-rockets[aria-expanded="true"]) .grok-actions { opacity: 0; pointer
 .grok-panel-button.quiet { color: var(--text-2); }
 `;
 
+// A part's name as Grok would say it ("RS-25 (D/E, 109% RPL)" -> RS-25): from a word start, any spaces or dashes
+// between characters ("RL10 B2", "Merlin-1D"), an optional plural ("Merlin 1Ds").
+const namePattern = (name: string): RegExp => {
+  const chars = name.replace(/\s*\(.*\)\s*$/, "").replace(/[^A-Za-z0-9]/g, "");
+  return chars ? new RegExp(`\\b${[...chars].join("[\\s-]?")}s?\\b`, "i") : /$^/;
+};
+
 // Where the text box sits inside the cloud outline (viewBox 0 0 200 120): x 36..166, y 42..96 is always inside it.
 const CLOUD_PATH =
   "M40 100C20 102 6 90 12 76C0 66 8 46 28 48C28 28 48 18 66 26C76 6 114 2 126 22C142 10 170 16 172 40C194 42 202 66 188 80C196 98 176 110 160 102C150 116 124 116 114 104C102 118 72 118 64 104C56 110 44 108 40 100Z";
@@ -632,6 +639,21 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
     return () => clearTimeout(t);
   }, [current]);
   const bubble = current ?? linger;
+
+  // Grok talking about a part on the option shelf: that card opens (the shelf's cards carry data-name). The most
+  // specific name wins ("RL10C-1-1" over "RL10C-1"); checked again as the shelf turns its pages.
+  useEffect(() => {
+    const mark = (): void => {
+      const cards = [...document.querySelectorAll<HTMLElement>(".option-shelf [data-name]")];
+      const named = (c: HTMLElement): string => c.dataset.name ?? "";
+      const hits = cards.filter((c) => namePattern(named(c)).test(spoken));
+      const keep = hits.filter((h) => !hits.some((o) => o !== h && named(o).length > named(h).length && namePattern(named(h)).test(named(o))));
+      cards.forEach((c) => c.toggleAttribute("data-focus", keep.includes(c)));
+    };
+    mark();
+    const t = setInterval(mark, 400);
+    return () => clearInterval(t);
+  }, [spoken]);
 
   const [barHeight, setBarHeight] = useState(0);
   useEffect(() => {

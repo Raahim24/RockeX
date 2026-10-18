@@ -213,8 +213,9 @@ describe("show_options tool", () => {
     setGuideProgress([{ id: "s0-engines", kind: "engines", stageIndex: 0, recordId: "merlin-1d", built: false }]);
     runVoiceTool("show_options", "{}");
     const sent = (dispatchEvent as unknown as { mock: { calls: [CustomEvent][] } }).mock.calls.at(-1)![0];
-    const shown: { recordId: string; effect: string; warn?: string }[] = sent.detail.options;
+    const shown: { recordId: string; name: string; effect: string; warn?: string; more: string }[] = sent.detail.options;
     expect(shown.every((o) => /^\w+ · [\d,]+ kN push( each)? · (efficient|average|thirsty)/.test(o.effect))).toBe(true);
+    expect(shown.every((o) => o.name && /^fuel efficiency \(Isp\) \d+ s · weighs [\d.,]+ (kg|t)( each)? · [\d.]+ m wide$/.test(o.more))).toBe(true);
     const broken = slotOptions(DEMO_BUILD, { id: "s0-engines", kind: "engines", stageIndex: 0, recordId: "merlin-1d", built: false }, Infinity).filter((o) => !o.works);
     expect(broken.length).toBeGreaterThan(0);
     for (const o of broken) expect(shown.find((s) => s.recordId === o.id)?.warn).toBe(o.problem);

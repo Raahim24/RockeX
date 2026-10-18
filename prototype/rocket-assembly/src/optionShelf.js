@@ -4,8 +4,9 @@
 //   createOptionShelf({ camera, scene, root, canvas, catalog, onPick }) ->
 //     { show({ build, partId, options, built }), clear(), flyIn(part) -> Promise, has(partId, recordId), update(dt), busy,
 //       partId, forBuilt }   (built: the options are swaps for a part already on the rocket)
-//   options: [{ recordId, engineCount?, title, effect, warn? }]   (all of them; shown PAGE at a time with ‹ ›; warn: a
-//   rule it breaks, on its own line)
+//   options: [{ recordId, name?, engineCount?, title, effect, warn?, more? }]   (all of them; shown PAGE at a time with
+//   ‹ ›; warn: a rule it breaks, on its own line; more: extra facts shown when the card opens). Cards are see-through
+//   and open on hover (the card or its 3D part) or when the app sets data-focus (Grok is talking about it).
 import * as THREE from "three";
 import { buildManifest } from "./layout.js";
 import { createMaterials, createPart } from "./parts.js";
@@ -115,11 +116,11 @@ export function createOptionShelf({ camera, scene, root, canvas, catalog, onPick
       scene.add(holder);
       const label = document.createElement("button");
       label.type = "button";
-      label.style.cssText =
-        "position:absolute;transform:translate(-50%,0);pointer-events:auto;cursor:pointer;border:1px solid rgba(255,255,255,.14);" +
-        "background:rgba(11,13,18,.82);color:#f6f7fb;border-radius:10px;padding:4px 10px;font:600 12px/1.3 Inter,system-ui,sans-serif;" +
-        "text-align:center;white-space:nowrap;backdrop-filter:blur(6px)";
-      label.innerHTML = `<span style="opacity:.6">${i + 1}</span> ${o.title}<br><span style="font-weight:500;color:#a9adb8">${o.effect}</span>${o.warn ? `<br><span style="font-weight:500;color:#ff9a76">⚠ ${o.warn}</span>` : ""}`;
+      label.className = "shelf-label";
+      label.dataset.name = o.name ?? o.title;
+      label.innerHTML =
+        `<span class="sl-n">${i + 1}</span> ${o.title}<span class="sl-effect">${o.effect}</span>` +
+        `${o.warn ? `<span class="sl-warn">⚠ ${o.warn}</span>` : ""}${o.more ? `<span class="sl-more">${o.more}</span>` : ""}`;
       const item = { option: o, part, holder, label };
       label.addEventListener("click", () => pick(item));
       labels.append(label);
@@ -145,6 +146,15 @@ export function createOptionShelf({ camera, scene, root, canvas, catalog, onPick
     while (obj && !items.some((it) => it.holder === obj)) obj = obj.parent;
     return items.find((it) => it.holder === obj) ?? null;
   };
+  // Hovering a preview opens its card, like hovering the card itself.
+  let hovered = null;
+  canvas.addEventListener("pointermove", (e) => {
+    const now = hit(e);
+    if (now === hovered) return;
+    hovered = now;
+    items.forEach((it) => it.label.toggleAttribute("data-hover", it === now));
+    canvas.style.cursor = now ? "pointer" : "";
+  });
   canvas.addEventListener(
     "pointerdown",
     (e) => {

@@ -278,6 +278,7 @@ const ROLE: Record<string, string> = {
 };
 
 const kg = (v: number): string => `${Math.round(v).toLocaleString("en-US")} kg`;
+const weight = (v: number): string => (v >= 1000 ? `${(v / 1000).toLocaleString("en-US", { maximumFractionDigits: 1 })} t` : kg(v));
 const blocking = (v: Verdict): string[] => v.warnings.filter((w) => w !== TWR_LOW_WARNING);
 
 export interface SlotOption {
@@ -288,6 +289,8 @@ export interface SlotOption {
   about: string;
   /** A few words on what it is (shown on screen; never whether it wins). */
   trait: string;
+  /** More facts from the data, shown when its card is opened (hovered, or Grok is talking about it). */
+  more: string;
   current: boolean;
   /** False when it breaks a rule; `problem` says why in plain words. Still allowed: that's how you learn. */
   works: boolean;
@@ -314,23 +317,25 @@ export const slotOptions = (build: BuildState, part: BuildPart, limit = OPTIONS_
   const i = part.stageIndex ?? 0;
   const stage = build.stages[i];
   // Each candidate is evaluated first; problems are blamed on this slot only if this slot causes or can fix them.
-  const candidates: { next: BuildState; id: string; name: string; about: string; trait: string; sortKey: number; engineCount?: number; isp?: number }[] = [];
-  const consider = (next: BuildState, id: string, name: string, about: string, trait: string, sortKey: number, engineCount?: number, isp?: number): void => {
-    candidates.push({ next, id, name, about, trait, sortKey, engineCount, isp });
+  const candidates: { next: BuildState; id: string; name: string; about: string; trait: string; more: string; sortKey: number; engineCount?: number; isp?: number }[] = [];
+  const consider = (next: BuildState, id: string, name: string, about: string, trait: string, more: string, sortKey: number, engineCount?: number, isp?: number): void => {
+    candidates.push({ next, id, name, about, trait, more, sortKey, engineCount, isp });
   };
   if (part.kind === "engines" && stage) {
     const tank = byId(catalog.tanks, stage.tankId);
     catalog.engines.forEach((e) => {
       const count = tank ? Math.min(stage.engineCount, maxEngineCount(tank.diameter_m, e.diameter_m)) : stage.engineCount;
+      const isp = i === 0 && e.ispSL_s > 0 ? e.ispSL_s : e.ispVac_s;
       consider(
         { ...build, stages: build.stages.map((st, j) => (j === i ? { ...st, engineId: e.id, engineCount: count } : st)) },
         e.id,
         e.name,
         `${count} x ${e.name}: ${e.propellant}, ${i === 0 ? `${Math.round(e.thrustSL_kN)} kN at sea level` : `${Math.round(e.thrustVac_kN)} kN in vacuum`} each, efficiency (Isp) ${Math.round(i === 0 ? e.ispSL_s : e.ispVac_s)} s`,
         `${e.propellant} · ${Math.round(i === 0 && e.thrustSL_kN > 0 ? e.thrustSL_kN : e.thrustVac_kN).toLocaleString("en-US")} kN push${count > 1 ? " each" : ""}`,
+        `fuel efficiency (Isp) ${Math.round(isp)} s · weighs ${weight(e.mass_kg)}${count > 1 ? " each" : ""} · ${e.diameter_m} m wide`,
         e.thrustSL_kN > 0 ? e.thrustSL_kN : e.thrustVac_kN,
         count,
-        i === 0 && e.ispSL_s > 0 ? e.ispSL_s : e.ispVac_s,
+        isp,
       );
     });
   } else if (part.kind === "tank" && stage) {
@@ -341,12 +346,13 @@ export const slotOptions = (build: BuildState, part: BuildPart, limit = OPTIONS_
         t.name,
         `${t.propellant}, holds ${kg(t.propellantMass_kg)} of propellant, ${t.diameter_m} m wide`,
         `${t.propellant} · ${Math.round(t.propellantMass_kg / 1000).toLocaleString("en-US")} t of fuel`,
+        `weighs ${weight(t.dryMass_kg)} empty · ${t.height_m} m tall · ${t.diameter_m} m wide`,
         t.propellantMass_kg,
       ),
     );
   } else if (part.kind === "payload") {
     catalog.payloads.forEach((p) =>
-      consider({ ...build, payloadId: p.id }, p.id, p.name, `${kg(p.mass_kg)}`, `${(p.mass_kg / 1000).toFixed(1)} t`, p.mass_kg),
+      consider({ ...build, payloadId: p.id }, p.id, p.name, `${kg(p.mass_kg)}`, `${(p.mass_kg / 1000).toFixed(1)} t`, `${p.height_m} m tall · ${p.diameter_m} m wide`, p.mass_kg),
     );
   }
   // Efficiency in words, against the other engines for this slot (top third efficient, bottom third thirsty).
@@ -369,6 +375,7 @@ export const slotOptions = (build: BuildState, part: BuildPart, limit = OPTIONS_
       ...(c.engineCount === undefined ? {} : { engineCount: c.engineCount }),
       about: c.about,
       trait: c.trait,
+      more: c.more,
       current: c.id === part.recordId,
       works: !mine,
       ...(mine ? { problem: plainProblem(mine) } : {}),
@@ -391,10 +398,12 @@ const showOnScreen = (part: BuildPart, options: SlotOption[]): void =>
         built: part.built,
         options: options.map((o) => ({
           recordId: o.id,
+          name: o.name,
           engineCount: o.engineCount,
           title: o.engineCount && o.engineCount > 1 ? `${o.engineCount} × ${o.name}` : o.name,
           effect: `${o.trait}${o.current ? " · current" : ""}`,
           ...(o.problem ? { warn: o.problem } : {}),
+          more: o.more,
         })),
       },
     }),
