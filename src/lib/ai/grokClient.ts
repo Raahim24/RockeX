@@ -105,6 +105,40 @@ export const grokImage = async (prompt: string, timeoutMs: number): Promise<stri
   return `data:${image.mime_type ?? "image/jpeg"};base64,${image.b64_json}`;
 };
 
+// Storyboard stills. Generation on the cheapest model ($0.02); edits (which keep our rocket from a reference
+// still) only exist on 2.0 and bill input + output.
+export const STORYBOARD_MODEL = process.env.XAI_STORYBOARD_MODEL || "grok-imagine-image";
+export const EDIT_MODEL = "grok-imagine-image-2.0";
+
+const imageFrom = (data: ImageOutput & { data?: { url?: string }[] }, path: string): string => {
+  const image = data.data?.[0];
+  if (image?.b64_json) return `data:${image.mime_type ?? "image/jpeg"};base64,${image.b64_json}`;
+  if (image?.url) return image.url;
+  throw new GrokError(`${path}: no image in reply`);
+};
+
+/** One 16:9 still from a prompt on the storyboard model. */
+export const grokStill = async (prompt: string, timeoutMs: number): Promise<string> =>
+  imageFrom(
+    (await post(
+      "/images/generations",
+      { model: STORYBOARD_MODEL, prompt, n: 1, aspect_ratio: "16:9", response_format: "b64_json" },
+      timeoutMs,
+    )) as ImageOutput,
+    "/images/generations",
+  );
+
+/** One still edited from a reference image (URL or data URL), so it keeps that exact rocket. */
+export const grokStillEdit = async (prompt: string, image: string, timeoutMs: number): Promise<string> =>
+  imageFrom(
+    (await post(
+      "/images/edits",
+      { model: EDIT_MODEL, prompt, image: { url: image, type: "image_url" }, response_format: "b64_json" },
+      timeoutMs,
+    )) as ImageOutput,
+    "/images/edits",
+  );
+
 /** Text to speech. Returns MP3 bytes (24 kHz, 128 kbps). */
 export const grokSpeech = async (text: string, timeoutMs: number): Promise<ArrayBuffer> => {
   const res = await postRaw("/tts", { text, voice_id: VOICE, language: "en" }, timeoutMs);
