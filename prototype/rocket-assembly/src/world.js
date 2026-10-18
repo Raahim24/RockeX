@@ -95,7 +95,7 @@ const bodyFragment = /* glsl */ `
   uniform sampler2D uColor, uBump, uNight, uClouds;
   uniform float uHasNight, uHasClouds, uOcean, uRelief, uHasAtmo, uCloudU;
   uniform vec3 uBetaR, uBetaM, uExtM, uGlowColor;
-  uniform float uHR, uHM, uMieG, uGlow, uDustH, uCloudCover, uMS, uCumulus, uSkyGain;
+  uniform float uHR, uHM, uMieG, uGlow, uDustH, uCloudCover, uMS, uCumulus, uSkyGain, uDuskBand;
   float cuH(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
   float cuN(vec2 p) {
     vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -273,6 +273,20 @@ const bodyFragment = /* glsl */ `
         col = mix(col, mix(cuCol, col, 0.25), cu);
         trans *= 1.0 - cu;
       }
+      // blue hour (setSky dusk): a warm band all round the horizon, orange-gold toward the sun, rose-gold away
+      // from it, gone by ~12° up (stars show only overhead)
+      if (uDuskBand > 0.0) {
+        vec3 upB = normalize(-C);
+        float elB = dot(d, upB);
+        vec3 hd = normalize(d - upB * elB + vec3(1e-5, 0.0, 0.0));
+        vec3 hs = normalize(uSun - upB * dot(uSun, upB) + vec3(1e-5, 0.0, 0.0));
+        float toward = 0.5 + 0.5 * dot(hd, hs);
+        float band = exp(-max(elB, 0.0) / 0.1) * smoothstep(-0.02, 0.01, elB);
+        vec3 warm = mix(vec3(0.95, 0.5, 0.36), vec3(1.0, 0.58, 0.22), toward) * (0.65 + 0.45 * toward);
+        float kB = uDuskBand * band * 0.85;
+        col = mix(col, warm, kB);
+        trans *= 1.0 - kB;
+      }
       // overcast (setSky cloudy): under the deck the whole sky is its grey base, brightest overhead
       if (uCloudCover > 0.0) {
         vec3 upC = normalize(-C);
@@ -348,6 +362,7 @@ function createBody(name) {
     uMS: { value: atmo?.ms ?? 1 },
     uCumulus: { value: 0 }, // fair-weather cumulus on the horizon (setSky day + clear)
     uSkyGain: { value: atmo?.gain ?? 12 }, // in-scatter brightness (visual)
+    uDuskBand: { value: 0 }, // the blue hour's warm horizon band (setSky dusk)
     uDustH: { value: atmo?.dustH || 1 },
   };
   const mat = new THREE.ShaderMaterial({
@@ -814,6 +829,15 @@ export function createWorld({ renderer = null } = {}) {
       return { ...s, haze: s.horizon.clone() };
     }
     const k = 1 - THREE.MathUtils.smoothstep(alt_km, 0, 30); // the haze band thins to nothing by ~30 km
+    if (skyState.time === "dusk") {
+      // blue hour (setSky dusk): deep blue overhead, a muted blue-grey low (the warm band is the far layer's, by
+      // the sun); overcast: dark grey-blue; fading to space with height
+      const space = THREE.MathUtils.smoothstep(alt_km, 5, 60);
+      const cloudy = skyState.weather === "cloudy";
+      const zenith = (cloudy ? new THREE.Color(0.07, 0.08, 0.1) : new THREE.Color(0.015, 0.04, 0.14)).multiplyScalar(1 - space);
+      const horizon = (cloudy ? new THREE.Color(0.13, 0.14, 0.16) : new THREE.Color(0.3, 0.2, 0.17)).multiplyScalar(1 - 0.9 * space);
+      return { zenith, horizon, haze: horizon.clone().multiplyScalar(k), stars: 0.3 + 0.7 * space };
+    }
     if (skyState.time === "day") {
       // day (setSky): blue overhead, pale toward the horizon; overcast: grey; fading to space with height
       const space = THREE.MathUtils.smoothstep(alt_km, 5, 60);
@@ -826,8 +850,8 @@ export function createWorld({ renderer = null } = {}) {
     return { zenith: new THREE.Color(0.0015, 0.002, 0.005).multiplyScalar(0.3 + 0.7 * k), horizon: haze.clone(), haze, stars: 1 };
   }
   // ---- the sky over the pad: day / night, clear / cloudy (round 22) ----
-  // setSky({ time: "day" | "night", weather: "clear" | "cloudy" }) (default day + clear; the world starts at night
-  // until it is called) moves the world's sun (day: 40° up, from the
+  // setSky({ time: "day" | "dusk" | "night", weather: "clear" | "cloudy" }) (default dusk + clear, user feedback 7:
+  // blue hour, darker and easier to see; the world starts at night until it is called) moves the world's sun (day: 40° up, from the
   // south-west, behind the home view's left shoulder; night: the round-17 sun below the horizon), turns the night
   // haze off by day, thickens the cloud map to overcast and dims the sun under it. It returns the near layer's
   // light recipe for those conditions (main's key / fill / hemisphere and fog take colours and intensities from
@@ -839,17 +863,21 @@ export function createWorld({ renderer = null } = {}) {
   // late afternoon (user feedback round 22: no blown-out whites, longer shadows): 27° up from the south-west
   const DAY_SUN = new THREE.Vector3(-0.34, 0, 0.94).normalize().multiplyScalar(Math.cos(27 * DEG)).setY(Math.sin(27 * DEG));
   const NIGHT_SUN = sunDir.clone();
-  function setSky({ time = "day", weather = "clear" } = {}) {
-    skyState.time = time === "day" ? "day" : "night";
+  // blue hour, a step brighter than night (round 23): the sun 11° up over the sea (east of the pad, a little south)
+  const DUSK_SUN = new THREE.Vector3(0.93, 0, 0.36).normalize().multiplyScalar(Math.cos(11 * DEG)).setY(Math.sin(11 * DEG));
+  function setSky({ time = "dusk", weather = "clear" } = {}) {
+    skyState.time = time === "day" || time === "night" ? time : "dusk";
     skyState.weather = weather === "cloudy" ? "cloudy" : "clear";
     const day = skyState.time === "day";
+    const dusk = skyState.time === "dusk";
     const cloudy = skyState.weather === "cloudy";
-    setSunDir(day ? DAY_SUN : NIGHT_SUN);
+    setSunDir(day ? DAY_SUN : dusk ? DUSK_SUN : NIGHT_SUN);
     const e = bodies.earth.uniforms;
-    e.uGlow.value = day ? 0 : 1;
+    e.uGlow.value = day ? 0 : dusk ? 0.5 : 1;
     e.uCloudCover.value = cloudy ? 1 : 0;
     e.uCumulus.value = day && !cloudy ? 1 : 0;
-    e.uSunI.value = 1.2 * (cloudy && day ? 0.6 : 1);
+    e.uDuskBand.value = dusk && !cloudy ? 1 : 0;
+    e.uSunI.value = 1.2 * (cloudy && !skyState.time.startsWith("n") ? 0.6 : 1);
     sun.sprite.material.opacity = cloudy ? 0.15 : 1;
     return skyRecipe();
   }
@@ -858,6 +886,20 @@ export function createWorld({ renderer = null } = {}) {
     const cloudy = skyState.weather === "cloudy";
     const s = skyAt("earth", 0);
     const C = (r, g, b) => new THREE.Color(r, g, b);
+    if (skyState.time === "dusk")
+      // blue hour: a weak warm sun low over the sea, a cool sky fill, the complex's floodlights carry the pad
+      return {
+        ...skyState,
+        sunDir: sunDir.clone(),
+        exposure: 0.85,
+        key: cloudy ? { color: C(0.62, 0.64, 0.72), intensity: 0.7 } : { color: C(1.0, 0.62, 0.36), intensity: 2.2 },
+        fill: { color: C(0.34, 0.44, 0.74), intensity: cloudy ? 0.35 : 0.3 },
+        hemi: cloudy ? { sky: C(0.26, 0.29, 0.36), ground: C(0.07, 0.07, 0.07), intensity: 0.9 } : { sky: C(0.3, 0.36, 0.56), ground: C(0.12, 0.08, 0.06), intensity: 1.0 }, // the coast and sea catch the sky light
+        environmentIntensity: 0.25,
+        fog: { color: s.horizon, near_u: 3000, far_u: cloudy ? 12000 : 30000 },
+        background: s.horizon.clone(),
+        sky: { zenith: s.zenith.clone(), horizon: s.horizon.clone() },
+      };
     if (!day)
       return { ...skyState, sunDir: sunDir.clone(), exposure: 1.0, key: { color: new THREE.Color(0xffb48a), intensity: 2.8 }, fill: { color: new THREE.Color(0x6a7fa8), intensity: 0.3 }, hemi: { sky: new THREE.Color(0x8fa6c8), ground: new THREE.Color(0x0f1118), intensity: 0.08 }, environmentIntensity: 0.25, fog: { color: s.horizon, near_u: 45, far_u: 130 }, background: new THREE.Color(0x0b0d12) };
     return {

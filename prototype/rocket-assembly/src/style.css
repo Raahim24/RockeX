@@ -66,9 +66,8 @@ body.bright-sky .brand p.keys {
 
 .brand {
   position: fixed;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%); /* the ROCKEX wordmark, centred (user, round 25) */
+  top: 22px;
+  left: 28px; /* the ROCKEX wordmark, top-left (user, round 25) */
   pointer-events: none;
   user-select: none;
 }
@@ -698,8 +697,8 @@ body.landing .bar {
 
 @media (max-width: 760px) {
   .brand {
-    top: 14px;
-    left: 50%;
+    top: 16px;
+    left: 16px;
     right: auto;
   }
   .brand h1 {

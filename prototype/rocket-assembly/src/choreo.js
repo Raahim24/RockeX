@@ -30,6 +30,7 @@ import { attachPlumes, createPadLight, createPlume, P0 } from "./plume.js";
 import { createPlanet, createSurfacePatch, createDustPuff, createSkyDome } from "./planet.js";
 import { createDroneShip } from "./anchors.js";
 import { createParachute } from "./parachute.js";
+import { createFlightTwin, prewarmAll } from "./flightTwin.js";
 
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const D = (ms) => (reduced ? ms * 0.55 : ms);
@@ -1118,7 +1119,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     root.attach(part.group);
     const down = new THREE.Vector3(0, forward ? 1 : -1, 0).applyQuaternion(L.flight.quaternion);
     const axis = new THREE.Vector3().crossVectors(down, L.tiltAxis).normalize();
-    const d = { part, t: 0, down, axis: axis.lengthSq() ? axis : L.tiltAxis.clone(), spread, drift };
+    const d = { part, t: 0, down, axis: axis.lengthSq() ? axis : L.tiltAxis.clone(), spread, drift, halves: spread ? L.twin?.parts.get(part.id)?.fairingHalves ?? null : null };
     L.debris.push(d);
     return d;
   }
@@ -1140,7 +1141,13 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       // #35's motion: the push-off at ~1 m/s, then a gentle accelerating fall and a slow tumble
       d.part.group.position.addScaledVector(d.down, dt * (d.t < d.drift ? 1 * scale : 0.4 + fall * 1.6));
       if (!d.noSpin) d.part.group.rotateOnWorldAxis(d.axis, dt * (d.t < d.drift ? 0.04 : 0.25));
-      if (d.spread) {
+      if (d.halves) {
+        d.halves.forEach((h, i) => {
+          const sx = i === 0 ? 1 : -1; // [+x, −x] (UI4's flight twin)
+          h.position.x += sx * dt * 0.9;
+          h.rotateZ(sx * dt * -0.5);
+        });
+      } else if (d.spread) {
         for (const piece of d.part.pieces) {
           if (Math.abs(piece.explode.dir.x) < 0.3) continue; // fairing halves and their doors swing out
           piece.mesh.position.addScaledVector(piece.explode.dir, dt * 0.9);
@@ -1351,7 +1358,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       }
       case "touchdown": {
         if (L.catch) {
-          L.anchors.catchArms((L.catch.k = 1));
+          L.anchors.catchArms((L.catch.k = 1), L.catch.opts);
           const base = L.pad.worldToLocal(root.localToWorld(new THREE.Vector3()));
           L.catch.burst.fire(base, stackRadius());
           state.shake = 0.35;
@@ -1395,7 +1402,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   function updateDeploys() {
     for (const d of L.deps ?? []) {
       const u = THREE.MathUtils.clamp((L.real - d.t0) / 0.9, 0, 1);
-      applyDeploy(d.piece, 1 + 2.2 * (u - 1) ** 3 + 1.2 * (u - 1) ** 2); // ease out with a small overshoot
+      deployPiece(d.piece, 1 + 2.2 * (u - 1) ** 3 + 1.2 * (u - 1) ** 2); // ease out with a small overshoot
     }
   }
   // Plumes: each ramps up over 0.25 s from its ignite time (in the countdown for the first stage); returns the
@@ -1422,7 +1429,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   function padSequence(t, dt) {
     const arms = L.anchors?.arms ?? [];
     const top = [...arms].sort((a, b) => b.y_u - a.y_u);
-    top.forEach((arm, i) => {
+    // (Not once a catch drives the arms: this write every frame undid UI4's catchArms pose.)
+    if (!(L.catch?.k > 0)) top.forEach((arm, i) => {
       const k = ease3((t - padT("arms") - i * PAD.armGap * (L.countdown / COUNTDOWN_S)) / (PAD.armS * Math.min(1, L.countdown / COUNTDOWN_S + 0.3)));
       arm.mesh.rotation.y = L.arms0[arms.indexOf(arm)] + THREE.MathUtils.degToRad(70) * (arms.indexOf(arm) % 2 ? -1 : 1) * k;
     });
@@ -1666,8 +1674,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     // Off the deck for good once the blend is nearly done, and never more than a few chase distances behind
     // (on the timeline the pad races away once the clock speeds up).
     if (c.anchor > 0.985) c.anchor = 1;
+    // (a soft limit: a hard clamp put a kink in the climb the moment it engaged, the user's "slow, then sudden")
     const lag = p.sub(chaseV);
-    if (lag.length() > 2.5 * c.dist) lag.setLength(2.5 * c.dist);
+    const lagMax = 2.5 * c.dist;
+    const lagLen = lag.length();
+    if (lagLen > 1e-6) lag.setLength(lagMax * Math.tanh(lagLen / lagMax));
     camera.position.copy(chaseV).addScaledVector(lag, 1 - c.anchor);
     // Past the ascent on the timeline: behind the vehicle in ITS local frame (up = away from the planet's centre,
     // forward = its direction of travel), Earth below with the limb in frame, eased in, never orbiting. The near
@@ -1811,16 +1822,21 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
           L.catch.shift = new THREE.Vector3(-cpN.x - fEnd.x, 0, -cpN.z - fEnd.z);
         }
         fP.add(L.catch.shift);
-        // The arms take the stage ~70 % up its length, so it hangs clear of the deck (its base ~¼ of its height up
-        // on a Falcon 9: arms at 10.9 u, stage 11.5 u), not standing on the ring.
+        // The arms ride to the stage's grip, 88 % up its length (just under the grid fins), with its base ~30 % of
+        // its height above the deck (UI4's catchArms y_u), so it hangs in them clear of the ring.
         const { lo, hi } = flyingSpan();
-        const lift = Math.max(0, L.catch.armY - (hi - lo) * 0.72);
+        if (!L.catch.opts && L.boosterOn) {
+          const H = hi - lo;
+          L.catch.armY = 1.18 * H;
+          L.catch.opts = { y_u: L.catch.armY };
+        }
+        const lift = Math.max(0, L.catch.armY - (hi - lo) * 0.88);
         const alt_m = Math.max(0, smp.alt_km * 1000);
         const w = 1 - THREE.MathUtils.smoothstep(alt_m, 0, 1000);
         fP.y -= lift * w;
         // Arms: open from ~1 km (k to 0.4), close over the last 40 m (k to 1).
         const k = alt_m > 1000 ? 0 : alt_m > 40 ? 0.4 * (1 - (alt_m - 40) / 960) : 0.4 + 0.6 * (1 - alt_m / 40);
-        if (Math.abs(k - L.catch.k) > 1e-4) L.anchors.catchArms((L.catch.k = k));
+        if (Math.abs(k - L.catch.k) > 1e-4) L.anchors.catchArms((L.catch.k = k), L.catch.opts);
       }
       L.pad.position.copy(fP);
       L.pad.quaternion.copy(L.QnInv);
@@ -1940,7 +1956,6 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     root.add(L.ground.object3d);
     makeChute();
-    makeLandingLegs();
     // Compile it now, while it is first added (the countdown), not on the frame it first shows.
     L.groundShown = null;
     showGround(true);
@@ -1955,17 +1970,111 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   // Mars (UI4's parachute.js): the canopy at the top of the stack, sized by arrival.js's canopy (6 × the
   // payload's diameter, a model choice), deployed from the sample's chute (0 packed → 1 open); when it drops to 0
   // the chute is released and rises away above the stage, which falls on into its powered descent.
+  // ---------- flight twin (UI4's flightTwin.js, round 25: Saturn V 855 → 98 draws) ----------
+  // The built stack as a few merged meshes per part for the flight. Made at idle once the stack is complete
+  // (prepareTwin, 30–95 ms, its programs compiled then), swapped in when the countdown starts: each part's twin
+  // group takes the builder group's place in the flight group and part.group points at it for the flight (drops,
+  // plumes, puffs, the chute all follow), the builder groups hidden; at R the builder stack comes back.
+  let twinPrep = null;
+  const twinKey = () => parts.map((p) => `${p.id}:${p.built ? 1 : 0}:${p.pieces[0]?.mesh.material?.uuid ?? ""}:${p.landingLegs ? 1 : 0}`).join(",");
+  function buildTwin() {
+    // UI4's landing legs must be shown when the twin is made (it skips hidden pieces); hidden again after
+    const legs = parts.flatMap((p) => p.landingLegs?.pieces ?? []);
+    for (const q of legs) q.mesh.visible = true;
+    const twin = createFlightTwin(parts);
+    for (const q of legs) {
+      q.mesh.visible = false;
+      const t = twin.pieceFor(q);
+      if (t) t.mesh.visible = false;
+    }
+    twin.group.visible = false;
+    root.add(twin.group);
+    return twin;
+  }
+  function prepareTwin(missionId) {
+    if (state.launch || state.busy || state.auto || state.exploded || !parts.length || !parts.every((p) => p.built)) return false;
+    // a Moon / Mars landing: the top stage's legs now, so the prepared twin has them
+    if (/moon-transfer|mars-transfer/.test(missionId ?? "") && materials) {
+      const top = Math.max(...parts.filter((p) => p.kind === "tank").map((p) => p.stageIndex ?? -1));
+      legsOn(top);
+    }
+    const key = twinKey();
+    if (twinPrep?.key === key) return true;
+    twinPrep?.twin.dispose();
+    twinPrep = { key, twin: buildTwin() };
+    warmTwin(twinPrep.twin);
+    return true;
+  }
+  // Its programs as the flight draws them: the post chain renders into a render target (no tone mapping, linear
+  // output: other program variants than renderer.compile gives for the canvas), and the shadow pass needs its depth
+  // materials; so one offscreen render of the scene with the twin shown, then the canvas variants too (the
+  // picture-in-picture draws straight to the canvas). UI 6: without it, 13 programs (~1 s) linked at L.
+  function warmTwin(twin) {
+    if (!warmRenderer) return;
+    const prev = warmRenderer.getRenderTarget();
+    twin.group.visible = true;
+    warmRenderer.setRenderTarget(warmTarget);
+    warmRenderer.compile(scene, camera);
+    warmRenderer.render(scene, camera);
+    warmRenderer.setRenderTarget(prev);
+    prewarmAll(warmRenderer, scene, camera, { extras: [twin.group] });
+    twin.group.visible = false;
+  }
+  // At L: the prepared twin if it is ready for this stack; otherwise it is made and warmed in the countdown's
+  // first second (on the pad, the camera still), never on the launch frame.
+  function useTwin() {
+    const twin = twinPrep?.key === twinKey() ? twinPrep.twin : null;
+    if (twin) return swapTwin(twin);
+    twinPrep?.twin.dispose();
+    twinPrep = null;
+    L.twinPending = true;
+  }
+  function swapTwin(twin) {
+    twinPrep = null;
+    // the Max-Q halo, hung on a builder group at L, moves to its twin (a swap in the countdown comes after it)
+    const halo = L.fx?.halo?.object3d;
+    const haloPart = halo ? parts.find((p) => p.group === halo.parent) : null;
+    if (haloPart) twin.partGroup(haloPart)?.attach(halo);
+    for (const part of parts) {
+      const tg = twin.partGroup(part);
+      if (!tg) continue;
+      tg.visible = true;
+      L.flight.attach(tg); // the flight group's frame, where the builder group hangs
+      part.builderGroup = part.group;
+      part.group.visible = false;
+      part.group = tg;
+    }
+    L.twin = twin;
+  }
+  function dropTwin() {
+    if (!L?.twin) return;
+    for (const part of parts) {
+      if (!part.builderGroup) continue;
+      part.group.removeFromParent();
+      part.group = part.builderGroup;
+      delete part.builderGroup;
+    }
+    L.twin.dispose();
+    L.twin = null;
+  }
+  // The twin stands in for the builder's deployables (legs, grid fins): applyDeploy maps a builder piece to its
+  // clone; a leg's mesh likewise.
+  const deployPiece = (piece, k) => (L?.twin ? L.twin.applyDeploy(piece, k) : applyDeploy(piece, k));
+  const meshOf = (piece) => (L?.twin?.pieceFor(piece) ?? piece).mesh;
+  function legsOn(si) {
+    const tank = parts.filter((p) => p.stageIndex === si && p.kind === "tank").sort((a, b) => a.slotY - b.slotY)[0];
+    if (!tank || deployables(tank).some((q) => q.mesh.userData.role === "leg" && !tank.landingLegs?.legs.includes(q))) return null; // its own
+    const eng = parts.find((p) => p.stageIndex === si && p.kind === "engines");
+    const legs = addLandingLegs(tank, materials, { below_u: eng?.height ?? null });
+    for (const q of legs.pieces) q.mesh.visible = false;
+    return { tank, legs };
+  }
   // Moon / Mars: the stage that lands (endState.landing.stageIndex) gets UI4's folding legs if it has none, made
   // now (the countdown) and hidden until the descent; the feet then become the vehicle's base.
   function makeLandingLegs() {
     const si = L.F.endState?.landing?.stageIndex;
-    if (si == null || !materials) return;
-    const tank = parts.filter((p) => p.stageIndex === si && p.kind === "tank").sort((a, b) => a.slotY - b.slotY)[0];
-    if (!tank || deployables(tank).some((q) => q.mesh.userData.role === "leg" && !tank.landingLegs?.legs.includes(q))) return; // its own
-    const eng = parts.find((p) => p.stageIndex === si && p.kind === "engines");
-    const legs = addLandingLegs(tank, materials, { below_u: eng?.height ?? null });
-    for (const q of legs.pieces) q.mesh.visible = false;
-    L.landLegs = { tank, legs };
+    if (si == null || !materials || !/moon|mars/.test(L.F.endState?.body ?? L.kind)) return;
+    L.landLegs = legsOn(si);
   }
   function makeChute() {
     const D = L.F.entry?.canopy_m;
@@ -2009,6 +2118,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const payload = parts.find((p) => p.kind === "payload" && !L.gone.has(p));
     const les = payload ? escapeTowerOf(payload) : null;
     if (!les?.meshes?.length) return;
+    const tw = L.twin?.parts.get(payload.id)?.escapeTower;
+    if (tw) les.meshes = [tw]; // (in flight the twin's merged tower stands in for the builder's six pieces)
     const g = new THREE.Group();
     root.add(g);
     payload.group.localToWorld(g.position.set(0, les.bottomY_u, 0));
@@ -2090,6 +2201,12 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     if (!L.done) L.real += dt;
     const tS = L.real;
     state.countdown = tS < 0;
+    if (L.twinPending && tS > -L.countdown + 0.3 && tS < -3) {
+      L.twinPending = false;
+      const twin = buildTwin();
+      warmTwin(twin);
+      swapTwin(twin);
+    }
     const smp = F.sampleAt(THREE.MathUtils.clamp(tS, 0, F.totalScreen_s));
     L.smp = smp;
     const t = tS < 0 ? tS : smp.t_sim;
@@ -2112,11 +2229,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     // (Round 23, user: the upper stage with the payload on top lands whole; no separate lander.)
     if (L.landLegs && !L.landLegs.shown && smp.segment !== "ascent" && L.cut?.fired) {
       L.landLegs.shown = true; // on a black frame after the climb: the stage carries its folded legs from here
-      for (const q of L.landLegs.legs.pieces) q.mesh.visible = true;
+      for (const q of L.landLegs.legs.pieces) meshOf(q).visible = true;
     }
     if (!L.legsOut && !L.catch && (smp.segment === "approach" || smp.segment === "vertical" || smp.segment === "landing")) {
       L.legsOut = true; // any landing legs on the flying stage swing out for the last part of the descent
-      if (L.landLegs && !L.landLegs.shown) for (const q of L.landLegs.legs.pieces) q.mesh.visible = L.landLegs.shown = true;
+      if (L.landLegs && !L.landLegs.shown) for (const q of L.landLegs.legs.pieces) meshOf(q).visible = L.landLegs.shown = true;
       deployRole("leg");
       for (const leg of L.landLegs?.legs.legs ?? []) if (!L.deps.some((d) => d.piece === leg)) L.deps.push({ piece: leg, t0: L.real + (L.deps.length % 4) * 0.06 });
     }
@@ -2387,6 +2504,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       maxDist0: controls.maxDistance,
     };
     retarget();
+    if (L.F) makeLandingLegs(); // (before the twin: the legs become its deployables)
+    useTwin();
     if (L.F) prepareLanding(); // its ground (and any light it carries) joins the scene now, in the countdown
     controls.autoRotate = false;
     controls.maxPolarAngle = Math.PI * 0.95; // the pad camera looks up from near the deck
@@ -3004,6 +3123,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     disposeEnding();
     if (!L) return;
     storySunOff();
+    for (const d of L.deps ?? []) deployPiece(d.piece, 0);
+    L.les?.group.removeFromParent();
+    dropTwin();
     for (const pl of L.plumes) pl.plume.dispose();
     dropPadLight(L.padLight);
     (L.anchors?.arms ?? []).forEach((arm, i) => (arm.mesh.rotation.y = L.arms0[i] ?? arm.mesh.rotation.y));
@@ -3442,6 +3564,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     skip,
     setBounds,
     prewarm,
+    prepareTwin,
     uploadWarmTextures,
     nearOriginKm,
     viewer,

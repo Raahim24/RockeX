@@ -93,12 +93,13 @@
 //   next phase starts with, so the axis never jumps at a coast's end.
 // - Spent stages have no flight of their own: each separation gives a detach time and a 2 s drop-away (2 m/s,
 //   backward and slightly sideways in the vehicle's body frame) so the director can let them fall out of frame.
-// - Screen time: real time (rate 1 screen s per sim s) inside windows around ignition and liftoff, Max-Q, fairing,
-//   MECO/separation/upper-stage ignition, SECO, payload release, each burn, chute opening and the last 3 s before
-//   touchdown, and around every segment boundary. Leaving a window, the sim speed grows linearly with sim time
-//   (so exponentially with screen time, e^6 per screen second) until it meets the segment's base rate (soft
-//   minimum); each segment's base rate is solved so the segment gets its share of the total (Earth ~35 s, Moon
-//   ~55 s, Mars ~65 s). The time rate is continuous everywhere, so screenToSim / simToScreen are C1.
+// - Screen time: real time (rate 1 screen s per sim s) inside windows around ignition and liftoff (the first 1.5 s),
+//   fairing, MECO/separation/upper-stage ignition, SECO, payload release, each burn, chute opening and the last 3 s
+//   before touchdown, and around every segment boundary. Leaving a window, the log of the sim speed grows with a
+//   slope eased in from 0 (round 27) to e^6 per screen second (e^14 in space; e^1.65, under 3 % a frame, for every
+//   ramp in the first 10 s: the climb off the pad) until it meets the segment's base rate (soft minimum); each
+//   segment's base rate is solved so the segment gets its share of the total (Earth ~35 s, Moon ~55 s, Mars ~65 s).
+//   The time rate is C2 everywhere outside the cuts.
 // Constants: Earth GM as in ascent.js (WGS 84); radii, GM, the Moon's 0.3844 x 10^6 km semimajor axis and its
 // 27.3217-day revolution period, Earth's sidereal day and equatorial radius (for GEO) from NASA's planetary fact sheets
 // (https://nssdc.gsfc.nasa.gov/planetary/factsheet/moonfact.html, .../marsfact.html, .../earthfact.html).
@@ -136,14 +137,22 @@ const R_EQ = 6378.137;
 const GEO_R = Math.cbrt(398600.4418 * ((23.9345 * 3600) / (2 * Math.PI)) ** 2); // km from Earth's centre (35,786 km up)
 const EASE_S = 86400; // Mars cruise: speed eases over the first and the last day (model choice)
 const SITE = { lat: 28.5, lon: -80.6 };
-const LAMBDA = 6; // 1/s: sim speed = 1 + LAMBDA * (sim seconds since the window)
+const LAMBDA = 6; // 1/s: sim speed = 1 + LAMBDA * (sim seconds since the window), once the ramp's ease is over
+// Round 27 (user feedback 7: out of real time at liftoff it "suddenly goes up, like 30 fps to 60 fps"): every ramp
+// out of (or into) a real-time window eases in; the log of the sim speed grows with a slope that rises from 0 to
+// its lambda over RAMP_EASE_S (C2), instead of at lambda from the first frame. Ramps that touch the first
+// FIRST_GENTLE_S of the flight are GENTLE: at most ~2.8 % rate change per frame (e^(1.65/60)), eased over 1 s.
+const RAMP_EASE_S = 0.25;
+const GENTLE = { k: 1.65, E: 1 };
+const FIRST_GENTLE_S = 10; // s on screen from T0
+const LIFTOFF_REAL_S = 1.5; // s of real time from T0 before the climb's ramp starts
 // Beats in space ramp faster (sim speed e^14 per screen second, about 26 % per frame), so the coasts stay short on
 // screen (Earth missions: everything after the ascent within 20 s; a transfer within 4 s) and nothing is seen
 // going round; the ascent and the descents keep the gentle ramp. Screen time only: the sim is unchanged.
 const LAMBDA_SPACE = 14;
 // ("reentry" counts: most of it is high, thin air; the landing burn keeps the gentle ramp)
 const SPACE_SEGMENTS = new Set(["payload-release", "orbit", "orbit-coast", "parking-orbit", "departure-burn", "transfer", "coast", "lunar-orbit", "mars-orbit", "escape", "deorbit-burn", "deorbit-coast", "reentry"]);
-const SOFT_P = 4; // soft-minimum exponent between the window ramp and the base rate (4: two square roots)
+const SOFT_P = 4; // soft-minimum exponent between the window ramps and the base rate
 const DROP = { speed_ms: 2, duration_s: 2 }; // model choice
 const BURN_CUE_S = 1;
 const TURN_FRACTION = 0.25; // a coast turns to the next attitude over its last quarter
@@ -309,60 +318,116 @@ function elements(p, v, mu) {
 }
 
 // ---------- screen-time map ----------
-// segs: [{ t0, t1, budget }] (contiguous), windows: [[a, b]] sim seconds, rate 1 inside.
+// A window ramp: from a window's edge the sim speed v starts at 1 and ln v grows with slope k * smoothstep(tau / E)
+// per screen second tau (cubic smoothstep, so v is C2), then at k. Tabulated once per (k, E) as sim distance from
+// the edge -> speed (as if the clock followed this ramp alone). A number is a lambda eased over RAMP_EASE_S.
+const RAMPS = new Map();
+function rampOf(spec) {
+  const { k, E } = typeof spec === "number" ? { k: spec, E: RAMP_EASE_S } : spec;
+  const key = `${k}/${E}`;
+  if (RAMPS.has(key)) return RAMPS.get(key);
+  const lnv = (tau) => (tau >= E ? k * (tau - E / 2) : k * E * ((tau / E) ** 3 - (tau / E) ** 4 / 2));
+  const N = 600;
+  const T = [0];
+  const D = [0];
+  const V = [1];
+  for (let i = 1; i <= N && E > 0; i++) {
+    const t0 = (E * (i - 1)) / N;
+    const t1 = (E * i) / N;
+    D.push(D[i - 1] + ((t1 - t0) / 6) * (Math.exp(lnv(t0)) + 4 * Math.exp(lnv((t0 + t1) / 2)) + Math.exp(lnv(t1))));
+    T.push(t1);
+    V.push(Math.exp(lnv(t1)));
+  }
+  const dE = D.at(-1);
+  const vE = V.at(-1);
+  const lerpIn = (xs, ys, x) => {
+    let lo = 0;
+    let hi = xs.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (xs[mid] <= x) lo = mid;
+      else hi = mid;
+    }
+    return ys[lo] + ((ys[hi] - ys[lo]) * (x - xs[lo])) / (xs[hi] - xs[lo]);
+  };
+  const r = {
+    k,
+    E,
+    speed: (x) => (x <= 0 ? 1 : x >= dE ? vE + k * (x - dE) : lerpIn(D, V, x)), // at sim distance x from the edge
+    dist: (tau) => (tau <= 0 ? 0 : tau >= E ? dE + (vE * Math.exp(k * (tau - E)) - vE) / k : lerpIn(T, D, tau)), // tau s after it
+  };
+  RAMPS.set(key, r);
+  return r;
+}
+const gentler = (r1, r2) => (r1.k < r2.k || (r1.k === r2.k && r1.E >= r2.E) ? r1 : r2);
+
+// segs: [{ t0, t1, budget }] (contiguous), windows: [[a, b, ramp before, ramp after]] sim seconds, rate 1 inside.
+// Outside the windows the sim speed is a soft minimum of the segment's base speed and the windows' ramps, taken on
+// (speed - 1) so it is exactly 1 inside a window and stays C2: v = 1 + ((V - 1)^-p + sum (v_j - 1)^-p)^(-1/p). Its
+// log changes per screen second by a weighted mean (weights <= 1) of the ramps' slopes, never more than the
+// steepest ramp near it.
 function buildClock(segs, windows) {
   const T0 = segs[0].t0;
   const T1 = segs.at(-1).t1;
-  // [a, b, lambda before, lambda after]: merged windows keep the gentler ramp on each side
+  // [a, b, ramp before, ramp after]: merged windows keep the gentler ramp on each side
   const win = windows
-    .map(([a, b, lb = LAMBDA, la = lb]) => [Math.max(T0, a), Math.min(T1, b), lb, la])
+    .map(([a, b, lb = LAMBDA, la = lb]) => [Math.max(T0, a), Math.min(T1, b), rampOf(lb), rampOf(la)])
     .filter(([a, b]) => b >= a)
     .sort((x, y) => x[0] - y[0])
     .reduce((m, w) => {
       const last = m.at(-1);
       if (last && w[0] <= last[1]) {
         last[1] = Math.max(last[1], w[1]);
-        last[2] = Math.min(last[2], w[2]);
-        last[3] = Math.min(last[3], w[3]);
+        last[2] = gentler(last[2], w[2]);
+        last[3] = gentler(last[3], w[3]);
       } else m.push([...w]);
       return m;
     }, []);
   const pts = [T0, T1];
   for (const s of segs) for (let i = 0; i <= 1500; i++) pts.push(s.t0 + ((s.t1 - s.t0) * i) / 1500);
-  for (const [a, b, lb, la] of win) {
+  for (const [a, b, rb, ra] of win) {
     for (let t = a; t < b; t += 0.05) pts.push(t);
     pts.push(b, a - 1e-3, b + 1e-3); // a cut (skip segment) changes the rate within a millisecond of the edge
-    for (let k = 1; k < 2000; k++) {
-      const u = Math.exp(k * 0.02) - 1;
-      if (a - u / lb < T0 && b + u / la > T1) break;
-      pts.push(a - u / lb, b + u / la);
+    // along each ramp, a point every 1/300 s of its own screen time
+    for (let i = 1; i < 6000; i++) {
+      const db = rb.dist(i / 300);
+      const da = ra.dist(i / 300);
+      if (a - db < T0 && b + da > T1) break;
+      pts.push(a - db, b + da);
     }
   }
   const grid = Float64Array.from(pts.filter((t) => t >= T0 && t <= T1)).sort();
   const sim = grid.filter((t, i) => i === 0 || t - grid[i - 1] > 1e-9);
   const n = sim.length;
-  // ramp rate from the nearest window, and the segment of each point
-  const rw = new Float64Array(n);
+  // the nearest windows' ramps at each point (sum of (v_j - 1)^-p; Infinity inside a window), and its segment
+  const inv = new Float64Array(n);
   const seg = new Int32Array(n);
   let w = 0;
   let k = 0;
   for (let i = 0; i < n; i++) {
     const t = sim[i];
     while (w < win.length - 1 && win[w + 1][0] <= t) w++;
-    let r = 0;
+    let acc = 0;
     for (const j of [w - 1, w, w + 1]) {
       const x = win[j];
       if (!x) continue;
-      const d = t < x[0] ? x[0] - t : t > x[1] ? t - x[1] : 0;
-      r = Math.max(r, 1 / (1 + (t < x[0] ? x[2] : x[3]) * d));
+      if (t >= x[0] && t <= x[1]) {
+        acc = Infinity;
+        break;
+      }
+      acc += ((t < x[0] ? x[2].speed(x[0] - t) : x[3].speed(t - x[1])) - 1) ** -SOFT_P;
     }
-    rw[i] = r;
+    inv[i] = acc;
     while (k < segs.length - 1 && t > segs[k].t1) k++;
     seg[i] = k;
   }
-  const rw4 = rw.map((x) => x ** SOFT_P);
-  // a skip segment (a coast, round 22): no ramps; real time inside its windows, its base rate (a cut) elsewhere
-  const rateAt = (i, rb4) => (segs[seg[i]].skip ? (rw[i] >= 1 - 1e-9 ? 1 : Math.sqrt(Math.sqrt(rb4))) : Math.min(1, Math.sqrt(Math.sqrt(rb4 + rw4[i]))));
+  // rate = screen seconds per sim second (rb: the segment's base rate, 1 / its base speed). A skip segment (a coast,
+  // round 22): no ramps; real time inside its windows, its base rate (a cut) elsewhere
+  const rateAt = (i, rb) => {
+    if (segs[seg[i]].skip) return inv[i] === Infinity ? 1 : rb;
+    const above = 1 / rb - 1;
+    return 1 / (1 + ((above > 0 ? above ** -SOFT_P : Infinity) + inv[i]) ** (-1 / SOFT_P));
+  };
   // one base rate per segment, by bisection on its log
   const base = segs.map((s, j) => {
     let i0 = -1;
@@ -373,11 +438,10 @@ function buildClock(segs, windows) {
       i1 = i;
     }
     const screenOf = (rb) => {
-      const rb4 = rb ** SOFT_P;
       let acc = 0;
-      let left = rateAt(i0, rb4);
+      let left = rateAt(i0, rb);
       for (let i = i0; i <= i1; i++) {
-        const right = rateAt(i + 1, rb4);
+        const right = rateAt(i + 1, rb);
         acc += ((left + right) / 2) * (sim[i + 1] - sim[i]);
         left = right;
       }
@@ -394,7 +458,7 @@ function buildClock(segs, windows) {
     }
     return Math.exp((lo + hi) / 2);
   });
-  const rate = Float64Array.from({ length: n }, (_, i) => rateAt(i, base[seg[i]] ** SOFT_P));
+  const rate = Float64Array.from({ length: n }, (_, i) => rateAt(i, base[seg[i]]));
   const screen = new Float64Array(n);
   for (let i = 1; i < n; i++) screen[i] = screen[i - 1] + ((rate[i] + rate[i - 1]) / 2) * (sim[i] - sim[i - 1]);
   // rate is linear inside each cell, so screen time is quadratic in sim time there (exact both ways)
@@ -536,14 +600,17 @@ export function flightTimeline(build, catalog, opts = {}) {
   const impact = { downrange_km: round(lastA.downrange_m / 1000, 1), ...latLon(rHat(lastA.downrange_m / 1000 / R.earth)), surface: lastA.downrange_m >= 1000 ? "sea" : "ground" };
   pieces.push({ name: "ascent", body: "earth", t0: 0, t1: tEndAscent, fn: ascentState });
   const liftoff = AE.find((e) => e.type === "liftoff");
-  win(0, (liftoff?.t ?? 0) + 3);
+  // real time for the first ~1.5 s, then the climb's gentle ramp (round 27; held down: the whole 3 s)
+  if (liftoff) win(0, Math.max(LIFTOFF_REAL_S, liftoff.t + 0.5), LAMBDA, GENTLE);
+  else win(0, 3);
   for (const e of AE) {
     if (e.t > tEndAscent + 1e-6) continue;
     if (!liftoff && e.type === "impact") continue; // held down: a pad abort, not a crash
     if (e.type === "fairing" && !parts.has("fairing")) continue; // an exposed payload (Apollo) has no fairing
     ev(e.type, e.t, { body: "earth", stage: e.stage, ...(e.type === "impact" ? { ...impact, v_ms: Math.round(lastA.vel_ms) } : {}) });
     if (e.type === "impact") win(e.t - 2, e.t);
-    if (e.type === "maxq") win(e.t - 0.5, e.t + 0.5);
+    // (max-q has no real-time window since round 27: a dip to real time inside the climb's gentle ramp would cost
+    // ~5 s of screen; the director's vapour collar is a real-time effect anyway)
     if (e.type === "fairing") {
       win(e.t - 0.5, e.t + 1.5); // the fairing halves drift off in near real time (>= 1.5 s, round 25)
       stageDrops.push(dropAway("fairing", e.stage, e.t, ascentState(e.t), [1, 0.2, 0], { part: "fairing", halves: 2, note: "the other half mirrors x" }));
@@ -1283,7 +1350,25 @@ export function flightTimeline(build, catalog, opts = {}) {
   const skipShare = failed ? 0 : pieces.filter((p) => p.skip).reduce((a, p) => a + (share[p.name] ?? 0), 0);
   const scale = ((opts.totalScreen_s ?? sumShare) - skipShare) / (sumShare - skipShare);
   const segs = pieces.map((p) => ({ t0: p.t0, t1: p.t1, skip: Boolean(p.skip), budget: (failed ? FAILED_ASCENT_S : share[p.name] ?? 1) * (p.skip ? 1 : scale) }));
-  const clock = buildClock(segs, windows);
+  // round 27: every ramp that reaches into the first FIRST_GENTLE_S on screen is GENTLE (a lambda ramp into a
+  // window takes ~1-1.5 s from the climb's speed: 2 s of reach). A gentler ramp moves the beats after it, so the
+  // choice is made again on the new clock until it settles (if it flips back and forth, the gentler of the two).
+  const own = windows.map((w) => [w[2], w[3]]);
+  const pick = (c, prev) =>
+    windows.map((w, i) => [
+      (prev?.[i][0] ?? false) || c.simToScreen(w[0]) < FIRST_GENTLE_S + 2,
+      own[i][1] === GENTLE || (prev?.[i][1] ?? false) || c.simToScreen(w[1]) < FIRST_GENTLE_S,
+    ]);
+  const apply = (flags) => windows.forEach((w, i) => ((w[2] = flags[i][0] ? GENTLE : own[i][0]), (w[3] = flags[i][1] ? GENTLE : own[i][1])));
+  let clock = buildClock(segs, windows);
+  let flags = pick(clock);
+  for (let pass = 0; pass < 6; pass++) {
+    apply(flags);
+    clock = buildClock(segs, windows);
+    const next = pick(clock);
+    if (JSON.stringify(next) === JSON.stringify(flags)) break;
+    flags = pass < 4 ? next : pick(clock, flags); // settle by union if it keeps flipping
+  }
 
   for (const e of events) e.t_screen = round(clock.simToScreen(e.t_sim), 3);
   events.sort((a, b) => a.t_sim - b.t_sim);

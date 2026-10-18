@@ -430,7 +430,7 @@ function createCoast({ m, y, apronR }) {
     uniforms: u,
     // the recipe from world.setSky (colours, sun, cloud) or just day / night
     setSky(r) {
-      const day = r.time === "day";
+      const day = r.time === "day" || r.time === "dusk"; // dusk: a low warm sun, a glitter line on the dark sea
       u.uDay.value = day ? 1 : 0;
       u.uCloudy.value = r.weather === "cloudy" ? 1 : 0;
       if (day) {

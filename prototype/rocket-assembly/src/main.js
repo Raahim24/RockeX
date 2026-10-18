@@ -628,6 +628,7 @@ function syncUi() {
   if (built < parts.length && !launched) rangeUi.update(null); // no complete stack, no range line
   if (built === parts.length && !launched) {
     presimulate();
+    twinSoon();
     if (range.key !== buildKey(current.build) || !range.a) {
       assessRange();
       range.showUntil = performance.now() + 4000;
@@ -986,6 +987,21 @@ function simFor(build) {
   return simCache.sim;
 }
 const idle = window.requestIdleCallback ?? ((fn) => setTimeout(fn, 250));
+// UI4's flight twin for the launch, made and compiled at idle while the stack stands complete (choreo keeps it
+// until the stack changes).
+function twinSoon() {
+  if (twinSoon.pending) return;
+  twinSoon.pending = true;
+  idle(
+    () => {
+      twinSoon.pending = false;
+      if (!isComplete() || choreo.state.launch) return;
+      // (an idle callback can starve while the scene animates: a timeout makes it run, and a busy stack retries)
+      if (!choreo.prepareTwin?.(current.build.missionId)) setTimeout(twinSoon, 500);
+    },
+    { timeout: 1200 },
+  );
+}
 function presimulate() {
   if (simCache.pending || simCache.key === buildKey(current.build)) return;
   simCache.pending = true;
