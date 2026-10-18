@@ -112,14 +112,30 @@ const ORB_CSS = `
 @media (prefers-reduced-motion: reduce) {
   .grok-orb, .grok-orb .grok-face, .grok-orb .grok-eye, .grok-orb::before, .grok-orb::after { animation: none !important; }
 }
-@keyframes grok-pop { from { opacity: 0; transform: translateY(6px) scale(.92) } to { opacity: 1; transform: none } }
-.grok-bubble { position: relative; max-width: min(340px, calc(100vw - 48px)); padding: 10px 14px;
-  border-radius: 18px; background: #f6f7fb; color: #11131a; font-size: 14px; line-height: 1.4; font-weight: 500;
-  box-shadow: 0 10px 28px rgba(0,0,0,.45); transform-origin: bottom left; animation: grok-pop 220ms ease-out both; }
-/* the tail, pointing down at Grok's face (the face is 84px wide, so its centre is 42px in) */
-.grok-bubble::after { content: ""; position: absolute; left: 33px; bottom: -8px; width: 18px; height: 18px;
-  background: #f6f7fb; transform: rotate(45deg); border-radius: 3px; }
-@media (prefers-reduced-motion: reduce) { .grok-bubble { animation: none; } }
+@keyframes grok-pop { from { opacity: 0; scale: .8 } to { opacity: 1; scale: 1 } }
+@keyframes grok-drift { 0%,100% { translate: -50% 0 } 50% { translate: -50% -3px } }
+/* A cartoon cloud centred over Grok's head: a soft body, puffs along its edges, and a trail of puffs down to the head.
+   drop-shadow (not box-shadow) so the puffs share one shadow with the body. */
+.grok-cloud { position: absolute; bottom: calc(100% + 58px); left: 50%; translate: -50% 0; width: max-content;
+  max-width: min(270px, calc(100vw - 72px)); padding: 16px 24px; border-radius: 40px; background: #f6f7fb; color: #11131a;
+  font-size: 14px; line-height: 1.4; font-weight: 500; text-align: center; transform-origin: 50% 130%;
+  filter: drop-shadow(0 10px 18px rgba(0,0,0,.45)); animation: grok-pop 260ms cubic-bezier(.2,1.4,.4,1) both, grok-drift 3.2s ease-in-out .3s infinite; }
+.grok-cloud-text { position: relative; z-index: 1; display: block; }
+.grok-puff { position: absolute; border-radius: 50%; background: #f6f7fb; pointer-events: none; }
+.grok-puff.p1 { width: 52px; height: 52px; left: 4%; top: -20px; }
+.grok-puff.p2 { width: 72px; height: 72px; left: 22%; top: -34px; }
+.grok-puff.p3 { width: 62px; height: 62px; left: 50%; top: -28px; }
+.grok-puff.p4 { width: 46px; height: 46px; right: 3%; top: -16px; }
+.grok-puff.p5 { width: 46px; height: 46px; left: 9%; bottom: -16px; }
+.grok-puff.p6 { width: 54px; height: 54px; left: 36%; bottom: -18px; }
+.grok-puff.p7 { width: 42px; height: 42px; right: 9%; bottom: -14px; }
+.grok-puff.p8 { width: 50px; height: 50px; left: -16px; top: 50%; margin-top: -25px; }
+.grok-puff.p9 { width: 50px; height: 50px; right: -16px; top: 50%; margin-top: -25px; }
+.grok-cloud-trail { position: absolute; left: 50%; top: calc(100% + 22px); width: 0; height: 0; pointer-events: none; }
+.grok-cloud-trail::before, .grok-cloud-trail::after { content: ""; position: absolute; border-radius: 50%; background: #f6f7fb; }
+.grok-cloud-trail::before { width: 16px; height: 16px; left: -8px; top: 0; }
+.grok-cloud-trail::after { width: 9px; height: 9px; left: -4px; top: 22px; }
+@media (prefers-reduced-motion: reduce) { .grok-cloud { animation: none; } }
 body .bar { left: auto; right: 24px; bottom: 24px; transform: none; flex-direction: column; width: 220px; }
 body .bar > button { width: 100%; }
 body .bar .rockets { left: auto; right: calc(100% + 8px); bottom: 0; }
@@ -553,14 +569,15 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
       {/* Nothing on the pad yet: Explode and Reset would do nothing, so they stay out of sight until a part lands. */}
       {placedCount === 0 && <style>{"body .bar #btn-explode, body .bar #btn-reset { display: none; }"}</style>}
 
-      {/* Grok at the bottom left: a speech bubble with what it says above its head, what to do written under it. */}
-      <div className="fixed bottom-5 left-6 z-10 flex flex-col items-start gap-3">
+      {/* Grok at the bottom left: a cloud with what it says over its head, what to do written under it. */}
+      <div className="fixed bottom-5 left-20 z-10 flex flex-col items-center gap-1.5">
         {bubble && (
-          <div key={bubble.slice(0, 24)} role="status" aria-live="polite" className="grok-bubble">
-            {bubble.length > 260 ? `…${bubble.slice(-260)}` : bubble}
+          <div key={bubble.slice(0, 24)} role="status" aria-live="polite" className="grok-cloud">
+            {[1,2,3,4,5,6,7,8,9].map((i) => <span key={i} className={`grok-puff p${i}`} aria-hidden />)}
+            <span className="grok-cloud-text">{bubble.length > 220 ? `…${bubble.slice(-220)}` : bubble}</span>
+            <span className="grok-cloud-trail" aria-hidden />
           </div>
         )}
-      <div className="flex flex-col items-center gap-1.5">
         <button
           ref={orbRef}
           type="button"
@@ -596,7 +613,6 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
             {live.connecting ? "Connecting to Grok…" : everLive ? "Press Space to talk again" : "Press Space to talk to Grok"}
           </p>
         )}
-      </div>
       </div>
       {optionsHint && live.live ? (
         <div className="fixed bottom-40 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
