@@ -482,7 +482,7 @@ function syncUi() {
   selector.refresh();
 }
 
-// ---------- app bridge ----------
+// ---------- app bridge (team PR #30, ported verbatim in behaviour) ----------
 // In the Next app the build also lives in the app's store (Grok reads it there). This screen announces every
 // build it shows ("assembly:build") and accepts builds from the app ("assembly:apply", e.g. Grok's Apply),
 // which animate exactly like Options. Standalone (Vite) nothing listens and nothing is sent.
@@ -551,8 +551,7 @@ addEventListener("assembly:command", (e) => {
   else if (cmd === "build_next") {
     const next = parts.find((p) => !p.built);
     if (next && choreo.canBuild(next)) choreo.build(next);
-  }
-  else if (cmd === "explode") choreo.toggleExplode();
+  } else if (cmd === "explode") choreo.toggleExplode();
   else if (cmd === "reset") reset();
 });
 
