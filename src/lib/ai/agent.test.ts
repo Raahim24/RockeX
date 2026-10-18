@@ -153,9 +153,10 @@ describe("welcome", () => {
     expect(await (await agent(welcome())).json()).toEqual({ message: "Hey, I'm Grok! Press Build all.", action: null });
   });
 
-  it("still greets and explains how to start when Grok is down", async () => {
+  it("still greets briefly when Grok is down", async () => {
     vi.stubEnv("XAI_API_KEY", "");
     const body = (await (await agent(welcome())).json()) as AgentReply;
-    expect(body.message).toContain("Build all");
+    expect(body.message).toContain("Grok");
+    expect(body.message.split(/(?<=[.!?])\s+/).length).toBeLessThanOrEqual(2);
   });
 });

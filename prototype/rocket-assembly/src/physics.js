@@ -63,7 +63,7 @@ const byId = (items, id) => items.find((item) => item.id === id);
 export const RULES = {
   TWR_OK: 1.2,
   TWR_BLOCKING: 1.0,
-  DRY_MASS_MIN_FRACTION: 0.04,
+  DRY_MASS_MIN_FRACTION: 0.03, // was 0.04; lowered in the TS physics so real stages (Falcon 9 S2 3.23 %) pass
   MAX_ENGINE_COUNT: 9,
   // Spec: tune so a 3.66 m tank + Merlin = 9. 0.62 also fits the real Saturn V S-IC's 5 F-1s (0.6 allowed 4).
   ENGINE_FIT_FACTOR: 0.62,
@@ -106,7 +106,7 @@ const stageRuleWarnings = (stage, stageIndex, engine, tank) => {
     out.push("engine and tank propellant differ");
   }
   if (engine && tank && tank.dryMass_kg < DRY_MASS_MIN_FRACTION * tank.propellantMass_kg) {
-    out.push("tank dry mass below 4 percent of propellant");
+    out.push(`tank dry mass below ${DRY_MASS_MIN_FRACTION * 100} percent of propellant`);
   }
   if (stageIndex === 0 && engine && isVacuumOnly(engine)) {
     out.push("vacuum-only engine on stage 0");

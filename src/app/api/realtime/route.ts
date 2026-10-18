@@ -16,6 +16,13 @@ const RealtimeRequestSchema = AdviseRequestSchema.extend({
   screen: z.string().max(2000).default(""),
 });
 
+// Tokens cost money: only pages served by this app may ask for one (browsers always send Origin on POST).
+const sameOrigin = (req: Request): boolean => {
+  const origin = req.headers.get("origin");
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  return origin !== null && host !== null && new URL(origin).host === host;
+};
+
 export async function POST(req: Request): Promise<Response> {
   const parsed = RealtimeRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
@@ -32,6 +39,9 @@ export async function POST(req: Request): Promise<Response> {
   };
   if (!token) {
     return Response.json(body);
+  }
+  if (!sameOrigin(req)) {
+    return Response.json({ error: "forbidden" }, { status: 403 });
   }
   try {
     const { value, expiresAt } = await grokRealtimeToken(TOKEN_SECONDS, TIMEOUT_MS);

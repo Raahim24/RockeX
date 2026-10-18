@@ -26,14 +26,14 @@ describe("advisorContext", () => {
   it("gives the advisor only the rules this verdict involves", () => {
     expect(context).toContain("must be at least 1.2");
     expect(context).not.toContain("Vacuum-only engines");
-    expect(context).not.toContain("at least 4 %");
+    expect(context).not.toContain("at least 3 %");
   });
 
   it("gives the agent every rule, with the same constants the code uses", () => {
     const all = advisorContext(DEMO_BUILD, verdict, catalog, { allRules: true }).join("\n");
     expect(all).toContain("Vacuum-only engines");
     expect(all).toContain("floor(0.62 x (tank diameter / engine diameter)^2)");
-    expect(all).toContain("at least 4 %");
+    expect(all).toContain("at least 3 %");
   });
 
   it("states the dataset size from the data files", () => {

@@ -15,9 +15,9 @@ export const AGENT_SYSTEM = [
   "action: only when the user asks you to change the rocket, return exactly one change using ids from ENGINE IDS and TANK IDS (stageIndex is 0-based, 0 = bottom stage) that actually differs from the current rocket; otherwise null. If they ask for something impossible, still make the change when it is a valid id and let the physics judge it. Never claim the result of a change; the physics code will judge it after.",
 ].join(" ");
 
-// The first thing the user hears. Code decides the moment; Grok writes the words from the real mission data.
+// The first thing the user hears when they arrive (not live). Code decides the moment; Grok writes the words.
 export const WELCOME_QUESTION =
-  "(The user just opened the app and tapped you. Exactly 2 sentences. Sentence 1: say hi as Grok, their flight engineer, and name the mission and payload from MISSION and PAYLOAD using those exact names, with hype. Sentence 2: tell them to press Build all to stack the rocket and to tap you any time to talk. Talk to them like a fellow engineer; never call them kid. action must be null.)";
+  "(The user just opened the app. Greet them in your own words: at most 2 short sentences, who you are and what you can do together here, based on SCREEN. Talk to them like a fellow engineer; never call them kid. action must be null.)";
 
 const idLines = (catalog: Catalog): string[] => [
   `ENGINE IDS: ${catalog.engines.map((e) => `${e.id} (${e.name}, ${e.propellant})`).join("; ")}`,

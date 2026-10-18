@@ -19,7 +19,7 @@ const TIMEOUT_MS = 8000;
 const TEMPERATURE = 0.4;
 const FALLBACK: AgentReply = { message: "Mission control lost the line. Ask me again in a second.", action: null };
 const WELCOME_FALLBACK: AgentReply = {
-  message: "Hey, I'm Grok, your flight engineer! Press Build all to stack your rocket, and tap me any time to talk.",
+  message: "Hey, I'm Grok, your flight engineer. Let's build a rocket that actually makes it.",
   action: null,
 };
 
@@ -50,9 +50,7 @@ export async function POST(req: Request): Promise<Response> {
       });
       const grok = AgentReplySchema.parse(raw);
       const message = capSentences(grok.message);
-      const reason =
-        rejectionReason(message, verdict.warnings, mission) ??
-        (welcome && !/build all/i.test(message) ? "a welcome must tell them to press Build all and to tap you to talk" : null);
+      const reason = rejectionReason(message, verdict.warnings, mission);
       if (reason) {
         console.warn("[agent] rejected (%s):", reason, message);
         correction = `\nCORRECTION: your last reply was rejected because ${reason}. Rewrite it.`;

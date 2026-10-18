@@ -19,6 +19,7 @@ import { animate } from "animejs";
 import { SCALE, buildManifest, sceneBounds } from "./layout.js";
 import { createMaterials, createPart, createPad, createStars } from "./parts.js";
 import { createChoreographer } from "./choreo.js";
+import { createOptionShelf } from "./optionShelf.js";
 import { createSfx } from "./fx/sfx.js";
 import { createSelector } from "./ui/select.js";
 import { createCard } from "./ui/card.js";
@@ -205,6 +206,16 @@ const cardContext = (part = card.part) => {
 };
 
 let hovered = null;
+// Grok's options for the next part, shown as the real parts beside the rocket (app bridge; see optionShelf.js).
+const shelf = createOptionShelf({
+  camera,
+  scene,
+  root,
+  canvas,
+  catalog,
+  onPick: (o) => dispatchEvent(new CustomEvent("assembly:option-picked", { detail: o })),
+});
+
 const selector = createSelector({
   canvas,
   camera,
@@ -368,6 +379,13 @@ function syncUi() {
 // build it shows ("assembly:build") and accepts builds from the app ("assembly:apply", e.g. Grok's Apply),
 // which animate exactly like Options. Standalone (Vite) nothing listens and nothing is sent.
 const announce = () => dispatchEvent(new CustomEvent("assembly:build", { detail: { build: current.build } }));
+// "assembly:report": what a screen action ended in (launch outcome, twin found), as plain text for Grok.
+const report = (kind, html) =>
+  dispatchEvent(
+    new CustomEvent("assembly:report", {
+      detail: { kind, text: String(html ?? "").replace(/<[^>]+>/g, "").replace(/\u00a0/g, " ").trim() },
+    }),
+  );
 // "assembly:complete": whether every part of the current build is on the stack (the app shows Render only then).
 // "assembly:progress": every part in build order and whether it is on the stack, sent whenever that changes,
 // so Grok can walk the user through the build one part at a time.
@@ -377,6 +395,8 @@ function announceProgress() {
   const key = JSON.stringify(list);
   if (swapping || key === lastProgress) return;
   lastProgress = key;
+  const shelfPart = shelf.partId ? list.find((p) => p.id === shelf.partId) : null;
+  if (shelf.partId && (!shelfPart || shelfPart.built !== shelf.forBuilt)) shelf.clear();
   dispatchEvent(new CustomEvent("assembly:progress", { detail: { parts: list } }));
 }
 let lastComplete = null;
@@ -393,6 +413,8 @@ async function swapTo(build) {
   if (choreo.state.exploded && !(await choreo.assemble())) return false;
   const next = loadBuild(current.preset, build);
   if (buildKey(next.build) === buildKey(current.build)) return false;
+  const fromShelf = next.manifest.find((sp) => parts.find((p) => p.id === sp.id)?.built && shelf.has(sp.id, sp.record?.id));
+  if (fromShelf) await shelf.flyIn(fromShelf);
   shown = { ...current, complete: isComplete() };
   current = next;
   announce();
@@ -425,20 +447,82 @@ function applyFromApp(build) {
   void swapTo(build).then((ok) => ok && wasComplete && !isComplete() && choreo.buildAll());
 }
 addEventListener("assembly:apply", (e) => applyFromApp(e.detail.build));
+// Place the next part; if a swap or another part is still animating, wait for it (up to tries x 250 ms).
+function buildNextWhenIdle(tries) {
+  if (choreo.state.busy || pendingApply || shelf.busy) {
+    if (tries > 0) setTimeout(() => buildNextWhenIdle(tries - 1), 250);
+    return;
+  }
+  const next = parts.find((p) => !p.built);
+  if (!next || !choreo.canBuild(next)) return;
+  // Picked from the option shelf: that preview flies onto its slot first, then the part locks in.
+  if (shelf.has(next.id, next.record?.id)) void shelf.flyIn(next).then(() => choreo.build(next));
+  else choreo.build(next);
+}
+const whenIdle = () =>
+  new Promise((resolve) => {
+    const t = setInterval(() => {
+      if (choreo.state.busy || pendingApply || shelf.busy) return;
+      clearInterval(t);
+      resolve();
+    }, 100);
+  });
+// Take parts off from the top, down to and including `partId` (no id: just the top part). Only the top part can
+// come off, as on a real stack, so everything above it goes first.
+async function removeDownTo(partId) {
+  if (choreo.state.exploded && !(await choreo.assemble())) return;
+  for (let guard = 0; guard < 20; guard++) {
+    const target = partId ? parts.find((p) => p.id === partId) : [...parts].reverse().find((p) => p.built);
+    if (!target?.built) return;
+    await whenIdle();
+    const top = [...parts].reverse().find((p) => p.built);
+    if (!top || !(await choreo.remove(top)) || top === target) return;
+  }
+}
+// Put parts back on, bottom up to and including `partId` (no id: just the next part).
+async function placeUpTo(partId) {
+  await whenIdle();
+  const target = partId ? parts.find((p) => p.id === partId) : parts.find((p) => !p.built);
+  if (target && !target.built) await choreo.buildUpTo(target);
+}
 // Screen commands from the app (Grok's voice tools): the same actions as the buttons.
 addEventListener("assembly:command", (e) => {
   const cmd = e.detail?.cmd;
   if (cmd === "build_all") choreo.buildAll();
-  else if (cmd === "build_next") {
-    const next = parts.find((p) => !p.built);
-    if (next && choreo.canBuild(next)) choreo.build(next);
-  }
+  else if (cmd === "build_next") buildNextWhenIdle(40);
   else if (cmd === "explode") choreo.toggleExplode();
   else if (cmd === "reset") reset();
+  else if (cmd === "show_options") shelf.show({ build: current.build, partId: e.detail.partId, options: e.detail.options, built: e.detail.built });
+  else if (cmd === "remove_parts") void removeDownTo(e.detail.partId);
+  else if (cmd === "place_parts") void placeUpTo(e.detail.partId);
+  else if (cmd === "inspect_part") {
+    const part = parts.find((p) => p.id === e.detail.partId && p.built);
+    if (part) selector.select(part);
+  } else if (cmd === "reset_view") {
+    selector.clear();
+    choreo.home();
+  }
+  else if (cmd === "hide_options") shelf.clear();
+  else if (cmd === "launch") {
+    if (!isComplete()) report("launch", "Not launched: the rocket is not fully built yet");
+    else if (choreo.state.launch) report("launch", "Already in flight");
+    else void launch();
+  } else if (cmd === "show_twin") {
+    if (!isComplete()) report("twin", "The rocket must be fully built to find its twin");
+    else if (!showTwin() && !twin) report("twin", hudText.innerHTML);
+  } else if (cmd === "hide_twin") hideTwin();
+  else if (cmd === "see_through") choreo.toggleLookAll();
+  else if (cmd === "save_card") void saveCard();
+  else if (cmd === "play_story") void runStory();
+  else if (cmd === "switch_rocket") {
+    const i = presetIds.indexOf(e.detail.presetId);
+    if (i >= 0) switchPreset(i - presetIndex, { built: e.detail.built !== false });
+  }
 });
 
 // Switching rockets ([ ], the Rockets list) shows the new one built (one snap); reset and the story start empty.
 function switchPreset(step, { built = true } = {}) {
+  shelf.clear();
   presetIndex = (presetIndex + step + presetIds.length) % presetIds.length;
   current = loadPreset(presetIds[presetIndex]);
   selector.clear();
@@ -458,6 +542,7 @@ function switchPreset(step, { built = true } = {}) {
 
 // Reset means reset: back to the empty pad and, if Options changed the build, the pristine preset.
 function reset() {
+  shelf.clear();
   if (current.modified) switchPreset(0, { built: false });
   else choreo.reset();
 }
@@ -547,13 +632,17 @@ function onTelemetry(tel) {
   }
   if (tel.ending) {
     const html = tel.final ? endingFinalHtml(tel.arrival, tel.booster) : endingLegHtml(tel.leg);
-    if (tel.final) telemetry.final = html;
+    if (tel.final) {
+      telemetry.final = html;
+      report("launch", html);
+    }
     hudText.innerHTML = html;
     return;
   }
   if (tel.final) {
     telemetry.final = outcomeHtml(tel);
     hudText.innerHTML = telemetry.final;
+    report("launch", telemetry.final);
     return;
   }
   const now = performance.now();
@@ -570,6 +659,7 @@ async function launch({ countdown } = {}) {
   if (sim.summary.outcome === "blocked" || !sim.samples.length) {
     const why = sim.summary.reason ?? sim.summary.blockedBy ?? sim.summary.error ?? "no trajectory";
     hudText.innerHTML = `<strong class="nogo">Pad abort</strong> · ${f.esc(why)}`;
+    report("launch", hudText.innerHTML);
     clearTimeout(launch.abortTimer);
     launch.abortTimer = setTimeout(() => syncUi(), 3000);
     return;
@@ -616,6 +706,7 @@ function showTwin() {
   twin = { rec, sil, line, key: buildKey(current.build) };
   if (anchors?.tower) anchors.tower.visible = false; // the service tower would stand between camera and pair
   hudText.innerHTML = line;
+  report("twin", line);
   return true;
 }
 function hideTwin({ reframe = true } = {}) {
@@ -1051,6 +1142,7 @@ function frame() {
   gtaoBudget(rawDt);
   choreo.update(dt, t);
   controls.update();
+  shelf.update(dt);
   // Depth cue: fog (background colour) in a band around the orbit target, sized by what is framed, so the far
   // side of the rocket and its far lines fade toward black while the near silhouette stays bright.
   // The band is wide at home and while building (the pad stays visible) and tight on a focus or exploded view.

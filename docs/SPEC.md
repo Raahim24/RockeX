@@ -31,7 +31,7 @@ All units SI. Stage index 0 = bottom stage, first to fire. Code decides the verd
 | engine propellant = tank propellant | else blocking warning |
 | max engines = `floor(0.6 · (tankD/engineD)²)`, tune so 3.66 m tank + Merlin = 9 | `setEngineCount` clamps |
 | vacuum-only engines not on stage 0 | blocking warning, UI disallows |
-| tank dry mass ≥ 4% of propellant | else blocking warning |
+| tank dry mass ≥ 3% of propellant (was 4%; lowered 2026-10-18 so every real stage in the data passes, e.g. Falcon 9 S2 at 3.23%) | else blocking warning |
 | `feasible = deltaVOk && twrOk && no blocking warnings` | drives the green bar |
 
 **Closest real rocket:** `d = √(ln(m_b/m_r)² + ln(F_b/F_r)²)`, pick min. Code picks, Grok only phrases.

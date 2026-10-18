@@ -7,7 +7,8 @@ import { liftoffThrust_kN, liftoffTWR } from "./twr";
 
 const TWR_OK = 1.2;
 const TWR_BLOCKING = 1.0;
-const DRY_MASS_MIN_FRACTION = 0.04;
+// 3 %: lets every real stage in src/data pass (the lightest, Falcon 9 S2, is 3.23 %) and still stops fantasy tanks.
+const DRY_MASS_MIN_FRACTION = 0.03;
 const MAX_ENGINE_COUNT = 9;
 // Spec: tune so a 3.66 m tank + Merlin = 9. 0.62 also fits the real Saturn V S-IC's 5 F-1s (0.6 allowed 4).
 const ENGINE_FIT_FACTOR = 0.62;
@@ -115,7 +116,7 @@ export const evaluateBuild = (build: BuildState, catalog: Catalog): Verdict => {
       addBlocking("engine and tank propellant differ");
     }
     if (engine && tank && tank.dryMass_kg < DRY_MASS_MIN_FRACTION * tank.propellantMass_kg) {
-      addBlocking("tank dry mass below 4 percent of propellant");
+      addBlocking(`tank dry mass below ${DRY_MASS_MIN_FRACTION * 100} percent of propellant`);
     }
     if (stageIndex === 0 && engine && isVacuumOnly(engine)) {
       addBlocking("vacuum-only engine on stage 0");
