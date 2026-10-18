@@ -24,7 +24,7 @@ import * as THREE from "three";
 import { animate, spring } from "animejs";
 import { createHologramMaterial } from "./fx/hologram.js";
 import { createBoltFlash } from "./fx/flash.js";
-import { COLORS, LOOK, applyDeploy, deployables, padLayout, setShellOpacity as setShell } from "./parts.js";
+import { COLORS, LOOK, addLandingLegs, applyDeploy, deployables, escapeTowerOf, padLayout, setShellOpacity as setShell } from "./parts.js";
 import { createVents, createDeluge, createTrenchJet, createSteamCloud, createCondensationHalo, createColdGasPuffs, createIgnitionFlash, createPlasmaGlow, createImpact, plumeLean, createTouchdownBurst } from "./fx/launchfx.js";
 import { attachPlumes, createPadLight, createPlume, P0 } from "./plume.js";
 import { createPlanet, createSurfacePatch, createDustPuff, createSkyDome } from "./planet.js";
@@ -67,7 +67,7 @@ const T = {
   descend: 500,
 };
 
-export function createChoreographer({ parts, scene, root, camera, controls, sfx, onChange, scale = 0.25, bounds: initialBounds = null, makePart = null, world = null }) {
+export function createChoreographer({ parts, scene, root, camera, controls, sfx, onChange, scale = 0.25, bounds: initialBounds = null, makePart = null, world = null, materials = null }) {
   const flash = createBoltFlash();
   scene.add(flash.object3d);
 
@@ -998,6 +998,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     "throttle-up": "THROTTLE UP", meco: "MECO", sep: "STAGE SEP", "tea-teb": "TEA-TEB", igniter: "IGNITER", ignition2: "IGNITION", fairing: "FAIRING SEP",
     seco: "SECO", orbit: "ORBIT", "payload-release": "PAYLOAD RELEASE", shortfall: "SHORTFALL", impact: "IMPACT",
     depleted: "PROPELLANT DEPLETED", "tumble-start": "TUMBLING", breakup: "BREAK-UP", "transfer-failed": "TRANSFER FAILED", "departure-cutoff": "CUTOFF", apogee: "APOGEE", "entry-interface": "ENTRY INTERFACE",
+    "departure-burn": "DEPARTURE BURN", "lunar-orbit-insertion": "LUNAR ORBIT INSERTION", "les-jettison": "TOWER JETTISON", "heatshield-sep": "HEAT SHIELD SEP",
+    "spacecraft-sep": "SPACECRAFT SEP", touchdown: "TOUCHDOWN",
   };
   const COUNTDOWN_S = 10;
   // Pad sequence (design round 14 B), seconds of countdown before T0 (sim t = 0, liftoff); a shorter countdown
@@ -1185,8 +1187,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   }
 
   function onEvent(e) {
-    L.label = EVENT_LABEL[e.type] ?? e.type.toUpperCase();
-    L.labelUntil = L.real + 1.5;
+    // A label only for the beats named here (never raw event names such as "TIME-SKIP" on the HUD).
+    if (EVENT_LABEL[e.type]) {
+      L.label = EVENT_LABEL[e.type];
+      L.labelUntil = L.real + 1.5;
+    }
     switch (e.type) {
       case "ignition":
         if (!L.ignited) ignite(0, e.t); // normally already lit in the countdown (padSequence)
@@ -1275,7 +1280,20 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         break;
       }
       case "booster-landing-burn":
-        say("landing-burn", "LANDING BURN");
+      case "landing-burn-start":
+        // (on Mars it comes with the chute release: that label first, the burn's a beat later)
+        if (L.chute?.cutNow) later(1.4, () => say("landing-burn", "LANDING BURN"));
+        else say("landing-burn", "LANDING BURN");
+        break;
+      case "chute-deploy":
+        say("chute", "PARACHUTE");
+        break;
+      case "chute-release":
+        if (L.chute && !L.chute.released) L.chute.cutNow = true;
+        say("chute-release", "CHUTE RELEASE");
+        break;
+      case "les-jettison":
+        jettisonTower();
         break;
       case "depleted":
         for (const pl of L.plumes) if (!pl.dead) pl.flicker = L.real + 0.5; // the burn sputters out early
@@ -1541,6 +1559,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   const spFwd = new THREE.Vector3(1, 0, 0);
   const spGoal = new THREE.Vector3();
   const spLook = new THREE.Vector3();
+  const spSide = new THREE.Vector3();
+  const spChute = new THREE.Vector3();
   const spNow = new THREE.Vector3();
   const spVel = new THREE.Vector3();
   function spaceCam(dt) {
@@ -1549,7 +1569,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     // burns in space the axes are LOCKED (the planet stays put in the lower frame instead of sweeping under the
     // vehicle); they ease back to the live local frame for re-entry and the descent.
     const seg0 = L.smp.segment;
-    const live = /reentry|landing|braking|approach|vertical|entry|parachute|deorbit|booster-descent/.test(seg0);
+    const live = /reentry|landing|braking|approach|vertical|entry|parachute|deorbit|booster-descent|lunar-orbit|mars-orbit/.test(seg0);
     c.lockK = ease1(c.lockK ?? 0, live ? 0 : 1, dt, 0.8); // 1 = locked
     const centre = bodyCentre(L.smp.body === "space" ? "earth" : L.smp.body, L.smp);
     const upNow = spNow.copy(L.V).sub(centre).normalize().applyQuaternion(L.QnInv);
@@ -1558,7 +1578,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     if (c.lockK < 0.05 || black) c.upLock.copy(upNow);
     spUp.copy(upNow).lerp(c.upLock, c.lockK).normalize();
     // Direction of travel along the surface (the velocity, or the nose when the velocity is near vertical).
-    const v = L.smp.vel_eci_kms ?? L.smp.vel_kms;
+    const v = L.smp.vel_kms ?? L.smp.vel_eci_kms; // relative to the body it is at (the Moon moves ~1 km/s)
     const f = v ? spVel.set(v[0], v[1], v[2]).applyQuaternion(world.eciFrame).applyQuaternion(L.QnInv) : null;
     if (f && (c.lockK < 0.5 || black)) {
       f.addScaledVector(spUp, -f.dot(spUp));
@@ -1566,10 +1586,44 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     const seg = L.smp.segment;
     const low = /reentry|landing|braking|approach|vertical|entry|parachute|booster-descent/.test(seg);
-    const el = THREE.MathUtils.degToRad(low ? 10 : 24);
+    const away = L.kind === "moon" || L.kind === "mars";
+    // The cruise (Moon / Mars): behind the stage on the line from its target, a little above, the target ahead
+    // above the stage and growing; the stars fixed behind.
+    if (away && (seg === "transfer" || seg === "coast")) {
+      spVel.copy(bodyCentre(L.kind, L.smp)).sub(L.V).normalize().applyQuaternion(L.QnInv);
+      spFwd.lerp(spVel, 1 - Math.exp(-dt / 0.8)).normalize();
+      spUp.addScaledVector(spFwd, -spUp.dot(spFwd)).normalize();
+    }
+    // Outside the cruise the held forward lies along the ground (from the cruise it points at the target, i.e.
+    // down at arrival: without this the camera ends up over the stage looking straight down).
+    if (!(away && (seg === "transfer" || seg === "coast"))) {
+      spFwd.addScaledVector(spUp, -spFwd.dot(spUp));
+      if (spFwd.lengthSq() < 1e-6) spFwd.set(spUp.y, -spUp.x, 0).lengthSq() < 1e-6 && spFwd.set(1, 0, 0);
+      spFwd.normalize();
+    }
+    const el = THREE.MathUtils.degToRad(low ? 10 : away ? 14 : 24);
     const dist = L.trackDist * (low ? 1.3 : 1.6);
     L.flight.localToWorld(spLook.set(0, c.trackY ?? L.trackLocalY, 0));
-    spGoal.copy(spLook).addScaledVector(spFwd, -Math.cos(el) * dist).addScaledVector(spUp, Math.sin(el) * dist);
+    // Away from Earth: a three-quarter view (35° off the line of travel), never the stack end-on as a dot. The Mars
+    // descent is side-on from entry interface (the turn eases in over the entry, under the 10°/s cap), so the
+    // chute's lines and canopy, trailing back along the flow, are in frame beside the stage when it opens.
+    const yaw = L.kind === "mars" && low ? Math.PI / 2 : away && !low ? THREE.MathUtils.degToRad(35) : 0;
+    spSide.crossVectors(spFwd, spUp).normalize();
+    spGoal.copy(spLook).addScaledVector(spFwd, -Math.cos(el) * Math.cos(yaw) * dist).addScaledVector(spSide, Math.cos(el) * Math.sin(yaw) * dist).addScaledVector(spUp, Math.sin(el) * dist);
+    // Mars under the chute: from the side, a little below the canopy, the stage, the lines and the canopy in frame.
+    const C = L.chute;
+    c.chuteK = ease1(c.chuteK ?? 0, C?.seen && !C.released ? 1 : 0, dt, 0.8);
+    if (c.chuteK > 0.001) {
+      const top = C.top;
+      const lo = flyingSpan().lo;
+      const hi = top.slotY + top.height - L.pivotY + 1.9 * C.D_u; // lines ~1.6 D, the canopy above them
+      const e = THREE.MathUtils.degToRad(3);
+      const d = Math.max(dist, fitDist(hi - lo, C.D_u / 2, 0.8, e));
+      L.flight.localToWorld(spChute.set(0, (lo + hi) / 2, 0));
+      spLook.lerp(spChute, c.chuteK);
+      spChute.copy(spLook).addScaledVector(spSide, Math.cos(e) * d).addScaledVector(spUp, Math.sin(e) * d);
+      spGoal.lerp(spChute, c.chuteK);
+    }
     if (L.catch && (seg === "landing" || seg === "booster-descent")) {
       // The catch: from the pad camera's side (chosen clear of the tower), on the stage up high, widening over the
       // last ~3 km to take in the tower and its arms.
@@ -1580,7 +1634,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       spGoal.copy(spLook).add(new THREE.Vector3(Math.sin(az) * Math.cos(e), Math.sin(e), Math.cos(az) * Math.cos(e)).multiplyScalar(d));
     }
     // In space, aim a little below the vehicle so the Earth and its limb fill the lower part of the frame.
-    if (!low) spLook.addScaledVector(spUp, -0.12 * dist);
+    if (!low && !(away && (seg === "transfer" || seg === "coast"))) spLook.addScaledVector(spUp, -0.12 * dist);
     c.space = Math.min(1, (c.space ?? 0) + dt / 2.5); // blend in from the ascent framing over 2.5 s
     const k = c.space * c.space * (3 - 2 * c.space);
     camera.position.lerp(spGoal, k);
@@ -1694,6 +1748,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   const fA = new THREE.Vector3();
   const fP = new THREE.Vector3();
   const qI = new THREE.Quaternion();
+  const qTurn = new THREE.Quaternion();
   const eciDir = (a) => new THREE.Vector3(a[0], a[1], a[2]).applyQuaternion(world.eciFrame);
   function bodyCentre(name, smp) {
     if (name === "moon") return world.fromECI(L.F.bodyPosAt("moon", smp.t_sim));
@@ -1710,6 +1765,17 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       if (L.sunSite) world.setSunDir(L.sun0.clone().lerp(L.sunSite, k).normalize());
     }
     L.QnInv.copy(L.Qn).invert();
+    // The camera's held directions turn with the near axes, so they stay fixed against the stars while the axes
+    // swing to the landing site's frame over the transfer (no swing round the vehicle).
+    if (L.QnPrev) {
+      qTurn.copy(L.QnInv).multiply(L.QnPrev);
+      if (Math.abs(qTurn.w) < 1 - 1e-10) {
+        L.chase.upLock?.applyQuaternion(qTurn);
+        L.chase.viewDir?.applyQuaternion(qTurn);
+        spFwd.applyQuaternion(qTurn);
+      }
+    }
+    (L.QnPrev ??= new THREE.Quaternion()).copy(L.Qn);
     fA.copy(eciDir(smp.axis)).applyQuaternion(L.QnInv).normalize();
     L.flight.quaternion.setFromUnitVectors(Yv, fA);
     // The vehicle's base at the origin: the bottom of what is still flying (after each drop the remaining stack's
@@ -1718,6 +1784,12 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     let baseY = Infinity;
     if (L.lander) baseY = L.lander.baseY;
     else for (const p of parts) if (!L.gone.has(p) && p.slotY < baseY) baseY = p.slotY;
+    if (L.legsOut && L.landLegs) {
+      // the feet (UI4's footY_u, fully out) are the base once the legs swing out
+      const d = L.deps?.find((x) => L.landLegs.legs.legs.includes(x.piece));
+      const k = d ? THREE.MathUtils.clamp((L.real - d.t0) / 0.9, 0, 1) : 0;
+      baseY = Math.min(baseY, baseY + (L.landLegs.tank.slotY + L.landLegs.legs.footY_u - baseY) * k);
+    }
     const goal = Number.isFinite(baseY) ? baseY : 0;
     const base0 = L.baseY;
     L.baseY = L.baseY == null ? goal : L.baseY + (goal - L.baseY) * (1 - Math.exp(-(L.dtFrame ?? 0.016) / 0.25));
@@ -1868,6 +1940,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     root.add(L.ground.object3d);
     makeChute();
+    makeLandingLegs();
     // Compile it now, while it is first added (the countdown), not on the frame it first shows.
     L.groundShown = null;
     showGround(true);
@@ -1882,27 +1955,40 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   // Mars (UI4's parachute.js): the canopy at the top of the stack, sized by arrival.js's canopy (6 × the
   // payload's diameter, a model choice), deployed from the sample's chute (0 packed → 1 open); when it drops to 0
   // the chute is released and rises away above the stage, which falls on into its powered descent.
+  // Moon / Mars: the stage that lands (endState.landing.stageIndex) gets UI4's folding legs if it has none, made
+  // now (the countdown) and hidden until the descent; the feet then become the vehicle's base.
+  function makeLandingLegs() {
+    const si = L.F.endState?.landing?.stageIndex;
+    if (si == null || !materials) return;
+    const tank = parts.filter((p) => p.stageIndex === si && p.kind === "tank").sort((a, b) => a.slotY - b.slotY)[0];
+    if (!tank || deployables(tank).some((q) => q.mesh.userData.role === "leg" && !tank.landingLegs?.legs.includes(q))) return; // its own
+    const eng = parts.find((p) => p.stageIndex === si && p.kind === "engines");
+    const legs = addLandingLegs(tank, materials, { below_u: eng?.height ?? null });
+    for (const q of legs.pieces) q.mesh.visible = false;
+    L.landLegs = { tank, legs };
+  }
   function makeChute() {
-    const D = L.F.arrival?.entry?.canopy_m;
+    const D = L.F.entry?.canopy_m;
     if (L.kind !== "mars" || !(D > 0)) return;
     const c = createParachute({ diameter_m: D });
-    const top = parts.reduce((a, b) => (!a || b.slotY + b.height > a.slotY + a.height ? b : a), null);
+    // on the top of what lands (never the fairing: it is gone after the climb, and the chute with it)
+    const top = parts.filter((p) => p.kind !== "fairing").reduce((a, b) => (!a || b.slotY + b.height > a.slotY + a.height ? b : a), null);
     top.group.add(c.object3d);
     c.object3d.position.set(0, top.height, 0);
     c.setDeploy(0);
     c.object3d.visible = false;
-    L.chute = { c, seen: false, released: null };
+    L.chute = { c, top, D_u: D * scale, seen: false, released: null };
   }
   function updateChute(dt, smp) {
     const C = L.chute;
     const k = smp.chute ?? 0;
     if (!C.released) {
-      if (k > 0) {
+      if (k > 0 && !C.cutNow) {
         C.seen = true;
         C.c.object3d.visible = true;
         C.c.setDeploy(k);
         C.c.setLoad(smp.speed_ms ?? 0);
-      } else if (C.seen) {
+      } else if (C.seen || C.cutNow) {
         C.released = L.real; // cut loose: it stays in the air as the stage drops away below it
         root.attach(C.c.object3d);
         C.up = new THREE.Vector3(0, 1, 0);
@@ -1917,6 +2003,24 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   // Round 24 (Earth): after the payload release the story cuts to the first stage's final descent into the tower
   // catch: the flight group holds the first stage again (as it stood in the stack), everything else is hidden,
   // the grid fins are out, the legs stay stowed for the catch; the camera takes the local frame at once.
+  // The launch escape tower (UI4's escapeTowerOf): its meshes leave the payload in a group of their own and drift
+  // off forward and to the side (flight.js's drop-away direction), then fall behind like a spent stage.
+  function jettisonTower() {
+    const payload = parts.find((p) => p.kind === "payload" && !L.gone.has(p));
+    const les = payload ? escapeTowerOf(payload) : null;
+    if (!les?.meshes?.length) return;
+    const g = new THREE.Group();
+    root.add(g);
+    payload.group.localToWorld(g.position.set(0, les.bottomY_u, 0));
+    root.worldToLocal(g.position);
+    g.quaternion.copy(L.flight.quaternion);
+    L.les = { group: g, meshes: les.meshes.map((m) => ({ m, parent: m.parent, p: m.position.clone(), q: m.quaternion.clone(), s: m.scale.clone() })) };
+    for (const m of les.meshes) g.attach(m);
+    const drop = L.F.stageDrops?.find((d) => d.type === "les-jettison");
+    const dir = new THREE.Vector3(...(drop?.dropAway?.dir_body ?? [0.243, 0.97, 0])).normalize().applyQuaternion(L.flight.quaternion);
+    const axis = new THREE.Vector3().crossVectors(dir, L.tiltAxis).normalize();
+    L.debris.push({ part: { group: g, height: les.topY_u - les.bottomY_u, radius: payload.radius * 0.3, pieces: [] }, t: 0, down: dir, axis: axis.lengthSq() ? axis : L.tiltAxis.clone(), spread: false, drift: 1.5, les: true });
+  }
   function storySunOff() {
     if (!L.sunOv) return;
     world.setSunOverride(null);
@@ -1980,6 +2084,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       if (e.type !== "time-skip" || e.cutDone || L.real < e.t_screen - CUT_DOWN || L.real > e.t_screen + 0.3) continue;
       e.cutDone = true;
       const until = e.to_t_screen ?? e.t_screen;
+      if (until - e.t_screen > 0.6) continue; // the Moon / Mars cruise (~2 s) is shown: the stage, the target growing ahead
       if (!L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 0, wait: () => L.real < until, fn: () => {} };
     }
     if (!L.done) L.real += dt;
@@ -2005,9 +2110,15 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     if (L.F.endState?.type === "lost" && (L.tumbling || tS > (L.peakT ?? Infinity))) fallUpdate(dt, smp, tS);
     // (Round 23, user: the upper stage with the payload on top lands whole; no separate lander.)
+    if (L.landLegs && !L.landLegs.shown && smp.segment !== "ascent" && L.cut?.fired) {
+      L.landLegs.shown = true; // on a black frame after the climb: the stage carries its folded legs from here
+      for (const q of L.landLegs.legs.pieces) q.mesh.visible = true;
+    }
     if (!L.legsOut && !L.catch && (smp.segment === "approach" || smp.segment === "vertical" || smp.segment === "landing")) {
       L.legsOut = true; // any landing legs on the flying stage swing out for the last part of the descent
+      if (L.landLegs && !L.landLegs.shown) for (const q of L.landLegs.legs.pieces) q.mesh.visible = L.landLegs.shown = true;
       deployRole("leg");
+      for (const leg of L.landLegs?.legs.legs ?? []) if (!L.deps.some((d) => d.piece === leg)) L.deps.push({ piece: leg, t0: L.real + (L.deps.length % 4) * 0.06 });
     }
     if (L.chute) updateChute(dt, smp);
     // Plumes on the sample's stage and throttle (the spacecraft's own engine once only it flies); a burn after
@@ -2041,6 +2152,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       L.onTelemetry({
         t: smp.t_vehicle ?? t, // the booster's own clock in its replayed descent (round 24)
         who: smp.segment === "booster-descent" ? "FIRST STAGE" : smp.segment === "payload-release" ? "UPPER STAGE" : null,
+        body: smp.body,
         alt_m: s.alt_m,
         vel_ms: smp.speed_ms,
         g: smp.segment === "ascent" ? (a.acc_ms2 ?? 0) / 9.80665 : 0,
@@ -2907,6 +3019,14 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     controls.maxDistance = L.maxDist0;
     camera.up.set(0, 1, 0);
     for (const d of L.deps ?? []) applyDeploy(d.piece, 0);
+    for (const x of L.les?.meshes ?? []) {
+      x.parent.add(x.m);
+      x.m.position.copy(x.p);
+      x.m.quaternion.copy(x.q);
+      x.m.scale.copy(x.s);
+    }
+    L.les?.group.removeFromParent();
+    for (const q of L.landLegs?.legs.pieces ?? []) q.mesh.visible = false;
     L.anchors?.setStrongback?.(0);
     if (L.chute) {
       L.chute.c.object3d.removeFromParent();

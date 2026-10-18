@@ -28,6 +28,7 @@ import { ensureShell } from "./ui/shell.js";
 import { createLanding } from "./ui/landing.js";
 import { narrationFor } from "./ui/range.js";
 import { mountReadiness } from "./ui/readiness.js";
+import { prepareTerrain } from "./planet.js";
 import { createGroundMap } from "./fx/launchfx.js";
 import { createWorld } from "./world.js";
 import { flightTimeline, flightSummaryText } from "./flight.js";
@@ -48,7 +49,7 @@ function loadBuild(preset, build = presetToBuild(preset)) {
   return {
     preset,
     build,
-    modified: buildKey(build) !== buildKey(presetToBuild(preset)),
+    modified: buildKey({ ...build, missionId: null }) !== buildKey({ ...presetToBuild(preset), missionId: null }), // a destination is a mission choice, not a part change
     manifest,
     bounds: sceneBounds(manifest),
     verdict: evaluateBuild(build, catalog),
@@ -278,7 +279,7 @@ const aurora = createAurora({});
 world.attach("earth", aurora); // its glow follows the day's simulated space weather (hazards.js stormGlow)
 const PAD_KM = new THREE.Vector3(0, world.bodies.earth.radius_km, 0);
 const viewerKm = new THREE.Vector3();
-const choreo = createChoreographer({ parts, scene, root, camera, controls, sfx, onChange: syncUi, scale: SCALE, bounds: current.bounds, makePart, world });
+const choreo = createChoreographer({ parts, scene, root, camera, controls, sfx, onChange: syncUi, scale: SCALE, bounds: current.bounds, makePart, world, materials });
 
 // ---------- post ----------
 // GTAO skips what writes no depth (holograms, flashes, the pad ring, x-ray shells), so they never darken the
@@ -971,6 +972,8 @@ function onTelemetry(tel) {
   const now = performance.now();
   if (now - telemetry.last < 80) return;
   telemetry.last = now;
+  telemetry.body = tel.body;
+  telemetry.alt_m = tel.alt_m;
   const html = telemetryHtml(tel);
   if (html !== telemetry.html) hudText.innerHTML = telemetry.html = html; // the DOM only when the line changes
 }
@@ -993,6 +996,10 @@ function presimulate() {
       if (!isComplete() || choreo.state.launch) return;
       twinRecord(); // Compare's first row
       for (const id of presetIds) presetMeta(id); // and the others
+      // The landing body's terrain detail maps (UI4: idle slices of ≤ ~6 ms, cached), not 111 ms on L.
+      const m = current.build.missionId ?? "";
+      const body = /moon|lunar/.test(m) ? "moon" : /mars/.test(m) ? "mars" : null;
+      if (body) prepareTerrain(body).catch?.(() => {});
     });
   });
 }
@@ -1581,7 +1588,36 @@ const animating = () => {
 let detail = lite ? 0 : 2;
 setDetailLevel(detail);
 const detailGuard = { sum: 0, n: 0, skip: 1 };
+// Dynamic resolution (Head 1, round 25: the lag is GPU fill on a retina laptop): a 3 s average frame time over
+// 20 ms steps the pixel ratio down (1.5 → 1.25 → 1, the far layer's resolution with it) before any detail goes;
+// under 12 ms it steps back up. The ratio is never above 1.5.
+const PR_MAX = lite ? 1 : Math.min(devicePixelRatio, 1.5);
+const PR_STEPS = [PR_MAX, 1.25, 1].filter((v, i, a) => v <= PR_MAX && a.indexOf(v) === i);
+const resGuard = { i: 0, sum: 0, n: 0, skip: 1 };
+function setPixelRatio(pr) {
+  renderer.setPixelRatio(pr);
+  renderer.setSize(innerWidth, innerHeight);
+  composer?.setPixelRatio(pr);
+  composer?.setSize(innerWidth, innerHeight);
+  world.setResolutionScale?.((devicePixelRatio >= 1.5 ? 0.5 : 1) * (pr / PR_MAX));
+}
+function resolutionBudget(rawDt) {
+  if (landingOn() || rawDt > 0.25) return; // (a stall is not a frame rate)
+  resGuard.sum += rawDt;
+  resGuard.n++;
+  if (resGuard.sum < 3) return;
+  const avg = resGuard.sum / resGuard.n;
+  resGuard.sum = resGuard.n = 0;
+  if (resGuard.skip-- > 0) return; // the first window after a change settles
+  const next = avg > 0.02 ? Math.min(PR_STEPS.length - 1, resGuard.i + 1) : avg < 0.012 ? Math.max(0, resGuard.i - 1) : resGuard.i;
+  if (next === resGuard.i) return;
+  resGuard.i = next;
+  resGuard.skip = 1;
+  setPixelRatio(PR_STEPS[next]);
+}
 function detailBudget(rawDt) {
+  resolutionBudget(rawDt);
+  if (resGuard.i < PR_STEPS.length - 1) return void (detailGuard.sum = detailGuard.n = 0); // resolution goes first
   if (detail === 0 || landingOn() || gtao?.enabled || dof?.enabled) return void (detailGuard.sum = detailGuard.n = 0);
   detailGuard.sum += rawDt;
   detailGuard.n++;
@@ -1735,6 +1771,8 @@ function frame() {
   } else if (keyBase != null && key.intensity !== keyBase) {
     key.intensity = keyBase;
   }
+  // Under Mars' butterscotch sky (below ~60 km) the HUD line and the logo keep their dark scrim too.
+  if (vv && choreo.state.launch && telemetry.body === "mars" && telemetry.alt_m < 60000) bright = true;
   if (bright !== document.body.classList.contains("bright-sky")) document.body.classList.toggle("bright-sky", bright);
   if (worldOn) {
     const v = vv;

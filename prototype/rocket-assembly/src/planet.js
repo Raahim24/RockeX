@@ -877,8 +877,43 @@ function valueNoise2(seed) {
 
 // Tileable detail maps (regolith/sand): albedo variation (sRGB) and a normal map from the same height noise.
 const detailCache = new Map();
+// The maps cost ~110 ms of main-thread work the first time per body (UI 6's profile: the hitch when L is pressed
+// on a Moon flight). They are built by a generator that yields every 8 rows: detailMaps runs it to the end at
+// once; prepareTerrain(body) runs it in idle slices ahead of time and resolves when the maps are cached.
+const detailPending = new Map(); // body → its generator, part way through
 function detailMaps(body) {
   if (detailCache.has(body)) return detailCache.get(body);
+  const gen = detailPending.get(body) ?? detailSteps(body);
+  detailPending.delete(body);
+  let r;
+  do r = gen.next();
+  while (!r.done);
+  return detailCache.get(body);
+}
+// prepareTerrain(body = "moon", { budgetMs = 6 }) -> Promise (resolves when the body's detail maps are cached):
+// call it at idle (e.g. once the stack is complete for a Moon or Mars mission) so createTerrain does not stall.
+export function prepareTerrain(body = "moon", { budgetMs = 6 } = {}) {
+  if (detailCache.has(body)) return Promise.resolve(detailCache.get(body));
+  if (!detailPending.has(body)) detailPending.set(body, detailSteps(body));
+  const idle = typeof requestIdleCallback === "function" ? (f) => requestIdleCallback(f, { timeout: 250 }) : (f) => setTimeout(f, 0);
+  return new Promise((resolve) => {
+    const slice = () => {
+      if (detailCache.has(body)) return resolve(detailCache.get(body)); // finished elsewhere (a direct createTerrain)
+      const gen = detailPending.get(body);
+      if (!gen) return resolve(detailMaps(body));
+      const t0 = performance.now();
+      let r;
+      do r = gen.next();
+      while (!r.done && performance.now() - t0 < budgetMs);
+      if (r.done) {
+        detailPending.delete(body);
+        resolve(detailCache.get(body));
+      } else idle(slice);
+    };
+    idle(slice);
+  });
+}
+function* detailSteps(body) {
   const N = 512;
   const P = 6; // lattice cells per tile at the coarsest octave
   // Value noise with a period of p cells, so the tile wraps seamlessly.
@@ -921,6 +956,7 @@ function detailMaps(body) {
       if (mars) hh += 0.045 * Math.sin(Math.PI * 2 * (u * 9 + v * 3 + 0.35 * tile(u, v, 4, 31))) * smoothstep(0.35, 0.75, tile(u, v, 3, 41)); // patchy wind ripples
       height[y * N + x] = hh;
     }
+    if ((y & 7) === 7) yield;
   }
   const alb = new Uint8Array(N * N * 4);
   const nrm = new Uint8Array(N * N * 4);
@@ -940,6 +976,7 @@ function detailMaps(body) {
       const l = Math.hypot(dx, dy, 1);
       nrm.set([Math.round(((-dx / l) * 0.5 + 0.5) * 255), Math.round(((-dy / l) * 0.5 + 0.5) * 255), Math.round(((1 / l) * 0.5 + 0.5) * 255), 255], (y * N + x) * 4);
     }
+    if ((y & 7) === 7) yield;
   }
   const mk = (data, srgb) => {
     const t = new THREE.DataTexture(data, N, N);
