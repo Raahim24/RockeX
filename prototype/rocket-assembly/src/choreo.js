@@ -1416,12 +1416,15 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       const ramp = THREE.MathUtils.clamp((t - pl.ignite) / 0.25, 0, 1);
       // On the timeline the sample's throttle is the truth (0 in coasts, the later burns relight the stage).
       const inset = L.inset?.smp && pl.stage === 0; // the first stage in the picture-in-picture
-      if (inset) pl.dead = !(pl.flicker = null);
+      if (inset) {
+        pl.flicker = null; // (relit for its landing burn: MECO had marked it dead)
+        pl.dead = false;
+      }
       let thr = pl.dead ? 0 : inset ? L.inset.smp.throttle ?? 0 : L.F && t >= 1 ? ramp * (s.stage === pl.stage ? s.throttle ?? 0 : 0) : ramp * (s.stage === pl.stage || t < 1 ? Math.max(0.4, s.throttle ?? 1) : 0);
       if (pl.flicker && !pl.dead) thr *= (0.25 + 0.75 * Math.random()) * ((pl.flicker - L.real) / 0.35); // MECO: sputter out
       if (inset) pl.plume.update(dt, { throttle: thr, ambientPressure_Pa: P0 * Math.exp(-Math.max(0, L.inset.smp.alt_km * 1000) / SCALE_HEIGHT_M), cameraDistance: L.inset.camD ?? camD });
       else pl.plume.update(dt, { throttle: thr, ambientPressure_Pa: ambient, cameraDistance: camD });
-      if (L.wind) plumeLean(pl.plume, L.wind, Math.max(0, s.alt_m)); // leans downwind low down
+      if (L.wind) plumeLean(pl.plume, L.wind, Math.max(0, inset ? L.inset.smp.alt_km * 1000 : s.alt_m)); // leans downwind low down
       if (pl.stage === 0) padThrottle = Math.max(padThrottle, thr);
     }
     return padThrottle;
@@ -2404,8 +2407,13 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       const off = (a) => Math.abs(Math.atan2(Math.sin(a - L.chase.azSide), Math.cos(a - L.chase.azSide)));
       I.az = off(phiT + Math.PI / 2) <= off(phiT - Math.PI / 2) ? phiT + Math.PI / 2 : phiT - Math.PI / 2;
     }
-    I.g.localToWorld(iLook.set(0, I.H * 0.58, 0));
-    const d = (I.H / 0.6) / (2 * Math.tan(THREE.MathUtils.degToRad(insetCam.fov / 2)));
+    // The whole booster (~60 % of the frame) through the landing burn; over the last ~40 m the view pushes in on
+    // its upper part, the grip, where the arms close (a slender stage reads as a sliver otherwise; Head 1).
+    const close = 1 - THREE.MathUtils.smoothstep(Math.max(0, b.alt_km * 1000), 4, 40); // (the burn in frame until the last metres)
+    I.close = THREE.MathUtils.lerp(I.close ?? close, close, 0.08); // eased: no jump in the inset
+    const span = THREE.MathUtils.lerp(I.H / 0.6, I.H * 0.62, I.close); // the height the frame shows
+    I.g.localToWorld(iLook.set(0, I.H * THREE.MathUtils.lerp(0.58, 0.8, I.close), 0));
+    const d = span / (2 * Math.tan(THREE.MathUtils.degToRad(insetCam.fov / 2)));
     const az = I.az;
     const e = THREE.MathUtils.degToRad(4);
     iDir.set(Math.sin(az) * Math.cos(e), Math.sin(e), Math.cos(az) * Math.cos(e));
