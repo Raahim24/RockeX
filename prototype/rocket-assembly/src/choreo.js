@@ -2022,7 +2022,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   }
   // At L: the prepared twin if it is ready for this stack; otherwise it is made and warmed in the countdown's
   // first second (on the pad, the camera still), never on the launch frame.
-  function useTwin() {
+  function attachTwin() {
     const twin = twinPrep?.key === twinKey() ? twinPrep.twin : null;
     if (twin) return swapTwin(twin);
     twinPrep?.twin.dispose();
@@ -2505,7 +2505,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     };
     retarget();
     if (L.F) makeLandingLegs(); // (before the twin: the legs become its deployables)
-    useTwin();
+    attachTwin();
     if (L.F) prepareLanding(); // its ground (and any light it carries) joins the scene now, in the countdown
     controls.autoRotate = false;
     controls.maxPolarAngle = Math.PI * 0.95; // the pad camera looks up from near the deck
