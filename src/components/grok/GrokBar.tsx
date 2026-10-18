@@ -73,24 +73,45 @@ const transcribe = async (audio: Blob): Promise<string | null> => {
   }
 };
 
+// Grok's face: a glossy ball with two slanted pill eyes. --lvl (0..1, the live voice level) drives the talking
+// bounce; data-mode sets the expression. The button, handlers and modes are unchanged.
 const ORB_CSS = `
-@keyframes grok-spin { to { transform: rotate(360deg); } }
-@keyframes grok-breathe { 0%,100% { transform: scale(0.94); opacity: .75 } 50% { transform: scale(1.04); opacity: 1 } }
+@keyframes grok-float { 0%,100% { translate: 0 0 } 50% { translate: 0 -4px } }
+@keyframes grok-blink { 0%,90%,100% { scale: 1 1 } 94% { scale: 1 0.08 } }
+@keyframes grok-look { 0%,100% { translate: -7% 0 } 50% { translate: 7% -3% } }
+@keyframes grok-ring { from { transform: scale(1); opacity: .55 } to { transform: scale(1.7); opacity: 0 } }
 .grok-orb { position: relative; width: 84px; height: 84px; border-radius: 9999px; cursor: pointer; border: 0; padding: 0;
-  background: transparent; touch-action: none; user-select: none; -webkit-user-select: none;
-  transition: transform 90ms linear, box-shadow 200ms; transform: scale(calc(1 + var(--lvl, 0) * 0.35)); }
-.grok-orb::before, .grok-orb::after, .grok-orb span { content: ""; position: absolute; inset: 0; border-radius: 9999px; filter: blur(10px);
-  mix-blend-mode: screen; }
-.grok-orb::before { background: conic-gradient(from 0deg, #5cc8ff, #a35cff, #ff5ca8, #ffb020, #5cc8ff); animation: grok-spin var(--spin, 9s) linear infinite; }
-.grok-orb::after { inset: 14%; background: conic-gradient(from 180deg, #2ee6b6, #5cc8ff, #a35cff, #2ee6b6); animation: grok-spin var(--spin2, 6s) linear infinite reverse; }
-.grok-orb span { inset: 30%; background: radial-gradient(circle, #fff 0%, rgba(255,255,255,.2) 60%, transparent 70%); filter: blur(4px); }
-.grok-orb[data-mode="idle"] { animation: grok-breathe 4s ease-in-out infinite; --spin: 14s; --spin2: 10s; }
-.grok-orb[data-mode="live"] { --spin: 7s; --spin2: 5s; box-shadow: 0 0 0 2px rgba(46,230,182,.55), 0 0 28px rgba(46,230,182,.35); }
-.grok-orb[data-mode="listening"] { --spin: 5s; --spin2: 4s; box-shadow: 0 0 0 3px rgba(255,255,255,.55), 0 0 36px rgba(255,92,168,.7); }
-.grok-orb[data-mode="thinking"] { --spin: 1.4s; --spin2: 1s; }
-.grok-orb[data-mode="paused"] { filter: grayscale(1) brightness(.55); --spin: 60s; --spin2: 60s; }
-.grok-orb[data-mode="speaking"] { --spin: 3s; --spin2: 2.2s; }
-@media (prefers-reduced-motion: reduce) { .grok-orb, .grok-orb::before, .grok-orb::after { animation: none !important; } }
+  touch-action: none; user-select: none; -webkit-user-select: none;
+  background: radial-gradient(circle at 34% 28%, #ffffff 0%, #f4f4f4 30%, #d6d6d6 62%, #9a9a9a 88%, #7d7d7d 100%);
+  box-shadow: inset -7px -9px 16px rgba(0,0,0,.22), inset 4px 5px 10px rgba(255,255,255,.7), 0 10px 22px rgba(0,0,0,.5);
+  transition: transform 80ms linear, box-shadow 200ms, filter 300ms;
+  /* talking: a little hop and a squash-and-stretch that follows the voice */
+  transform: translateY(calc(var(--lvl, 0) * -7px)) scale(calc(1 + var(--lvl, 0) * 0.06), calc(1 + var(--lvl, 0) * 0.14)); }
+.grok-orb .grok-face { position: absolute; inset: 0; border-radius: 9999px; transition: transform 250ms ease; }
+.grok-orb .grok-eye { position: absolute; width: 15%; height: 36%; border-radius: 9999px; background: #111;
+  rotate: -32deg; transform-origin: center; transition: height 160ms ease, width 160ms ease;
+  animation: grok-blink 4.6s ease-in-out infinite; }
+.grok-orb .grok-eye.l { left: 35%; top: 33%; }
+.grok-orb .grok-eye.r { left: 61%; top: 18%; animation-delay: 40ms; }
+/* the eyes squint a little on loud syllables */
+.grok-orb .grok-eyes { position: absolute; inset: 0; transform: scaleY(calc(1 - var(--lvl, 0) * 0.3)); transition: transform 80ms linear; }
+.grok-orb::before, .grok-orb::after { content: ""; position: absolute; inset: 0; border-radius: 9999px; pointer-events: none;
+  border: 2px solid rgba(255,255,255,.5); opacity: 0; }
+.grok-orb[data-mode="idle"] { animation: grok-float 4s ease-in-out infinite; }
+.grok-orb[data-mode="live"] { box-shadow: inset -7px -9px 16px rgba(0,0,0,.22), inset 4px 5px 10px rgba(255,255,255,.7),
+  0 0 0 3px rgba(46,230,182,.6), 0 0 26px rgba(46,230,182,.35); }
+.grok-orb[data-mode="listening"] { box-shadow: inset -7px -9px 16px rgba(0,0,0,.22), inset 4px 5px 10px rgba(255,255,255,.7),
+  0 0 0 3px rgba(255,255,255,.65), 0 0 30px rgba(92,200,255,.55); }
+.grok-orb[data-mode="listening"] .grok-face { transform: translate(3%, -4%) scale(1.08); }
+.grok-orb[data-mode="listening"] .grok-eye { height: 40%; }
+.grok-orb[data-mode="thinking"] .grok-face { animation: grok-look 1.6s ease-in-out infinite; }
+.grok-orb[data-mode="speaking"]::before { animation: grok-ring 1.4s ease-out infinite; }
+.grok-orb[data-mode="speaking"]::after { animation: grok-ring 1.4s ease-out .7s infinite; }
+.grok-orb[data-mode="paused"] { filter: grayscale(1) brightness(.6); }
+.grok-orb[data-mode="paused"] .grok-eye { height: 5%; animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .grok-orb, .grok-orb .grok-face, .grok-orb .grok-eye, .grok-orb::before, .grok-orb::after { animation: none !important; }
+}
 body .bar { left: auto; right: 24px; bottom: 24px; transform: none; flex-direction: column; width: 220px; }
 body .bar > button { width: 100%; }
 body .bar .rockets { left: auto; right: calc(100% + 8px); bottom: 0; }
@@ -519,7 +540,12 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
           aria-label={label}
           title={label}
         >
-          <span />
+          <span className="grok-face" aria-hidden>
+            <span className="grok-eyes">
+              <span className="grok-eye l" />
+              <span className="grok-eye r" />
+            </span>
+          </span>
         </button>
         {live.live && !live.paused && (
           <p
