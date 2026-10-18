@@ -116,25 +116,18 @@ const ORB_CSS = `
 @keyframes grok-drift { 0%,100% { translate: -50% 0 } 50% { translate: -50% -3px } }
 /* A cartoon cloud centred over Grok's head: a soft body, puffs along its edges, and a trail of puffs down to the head.
    drop-shadow (not box-shadow) so the puffs share one shadow with the body. */
-.grok-cloud { position: absolute; bottom: calc(100% + 58px); left: 50%; translate: -50% 0; width: max-content;
-  max-width: min(270px, calc(100vw - 72px)); padding: 16px 24px; border-radius: 40px; background: #f6f7fb; color: #11131a;
+.grok-cloud { position: absolute; bottom: calc(100% + 40px); left: 50%; translate: -50% 0; width: max-content;
+  min-width: 120px; max-width: min(320px, calc(100vw - 40px)); padding: 40px 58px 34px; color: #11131a;
   font-size: 14px; line-height: 1.4; font-weight: 500; text-align: center; transform-origin: 50% 130%;
-  filter: drop-shadow(0 10px 18px rgba(0,0,0,.45)); animation: grok-pop 260ms cubic-bezier(.2,1.4,.4,1) both, grok-drift 3.2s ease-in-out .3s infinite; }
-.grok-cloud-text { position: relative; z-index: 1; display: block; }
-.grok-puff { position: absolute; border-radius: 50%; background: #f6f7fb; pointer-events: none; }
-.grok-puff.p1 { width: 52px; height: 52px; left: 4%; top: -20px; }
-.grok-puff.p2 { width: 72px; height: 72px; left: 22%; top: -34px; }
-.grok-puff.p3 { width: 62px; height: 62px; left: 50%; top: -28px; }
-.grok-puff.p4 { width: 46px; height: 46px; right: 3%; top: -16px; }
-.grok-puff.p5 { width: 46px; height: 46px; left: 9%; bottom: -16px; }
-.grok-puff.p6 { width: 54px; height: 54px; left: 36%; bottom: -18px; }
-.grok-puff.p7 { width: 42px; height: 42px; right: 9%; bottom: -14px; }
-.grok-puff.p8 { width: 50px; height: 50px; left: -16px; top: 50%; margin-top: -25px; }
-.grok-puff.p9 { width: 50px; height: 50px; right: -16px; top: 50%; margin-top: -25px; }
-.grok-cloud-trail { position: absolute; left: 50%; top: calc(100% + 22px); width: 0; height: 0; pointer-events: none; }
-.grok-cloud-trail::before, .grok-cloud-trail::after { content: ""; position: absolute; border-radius: 50%; background: #f6f7fb; }
-.grok-cloud-trail::before { width: 16px; height: 16px; left: -8px; top: 0; }
-.grok-cloud-trail::after { width: 9px; height: 9px; left: -4px; top: 22px; }
+  filter: drop-shadow(0 10px 16px rgba(0,0,0,.45)); animation: grok-pop 260ms cubic-bezier(.2,1.4,.4,1) both, grok-drift 3.2s ease-in-out .3s infinite; }
+/* One smooth cloud outline, stretched to fit behind the text. */
+.grok-cloud-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.grok-cloud-shape path, .grok-cloud-trail::before, .grok-cloud-trail::after { fill: #f6f7fb; stroke: #b9bdc9; stroke-width: 1.5; }
+.grok-cloud-text { position: relative; display: block; }
+.grok-cloud-trail { position: absolute; left: 50%; top: calc(100% + 4px); width: 0; height: 0; pointer-events: none; }
+.grok-cloud-trail::before, .grok-cloud-trail::after { content: ""; position: absolute; border-radius: 50%; background: #f6f7fb; border: 1.5px solid #b9bdc9; }
+.grok-cloud-trail::before { width: 15px; height: 15px; left: -7px; top: 0; }
+.grok-cloud-trail::after { width: 9px; height: 9px; left: -4px; top: 20px; }
 @media (prefers-reduced-motion: reduce) { .grok-cloud { animation: none; } }
 body .bar { left: auto; right: 24px; bottom: 24px; transform: none; flex-direction: column; width: 220px; }
 body .bar > button { width: 100%; }
@@ -573,7 +566,9 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
       <div className="fixed bottom-5 left-20 z-10 flex flex-col items-center gap-1.5">
         {bubble && (
           <div key={bubble.slice(0, 24)} role="status" aria-live="polite" className="grok-cloud">
-            {[1,2,3,4,5,6,7,8,9].map((i) => <span key={i} className={`grok-puff p${i}`} aria-hidden />)}
+            <svg className="grok-cloud-shape" viewBox="0 0 200 120" preserveAspectRatio="none" aria-hidden>
+              <path vectorEffect="non-scaling-stroke" d="M40 100C20 102 6 90 12 76C0 66 8 46 28 48C28 28 48 18 66 26C76 6 114 2 126 22C142 10 170 16 172 40C194 42 202 66 188 80C196 98 176 110 160 102C150 116 124 116 114 104C102 118 72 118 64 104C56 110 44 108 40 100Z" />
+            </svg>
             <span className="grok-cloud-text">{bubble.length > 220 ? `…${bubble.slice(-220)}` : bubble}</span>
             <span className="grok-cloud-trail" aria-hidden />
           </div>
