@@ -719,7 +719,7 @@ function switchPreset(step, { built = true } = {}) {
   announce();
   const q = new URLSearchParams(location.search);
   q.set("build", current.preset.id);
-  history.replaceState(null, "", `${location.pathname}?${q}${location.hash}`);
+  history.replaceState(history.state, "", `${location.pathname}?${q}${location.hash}`); // keep the host router's state
 }
 
 // Reset means reset: back to the empty pad and, if Options changed the build, the pristine preset.
@@ -754,16 +754,16 @@ function outcomeHtml({ outcome, inOrbit, summary, alt_m }) {
   const orbit = Number.isFinite(summary.perigee_km) ? `${f.num(summary.perigee_km, 0)}\u00a0×\u00a0${f.num(summary.apogee_km, 0)}\u00a0km` : "";
   const short = summary.mission?.shortBy_ms;
   if (inOrbit && outcome === "orbit") {
-    return `<strong class="go">ORBIT</strong> · ${orbit} est.${Number.isFinite(summary.remainingDeltaV_ms) ? ` · Δv left ${f.ms(summary.remainingDeltaV_ms)}` : ""}`;
+    return `<strong class="go">ORBIT</strong> · ${orbit}${Number.isFinite(summary.remainingDeltaV_ms) ? ` · Δv left ${f.ms(summary.remainingDeltaV_ms)}` : ""} · est.`;
   }
   if (inOrbit) {
-    return `Parking orbit ${orbit} est. · <strong class="nogo">Δv short by ${f.ms(short)}</strong>${mission ? ` for ${f.esc(mission.name)}` : ""}`;
+    return `Parking orbit ${orbit} · <strong class="nogo">Δv short by ${f.ms(short)}</strong>${mission ? ` for ${f.esc(mission.name)}` : ""} · est.`;
   }
   if (outcome === "shortfall") return `<strong class="nogo">Δv short by ${f.ms(short ?? 0)}</strong> · est.`;
   const maxAlt_km = Math.max(...(lastSim?.samples ?? []).map((x) => x.alt_m)) / 1000;
   return maxAlt_km < 0.05
     ? `<strong class="nogo">Pad abort</strong> · thrust below weight (TWR ${f.twr(current.verdict.liftoffTWR)})`
-    : `<strong class="nogo">Did not reach space</strong> · max ${f.num(maxAlt_km, 1)}\u00a0km est.`;
+    : `<strong class="nogo">Did not reach space</strong> · max ${f.num(maxAlt_km, 1)}\u00a0km · est.`;
 }
 const BODY_NAME = { earth: "Earth", moon: "the Moon", mars: "Mars" };
 const ORBIT_NAME = { earth: "Earth orbit", moon: "lunar orbit", mars: "Mars orbit" };
@@ -783,14 +783,14 @@ function endingLegHtml(leg) {
 }
 function endingFinalHtml(a, booster) {
   const line = endingOutcome(a);
-  return booster ? `${line} · booster ${booster}` : line;
+  return booster ? `${line.replace(/ · est\.$/, "")} · booster ${booster} · est.` : line;
 }
 function endingOutcome(a) {
   if (!a) return telemetry.final ?? "";
   if (!a.success) {
     return `Stranded in Earth orbit · <strong class="nogo">Δv short by ${f.ms(a.shortBy_ms ?? 0)}</strong> · est.`;
   }
-  if (a.lands) return `<strong class="go">Landed on ${BODY_NAME[a.body] ?? a.body}</strong> · est.`;
+  if (a.lands) return `<strong class="go">Its lander is on ${BODY_NAME[a.body] ?? a.body} (own engine)</strong> · est.`;
   if (a.body && a.body !== "earth") return `<strong class="go">In ${ORBIT_NAME[a.body]}</strong> · est.`;
   const mission = catalog.missions.find((m) => m.id === current.build.missionId);
   const name = mission ? mission.name.charAt(0).toLowerCase() + mission.name.slice(1) : "orbit";
@@ -986,7 +986,9 @@ function showTwin() {
     choreo.frameCompare(right.clone().multiplyScalar(c), Math.max(current.bounds.height_u, sil.height_u), (off + sil.radius_u + stackR) / 2);
   }
   twin = { rec, sil, line, cardLine, key: buildKey(current.build) };
-  anchors?.setVisible(false); // the complex would stand between camera and pair
+  // Only the fixed tower (with its arms and RSS) leaves: hiding the whole complex would also hide its flood
+  // lights, and a changed light count recompiles every material (a 170–380 ms stall on the first compare).
+  if (anchors?.tower) anchors.tower.visible = false;
   hudText.innerHTML = line;
   report("twin", line);
   return true;
@@ -998,7 +1000,7 @@ function hideTwin({ reframe = true } = {}) {
     twin.sil.dispose();
   }
   twin = null;
-  anchors?.setVisible(true);
+  if (anchors?.tower) anchors.tower.visible = true;
   if (reframe) choreo.frameStack();
   hudText.innerHTML = hudHtml();
 }
@@ -1037,7 +1039,7 @@ function showRival(i) {
   const line = `${compareLead()} vs <strong>${f.esc(other.preset.name)}</strong> · ${f.m(other.bounds.height_m)} est.`;
   const cardLine = `vs ${other.preset.name} · ${f.m(other.bounds.height_m)} est.`;
   rival = { group, anim, line, cardLine, key: buildKey(current.build) };
-  anchors?.setVisible(false);
+  if (anchors?.tower) anchors.tower.visible = false; // not setVisible: the flood lights stay (see showTwin)
   hudText.innerHTML = line;
   return true;
 }
@@ -1047,7 +1049,7 @@ function hideRival({ reframe = true } = {}) {
   root.remove(rival.group);
   disposeTree(rival.group);
   rival = null;
-  anchors?.setVisible(true);
+  if (anchors?.tower) anchors.tower.visible = true;
   if (reframe) choreo.frameStack();
   hudText.innerHTML = hudHtml();
 }
@@ -1343,6 +1345,10 @@ function onPartKey(part) {
 }
 
 addEventListener("keydown", (e) => {
+  // Keys the host page already handled (the team app's Grok orb takes Enter/Space with preventDefault) or typed
+  // into a field are not ours, on the landing page too.
+  if (e.defaultPrevented) return;
+  if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (landingOn()) {
     if (!e.repeat && !["Shift", "Control", "Alt", "Meta", "Tab"].includes(e.key)) {
@@ -1351,7 +1357,6 @@ addEventListener("keydown", (e) => {
     }
     return; // nothing else until the builder has taken over
   }
-  if (e.target.closest?.("input, textarea, select")) return;
   if (e.key === "Escape" && !rocketsEl.hidden) return setRocketsOpen(false);
   if (e.key === "Escape" && (twin || rival)) return clearCompare();
   // After a launch the final frame holds (HUD outcome line) until R, Esc or a double-click.

@@ -245,6 +245,7 @@ export function createLanding({ scene, camera, controls, root, stars, canvas, gr
   // Wheel / trackpad scroll while the landing is on (capture: the scrub and OrbitControls never see it), and the
   // inertia tail right after handing over.
   function onWheel(e) {
+    if (e.target !== canvas && !e.target.closest?.(".landing-page")) return; // not over the host page's own UI
     if (!on && performance.now() > quietUntil) return;
     if (e.ctrlKey) return; // pinch zoom stays the browser's
     e.preventDefault();
