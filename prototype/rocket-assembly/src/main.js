@@ -847,11 +847,13 @@ function switchPreset(step, { built = true } = {}) {
   selector.clear();
   hovered = null;
   parts = current.manifest.map(makePart);
-  applyBounds(current.bounds);
+  // the launch complex (sized to the stack) a frame later: its first upload not in the same frame as the parts'
+  const cur = current;
+  requestAnimationFrame(() => current === cur && applyBounds(cur.bounds));
   choreo.setBounds(current.bounds);
   setPropLook(pad.group, "painted");
   selector.setParts(parts);
-  choreo.rebuild(parts);
+  choreo.rebuild(parts, { sliced: true });
   if (built) choreo.appearBuilt();
   if (!rocketsEl.hidden) rocketsEl.innerHTML = rocketsHtml(rocketsMode);
   announce();

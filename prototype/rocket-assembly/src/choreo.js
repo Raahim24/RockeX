@@ -2141,7 +2141,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     twinPrep?.twin.dispose();
     const twin = buildTwin();
     twinPrep = { key, twin };
-    warmAsync().then(() => (twin.ready = true));
+    // (its compile dispatched a task later: the build and the warm-up each in a frame of their own)
+    setTimeout(() => twinPrep?.twin === twin && warmAsync().then(() => (twin.ready = true)), 0);
     return true;
   }
   // Its programs as the flight draws them: the post chain renders into a render target (no tone mapping, linear
@@ -3594,6 +3595,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         piece.mesh.quaternion.copy(piece.rest.quaternion);
       }
       part.group.position.y = part.slotY + (i + 1) * gap;
+      if (warmParts.includes(part)) part.group.visible = false; // (shown on its upload frame, in the drop)
     });
     const gen = state.gen;
     state.busy++;
@@ -3667,14 +3669,50 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   }
 
   // Preset switch: cancel everything, dispose the old stack, set up the new one.
-  function rebuild(next) {
+  function rebuild(next, { sliced = false } = {}) {
     clear();
     for (const part of parts) retirePart(part);
     parts = next;
     for (const part of parts) setupPart(part);
-    if (warmRenderer) prewarm(warmRenderer);
+    // (a switch in the builder: its geometry goes up a part per frame instead of all in one ~300 ms frame; the
+    // programs are the session's already, the materials being shared)
+    if (sliced && warmRenderer) {
+      warmParts = [...parts];
+      warmSkip = 1; // (not in the switch's own frame)
+    }
+    else if (warmRenderer) prewarm(warmRenderer);
     home();
     changed();
+  }
+  // One part's geometry uploaded: an offscreen render with a camera that frames only that part (the scene's
+  // lights as ever, so the same programs), its pieces shown for it.
+  let warmParts = [];
+  let warmSkip = 0;
+  const warmCam = new THREE.PerspectiveCamera(30, 1, 0.1, 1e5);
+  const warmBox = new THREE.Box3();
+  const warmSph = new THREE.Sphere();
+  function warmPartStep() {
+    const part = warmParts.shift();
+    if (!part || !parts.includes(part)) return;
+    const shown = part.pieces.map((q) => q.mesh.visible);
+    for (const q of part.pieces) q.mesh.visible = true;
+    const gv = part.group.visible;
+    part.group.visible = true;
+    warmBox.setFromObject(part.group).getBoundingSphere(warmSph);
+    const r = Math.max(0.1, warmSph.radius);
+    warmCam.position.copy(warmSph.center).add(new THREE.Vector3(0, 0, r * 3));
+    warmCam.near = r * 0.5;
+    warmCam.far = r * 6;
+    warmCam.updateProjectionMatrix();
+    warmCam.lookAt(warmSph.center);
+    warmCam.updateMatrixWorld();
+    const prev = warmRenderer.getRenderTarget();
+    warmRenderer.setRenderTarget(warmTarget);
+    warmRenderer.render(scene, warmCam);
+    warmRenderer.setRenderTarget(prev);
+    part.pieces.forEach((q, i) => (q.mesh.visible = shown[i]));
+    part.group.visible = part.built ? true : gv; // a built part (appearBuilt) shows from now
+    part.warmed = true;
   }
 
   // Warm-up so the first build has no hitch: compile every program and upload every geometry (one offscreen
@@ -3761,6 +3799,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
 
   function update(dt, t) {
     if (uploadQueue.size) uploadNext();
+    if (warmParts.length && warmSkip-- <= 0) warmPartStep();
     for (const part of parts) {
       part.holoGhost.update(t);
       if (part.ghost.visible) part.ghost.position.y = part.slotY + Math.sin(t * 2.6) * 0.05;
