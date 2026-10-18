@@ -2603,9 +2603,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     state.cut = 0;
   }
 
-  // After a launch: the assembled rocket back on the pad, still built (story mode's twin compare).
+  // During or after a launch: the assembled rocket back on the pad, still built (story mode's twin compare,
+  // Grok's "back to pad", even mid-flight or from orbit).
   function returnToPad() {
-    if (!L || !L.done) return false;
+    if (!L) return false;
     endLaunch();
     for (const part of parts) {
       for (const piece of part.pieces) {

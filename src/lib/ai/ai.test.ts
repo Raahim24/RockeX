@@ -1,3 +1,4 @@
+import { resetGuard } from "@/lib/ai/guard";
 import { POST as advise } from "@/app/api/advise/route";
 import { POST as render } from "@/app/api/render/route";
 import { POST as voice } from "@/app/api/voice/route";
@@ -8,6 +9,9 @@ import type { AdviseResponse, BuildState, RenderResponse } from "@/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { advisorCandidates, advisorUserPrompt, fallbackAdvice, rankCandidates, renderPrompt } from "./prompts";
 import { ADVISE_REPLY_JSON_SCHEMA, capSentences, sanitizeSuggestion } from "./schemas";
+
+// Requests as the app's own page sends them (the AI routes refuse anything else).
+const SAME_SITE = { origin: "http://test", host: "test" };
 
 const catalog = loadCatalog();
 
@@ -25,7 +29,7 @@ const short: BuildState = { ...build, stages: [build.stages[0]] };
 const shortVerdict = evaluateBuild(short, catalog);
 
 const post = (body: unknown): Request =>
-  new Request("http://test/api", { method: "POST", body: JSON.stringify(body) });
+  new Request("http://test/api", { method: "POST", headers: SAME_SITE, body: JSON.stringify(body) });
 
 const grokReplies = (json: unknown): void => {
   vi.stubGlobal(
@@ -37,6 +41,7 @@ const grokReplies = (json: unknown): void => {
 };
 
 beforeEach(() => {
+  resetGuard();
   vi.stubEnv("XAI_API_KEY", "test-key");
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });

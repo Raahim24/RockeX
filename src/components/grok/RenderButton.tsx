@@ -77,7 +77,7 @@ export function RenderButton({ showButton = true }: Props) {
           type="button"
           onClick={render}
           disabled={loading}
-          className="self-start rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-black disabled:opacity-50"
+          className="grok-panel-button disabled:opacity-50"
         >
           {loading ? `Rendering… ${elapsed_s} s` : "Render it"}
         </button>

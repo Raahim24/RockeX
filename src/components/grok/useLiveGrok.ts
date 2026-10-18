@@ -12,6 +12,10 @@ import { runVoiceTool, VOICE_TOOLS } from "./voiceTools";
 const RATE = 24000;
 const MEMORY_TURNS = 20; // how much of the conversation a new session is given
 const VOICE_SPEED = 1.05; // a touch quicker than default: lively, not read out
+const MAX_TOOL_CALLS_PER_REPLY = 4;
+const MIN_TALK_MS = 300; // shorter holds are taps, not speech
+const QUIET_NUDGE_MS = 15_000; // quiet this long after Grok finished: check in, in case they're confused
+const MAX_NUDGES = 2; // then stop asking until they talk again
 const IDLE_STOP_MS = 3 * 60_000; // a forgotten live session ends itself (it is billed per minute)
 // Tools that change the rocket itself; Grok narrates those changes, so the next "built" event is not repeated.
 const ROCKET_CHANGING_TOOLS = new Set(["swap_engine", "swap_tank", "set_engine_count", "add_stage", "remove_stage", "set_payload", "set_mission"]);
@@ -81,6 +85,9 @@ export interface LiveGrok {
   paused: boolean;
   pause: () => void;
   resume: () => void;
+  /** Push-to-talk: hold to talk (mic on), let go to send. */
+  talkStart: () => void;
+  talkEnd: () => void;
 }
 
 /** `onToolChange` runs after one of Grok's tool calls changed the rocket. */
@@ -115,9 +122,15 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
     responding: boolean;
     userTalking: boolean;
     paused: boolean;
+    /** Push-to-talk is held: mic audio is being sent. */
+    capturing: boolean;
+    talkStartedAt: number;
+    flushMic: () => void;
     /** The user just finished talking: the server is about to answer on its own, so no events until it does. */
     awaitingReply: boolean;
     lastActivity: number;
+    quietSince: number;
+    nudges: number;
     toolOutputs: number;
     queue: string[];
   } | null>(null);
@@ -184,6 +197,7 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
     src.onended = () => {
       st.sources.delete(src);
       if (st.sources.size === 0) {
+        st.quietSince = Date.now();
         setSpeaking(false);
         flush();
       }
@@ -201,6 +215,7 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
       case "input_audio_buffer.speech_started":
         if (st.paused) break;
         st.userTalking = true;
+        st.nudges = 0;
         st.lastActivity = Date.now();
         setHearing(true);
         silence(); // the user talked over Grok: stop talking
@@ -232,7 +247,11 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
         break;
       }
       case "response.function_call_arguments.done": {
-        const result = runVoiceTool(String(ev.name), String(ev.arguments ?? "{}"));
+        // A runaway reply can't take over the screen: a few actions per answer, the rest are refused.
+        const result =
+          st.toolOutputs >= MAX_TOOL_CALLS_PER_REPLY
+            ? { ok: false, why: "too many changes at once; do one thing, then check with the user" }
+            : runVoiceTool(String(ev.name), String(ev.arguments ?? "{}"));
         if (result.ok && ROCKET_CHANGING_TOOLS.has(String(ev.name))) toolChangeRef.current?.();
         send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: ev.call_id, output: JSON.stringify(result) } });
         st.toolOutputs++;
@@ -260,7 +279,7 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
       try {
         const res = await fetch("/api/realtime", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "x-grok-token": "1" },
           body: JSON.stringify({ ...currentRocket(verdict, screen, memory.current ?? []), token: true }),
         });
         if (!res.ok) return false;
@@ -293,20 +312,24 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
           responding: false,
           userTalking: false,
           paused: false,
+          capturing: false,
+          talkStartedAt: 0,
+          flushMic: () => {},
           awaitingReply: false,
           lastActivity: Date.now(),
+          quietSince: Date.now(),
+          nudges: 0,
           toolOutputs: 0,
           queue: [] as string[],
         };
         s.current = st;
 
+        // Push-to-talk: the mic track is off, and nothing is sent, unless the user is holding the talk key/orb.
+        stream.getAudioTracks().forEach((t) => (t.enabled = false));
         let pending: Float32Array[] = [];
         let pendingLen = 0;
-        capture.port.onmessage = (e: MessageEvent<Float32Array>) => {
-          if (st.paused) return; // nothing leaves the browser while paused
-          pending.push(e.data);
-          pendingLen += e.data.length;
-          if (pendingLen < CHUNK) return;
+        st.flushMic = () => {
+          if (pendingLen === 0) return;
           const all = new Float32Array(pendingLen);
           let o = 0;
           for (const p of pending) {
@@ -316,6 +339,12 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
           pending = [];
           pendingLen = 0;
           send({ type: "input_audio_buffer.append", audio: toBase64(pcm16(all)) });
+        };
+        capture.port.onmessage = (e: MessageEvent<Float32Array>) => {
+          if (st.paused || !st.capturing) return; // nothing leaves the browser unless they're holding to talk
+          pending.push(e.data);
+          pendingLen += e.data.length;
+          if (pendingLen >= CHUNK) st.flushMic();
         };
 
         const opened = await new Promise<boolean>((resolve) => {
@@ -334,7 +363,7 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
           session: {
             voice: setup.voice,
             instructions: setup.instructions,
-            turn_detection: { type: "server_vad" },
+            turn_detection: { type: null }, // push-to-talk: we commit the turn when they let go
             audio: {
               input: { format: { type: "audio/pcm", rate: RATE }, transcription: { language_hint: "en", keyterms: setup.keyterms } },
               output: { format: { type: "audio/pcm", rate: RATE }, speed: VOICE_SPEED },
@@ -354,6 +383,13 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
         const tick = (): void => {
           if (s.current !== st) return;
           if (Date.now() - st.lastActivity > IDLE_STOP_MS && !st.responding && st.sources.size === 0) return stop();
+          const quiet = !st.paused && !st.responding && !st.userTalking && !st.awaitingReply && st.sources.size === 0 && st.queue.length === 0;
+          if (quiet && st.nudges < MAX_NUDGES && Date.now() - st.quietSince > QUIET_NUDGE_MS) {
+            st.nudges++;
+            st.quietSince = Date.now();
+            st.queue.push("(Event: the user has been quiet for a while after your last line; they may be unsure what to do.)");
+            flush();
+          }
           level.current = Math.max(loudness(outMeter, outData), loudness(micMeter, micData));
           requestAnimationFrame(tick);
         };
@@ -373,10 +409,46 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
     [stop],
   );
 
+  const talkStart = useCallback((): void => {
+    const st = s.current;
+    if (!st || st.paused || st.capturing) return;
+    if (st.responding) send({ type: "response.cancel" }); // they want the floor: Grok stops
+    silence();
+    send({ type: "input_audio_buffer.clear" });
+    st.capturing = true;
+    st.talkStartedAt = Date.now();
+    st.userTalking = true;
+    st.nudges = 0;
+    st.lastActivity = Date.now();
+    st.stream.getAudioTracks().forEach((t) => (t.enabled = true));
+    setHearing(true);
+  }, []);
+
+  const talkEnd = useCallback((): void => {
+    const st = s.current;
+    if (!st || !st.capturing) return;
+    st.flushMic();
+    st.capturing = false;
+    st.userTalking = false;
+    st.stream.getAudioTracks().forEach((t) => (t.enabled = false));
+    setHearing(false);
+    if (Date.now() - st.talkStartedAt < MIN_TALK_MS) {
+      send({ type: "input_audio_buffer.clear" }); // a tap, not speech
+      st.quietSince = Date.now();
+      flush();
+      return;
+    }
+    st.awaitingReply = true;
+    send({ type: "input_audio_buffer.commit" });
+    send({ type: "response.create" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const pause = useCallback((): void => {
     const st = s.current;
     if (!st || st.paused) return;
     st.paused = true;
+    st.capturing = false;
     st.stream.getAudioTracks().forEach((t) => (t.enabled = false)); // the mic itself is off
     if (st.responding) send({ type: "response.cancel" });
     send({ type: "input_audio_buffer.clear" });
@@ -390,8 +462,7 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
   const resume = useCallback((): void => {
     const st = s.current;
     if (!st || !st.paused) return;
-    st.paused = false;
-    st.stream.getAudioTracks().forEach((t) => (t.enabled = true));
+    st.paused = false; // the mic stays off until they hold to talk
     st.lastActivity = Date.now();
     setPaused(false);
     flush(); // anything that happened on screen meanwhile
@@ -418,5 +489,5 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
       .catch(() => {});
   }, [memory]);
 
-  return { live, connecting, speaking, hearing, level, start, stop, notify, refresh, paused, pause, resume };
+  return { live, connecting, speaking, hearing, level, start, stop, notify, refresh, paused, pause, resume, talkStart, talkEnd };
 }

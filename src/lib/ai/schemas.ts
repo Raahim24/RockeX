@@ -13,23 +13,25 @@ import { z } from "zod";
 
 const MAX_ENGINES = 9;
 
+// Every field is capped so a request can't be used to push huge text into prompts or logs.
+const id = z.string().max(64);
 const LiverySchema = z.object({
-  primary: z.string(),
-  accent: z.string(),
+  primary: z.string().max(32),
+  accent: z.string().max(32),
   stripe: z.boolean(),
-  patch: z.string().nullable(),
+  patch: z.string().max(64).nullable(),
 });
 
 const StageBuildSchema = z.object({
-  engineId: z.string(),
+  engineId: id,
   engineCount: z.number(),
-  tankId: z.string(),
+  tankId: id,
 });
 
 const BuildStateSchema = z.object({
-  missionId: z.string(),
-  stages: z.array(StageBuildSchema),
-  payloadId: z.string(),
+  missionId: id,
+  stages: z.array(StageBuildSchema).max(10),
+  payloadId: id,
   livery: LiverySchema,
 }) satisfies z.ZodType<BuildState>;
 
@@ -42,7 +44,7 @@ const StageResultSchema = z.object({
 });
 
 const VerdictSchema = z.object({
-  stages: z.array(StageResultSchema),
+  stages: z.array(StageResultSchema).max(10),
   totalDeltaV_ms: z.number(),
   requiredDeltaV_ms: z.number(),
   marginDeltaV_ms: z.number(),
@@ -52,8 +54,8 @@ const VerdictSchema = z.object({
   feasible: z.boolean(),
   totalMass_kg: z.number(),
   liftoffThrust_kN: z.number(),
-  closestRocketId: z.string(),
-  warnings: z.array(z.string()),
+  closestRocketId: id,
+  warnings: z.array(z.string().max(200)).max(40),
 }) satisfies z.ZodType<Verdict>;
 
 export const AdviseRequestSchema = z.object({
@@ -194,12 +196,21 @@ const MISSION_WORDS: Record<string, RegExp> = {
 export const mentionsOtherMission = (message: string, missionId: string): boolean =>
   Object.entries(MISSION_WORDS).some(([id, pattern]) => id !== missionId && pattern.test(message));
 
+// Language that isn't okay in an app for young people (whole words, any case).
+const NOT_FOR_KIDS = /\b(fuck\w*|shit\w*|bitch\w*|bastard|asshole|dick|cunt|piss\w*|slut|whore|retard\w*|damn)\b/i;
+
+/** True when a reply uses language that isn't okay for young users. */
+export const notForKids = (message: string): boolean => NOT_FOR_KIDS.test(message);
+
 /** Why a reply must be rewritten, in words Grok can act on; null when it passes the checks. */
 export const rejectionReason = (
   message: string,
   warnings: string[],
   mission: { id: string; name: string; destination: string } | undefined,
 ): string | null => {
+  if (notForKids(message)) {
+    return "it used language that is not okay for young users; keep it clean";
+  }
   if (claimsMissingRule(message, warnings)) {
     return "it claimed a rule problem that is not in the verdict's Warnings";
   }

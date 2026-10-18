@@ -56,6 +56,37 @@ const closestLines = (verdict: Verdict, catalog: Catalog): string[] => {
   ];
 };
 
+interface GcatRocket {
+  name: string;
+  variant: string | null;
+  liftoffMass_kg: number | null;
+  liftoffThrust_kN: number | null;
+  launches: number;
+  failures: number;
+  firstLaunchYear: number | null;
+  lastLaunchYear: number | null;
+}
+const gcatPool = (gcatRockets as GcatRocket[]).filter((r) => (r.liftoffMass_kg ?? 0) > 0 && (r.liftoffThrust_kN ?? 0) > 0);
+
+/** The real launch vehicle (of 534 in GCAT) this rocket most resembles by liftoff mass and thrust (same metric as closest.ts). */
+export const lookalike = (verdict: Verdict): GcatRocket | null => {
+  if (verdict.totalMass_kg <= 0 || verdict.liftoffThrust_kN <= 0) return null;
+  let best: GcatRocket | null = null;
+  let bestD = Infinity;
+  for (const r of gcatPool) {
+    const d = Math.hypot(Math.log(verdict.totalMass_kg / r.liftoffMass_kg!), Math.log(verdict.liftoffThrust_kN / r.liftoffThrust_kN!));
+    if (d < bestD) [best, bestD] = [r, d];
+  }
+  return best;
+};
+
+const lookalikeLine = (verdict: Verdict): string => {
+  const r = lookalike(verdict);
+  if (!r) return "none";
+  const flew = r.launches > 0 ? `flew ${r.launches} time${r.launches === 1 ? "" : "s"} (${r.failures} failed), ${r.firstLaunchYear}${r.lastLaunchYear && r.lastLaunchYear !== r.firstLaunchYear ? `–${r.lastLaunchYear}` : ""}` : "never flew";
+  return `${r.name}${r.variant ? ` ${r.variant}` : ""}: ${flew}. (GCAT data by J. McDowell; liftoff ${num((r.liftoffMass_kg ?? 0) / 1000)} t, ${num(r.liftoffThrust_kN ?? 0)} kN)`;
+};
+
 const datasetLine = (catalog: Catalog): string => {
   const attempts = gcatLaunchStats.reduce((n, s) => n + s.launches, 0);
   return `Parts dataset: ${catalog.engines.length} real engines, ${catalog.tanks.length} real stages, every number sourced. Closest-rocket history from GCAT (J. McDowell): ${gcatRockets.length} launch vehicles, ${num(attempts)} orbital launch attempts.`;
@@ -72,6 +103,8 @@ export const advisorContext = (
   ...partLines(build, catalog),
   "CLOSEST REAL ROCKET (by liftoff mass and thrust):",
   ...closestLines(verdict, catalog),
+  "LOOKALIKE (the real launch vehicle in history, of 534 in GCAT, closest to this rocket by liftoff mass and thrust; use it now and then when it fits, e.g. when the rocket is finished or they ask what it is like, never every turn):",
+  lookalikeLine(verdict),
   "RULES (the physics code that decided the verdict):",
   ...physicsRulesText(allRules ? undefined : verdict.warnings),
   `DATASET: ${datasetLine(catalog)}`,

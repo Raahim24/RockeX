@@ -1,10 +1,13 @@
 // Owner: P3. POST VoiceRequest -> MP3 audio body. On failure 502; the UI then shows text only.
+import { guard } from "@/lib/ai/guard";
 import { grokSpeech } from "@/lib/ai/grokClient";
 import { capSentences, VoiceRequestSchema } from "@/lib/ai/schemas";
 
 const TIMEOUT_MS = 8000;
 
 export async function POST(req: Request): Promise<Response> {
+  const blocked = guard(req, { bucket: "voice", perMinute: 60, maxBytes: 8_000 });
+  if (blocked) return blocked;
   const parsed = VoiceRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return Response.json({ error: "invalid VoiceRequest" }, { status: 400 });
