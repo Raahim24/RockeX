@@ -4,13 +4,25 @@
 import { useBuild, useVerdict } from "@/store/buildStore";
 import type { RenderResponse } from "@/types";
 import Image from "next/image";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-const CACHED: RenderResponse = { imageUrl: "/fallback/render.jpg", promptUsed: "", fallback: true };
+const CACHED: RenderResponse = {
+  imageUrl: "/fallback/render.jpg",
+  promptUsed: "",
+  fallback: true,
+};
 
-type State = { status: "idle" } | { status: "loading"; startedAt: number } | { status: "done"; result: RenderResponse };
+type State =
+  | { status: "idle" }
+  | { status: "loading"; startedAt: number }
+  | { status: "done"; result: RenderResponse };
 
-export function RenderButton() {
+interface Props {
+  /** Show the "Render it" button; Grok can still start a render (render_image) when it's hidden. */
+  showButton?: boolean;
+}
+
+export function RenderButton({ showButton = true }: Props) {
   const build = useBuild();
   const verdict = useVerdict();
   const [state, setState] = useState<State>({ status: "idle" });
@@ -33,25 +45,48 @@ export function RenderButton() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ build, verdict }),
       });
-      setState({ status: "done", result: res.ok ? ((await res.json()) as RenderResponse) : CACHED });
+      setState({
+        status: "done",
+        result: res.ok ? ((await res.json()) as RenderResponse) : CACHED,
+      });
     } catch {
       setState({ status: "done", result: CACHED });
     }
   };
 
-  const elapsed_s = state.status === "loading" ? Math.max(0, Math.round((now - state.startedAt) / 1000)) : 0;
+  // Grok's render_image tool asks for a render through this event.
+  const renderRef = useRef(render);
+  useEffect(() => {
+    renderRef.current = render;
+  });
+  useEffect(() => {
+    const onAsk = (): void => void renderRef.current();
+    addEventListener("grok:render", onAsk);
+    return () => removeEventListener("grok:render", onAsk);
+  }, []);
+
+  const elapsed_s =
+    state.status === "loading"
+      ? Math.max(0, Math.round((now - state.startedAt) / 1000))
+      : 0;
 
   return (
     <div className="flex flex-col gap-2">
-      <button
-        type="button"
-        onClick={render}
-        disabled={loading}
-        className="self-start rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-black disabled:opacity-50"
-      >
-        {loading ? `Rendering… ${elapsed_s} s` : "Render it"}
-      </button>
-      {loading && <p className="text-xs text-neutral-400">Grok Imagine usually takes 15–45 seconds.</p>}
+      {(showButton || loading) && (
+        <button
+          type="button"
+          onClick={render}
+          disabled={loading}
+          className="self-start rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-black disabled:opacity-50"
+        >
+          {loading ? `Rendering… ${elapsed_s} s` : "Render it"}
+        </button>
+      )}
+      {loading && (
+        <p className="text-xs text-neutral-400">
+          Grok Imagine usually takes 15–45 seconds.
+        </p>
+      )}
       {state.status === "done" && (
         <figure className="relative overflow-hidden rounded-lg">
           <Image

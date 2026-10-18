@@ -37,12 +37,14 @@ describe("odd-build sweep", () => {
       expect(v.totalMass_kg).toBeGreaterThan(0);
       if (v.feasible) {
         expect(v.deltaVOk && v.twrOk).toBe(true);
-        expect(v.liftoffTWR).toBeGreaterThanOrEqual(1.2);
+        expect(v.liftoffTWR).toBeGreaterThanOrEqual(1.15);
       }
       // A booster with sea-level thrust always gets a real closest rocket.
       if (boosterThrusts) expect(catalog.referenceRockets.some((r) => r.id === v.closestRocketId)).toBe(true);
     }
-    expect(count).toBe(18480);
+    // missions (+ none) x payloads (+ none) x engines x tanks x 2 counts x 2 (with/without upper): grows with the data
+    const expected = (catalog.missions.length + 1) * (catalog.payloads.length + 1) * catalog.engines.length * catalog.tanks.length * 2 * 2;
+    expect(count).toBe(expected);
   });
 
   it("a vacuum engine on the booster is never feasible", () => {

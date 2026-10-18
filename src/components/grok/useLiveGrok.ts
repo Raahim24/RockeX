@@ -3,12 +3,18 @@
 // 24 kHz PCM16, Grok's voice streams back and plays as it arrives, the server hears when the user starts and
 // stops talking, and talking over Grok cuts it off. Tool calls run through voiceTools (checked by our code).
 
+import type { AgentTurn } from "@/lib/ai/schemas";
 import { useBuildStore } from "@/store/buildStore";
 import type { Verdict } from "@/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { runVoiceTool, VOICE_TOOLS } from "./voiceTools";
 
 const RATE = 24000;
+const MEMORY_TURNS = 20; // how much of the conversation a new session is given
+const VOICE_SPEED = 1.05; // a touch quicker than default: lively, not read out
+const IDLE_STOP_MS = 3 * 60_000; // a forgotten live session ends itself (it is billed per minute)
+// Tools that change the rocket itself; Grok narrates those changes, so the next "built" event is not repeated.
+const ROCKET_CHANGING_TOOLS = new Set(["swap_engine", "swap_tank", "set_engine_count", "add_stage", "remove_stage", "set_payload", "set_mission"]);
 const CHUNK = 2400; // 100 ms of mic audio per message
 
 // Captures raw mic samples off the audio thread.
@@ -51,7 +57,12 @@ const loudness = (a: AnalyserNode, data: Uint8Array<ArrayBuffer>): number => {
   return Math.min(1, (data.reduce((s, v) => s + v, 0) / data.length / 255) * 3);
 };
 
-const currentRocket = (verdict: Verdict, screen: string) => ({ build: useBuildStore.getState().build, verdict, screen });
+const currentRocket = (verdict: Verdict, screen: string, history: AgentTurn[]) => ({
+  build: useBuildStore.getState().build,
+  verdict,
+  screen,
+  history: history.slice(-MEMORY_TURNS),
+});
 
 export interface LiveGrok {
   live: boolean;
@@ -60,26 +71,40 @@ export interface LiveGrok {
   /** The user is talking (server voice detection). */
   hearing: boolean;
   level: React.RefObject<number>;
-  /** `firstStep`: extra instructions for Grok's opening line (e.g. the first guided-build step). */
-  start: (verdict: Verdict, screen: string, firstStep?: string | null) => Promise<boolean>;
+  start: (verdict: Verdict, screen: string) => Promise<boolean>;
   stop: () => void;
   /** Tell Grok what just happened on screen; it reacts when nobody is talking. */
   notify: (event: string) => void;
   /** Refresh Grok's picture of the rocket. */
   refresh: (verdict: Verdict, screen: string) => void;
+  /** Paused: the mic is off and Grok neither listens nor talks until resumed. */
+  paused: boolean;
+  pause: () => void;
+  resume: () => void;
 }
 
 /** `onToolChange` runs after one of Grok's tool calls changed the rocket. */
-export function useLiveGrok(onToolChange?: () => void): LiveGrok {
+export interface LiveOptions {
+  /** Runs after one of Grok's tool calls changed the rocket. */
+  onToolChange?: () => void;
+  /** The conversation so far (until the page reloads); live turns are added to it, and new sessions continue it. */
+  memory: React.RefObject<AgentTurn[]>;
+  onTurn: (turn: AgentTurn) => void;
+}
+
+export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): LiveGrok {
   const [live, setLive] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [hearing, setHearing] = useState(false);
+  const [paused, setPaused] = useState(false);
   const level = useRef(0);
   const toolChangeRef = useRef(onToolChange);
+  const turnRef = useRef(onTurn);
   useEffect(() => {
     toolChangeRef.current = onToolChange;
-  }, [onToolChange]);
+    turnRef.current = onTurn;
+  }, [onToolChange, onTurn]);
   const s = useRef<{
     ws: WebSocket;
     ctx: AudioContext;
@@ -89,6 +114,10 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
     sources: Set<AudioBufferSourceNode>;
     responding: boolean;
     userTalking: boolean;
+    paused: boolean;
+    /** The user just finished talking: the server is about to answer on its own, so no events until it does. */
+    awaitingReply: boolean;
+    lastActivity: number;
     toolOutputs: number;
     queue: string[];
   } | null>(null);
@@ -115,7 +144,7 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
 
   const flush = (): void => {
     const st = s.current;
-    if (!st || st.responding || st.userTalking || st.sources.size > 0 || st.queue.length === 0) return;
+    if (!st || st.paused || st.responding || st.userTalking || st.awaitingReply || st.sources.size > 0 || st.queue.length === 0) return;
     const event = st.queue.splice(0).join(" ");
     send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: event }] } });
     send({ type: "response.create" });
@@ -132,13 +161,14 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
     setLive(false);
     setSpeaking(false);
     setHearing(false);
+    setPaused(false);
   }, []);
 
   useEffect(() => stop, [stop]);
 
   const play = (b64: string): void => {
     const st = s.current;
-    if (!st) return;
+    if (!st || st.paused) return;
     const samples = fromPcm16(b64);
     if (samples.length === 0) return;
     const buf = st.ctx.createBuffer(1, samples.length, RATE);
@@ -169,22 +199,41 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
         play(String(ev.delta ?? ""));
         break;
       case "input_audio_buffer.speech_started":
+        if (st.paused) break;
         st.userTalking = true;
+        st.lastActivity = Date.now();
         setHearing(true);
         silence(); // the user talked over Grok: stop talking
         break;
       case "input_audio_buffer.speech_stopped":
         st.userTalking = false;
+        st.awaitingReply = true;
+        setTimeout(() => {
+          if (s.current === st && st.awaitingReply) {
+            st.awaitingReply = false; // the server didn't answer (e.g. just noise): let events through again
+            flush();
+          }
+        }, 3000);
         setHearing(false);
         break;
       case "response.created":
         st.responding = true;
+        st.awaitingReply = false;
+        st.lastActivity = Date.now();
         break;
+      case "conversation.item.input_audio_transcription.completed": {
+        const text = String(ev.transcript ?? "").trim();
+        if (text) turnRef.current({ role: "user", text: text.slice(0, 300) });
+        break;
+      }
+      case "response.output_audio_transcript.done": {
+        const text = String(ev.transcript ?? "").trim();
+        if (text) turnRef.current({ role: "grok", text: text.slice(0, 300) });
+        break;
+      }
       case "response.function_call_arguments.done": {
         const result = runVoiceTool(String(ev.name), String(ev.arguments ?? "{}"));
-        if (result.ok && String(ev.name) !== "build_all" && String(ev.name) !== "explode" && String(ev.name) !== "reset") {
-          toolChangeRef.current?.();
-        }
+        if (result.ok && ROCKET_CHANGING_TOOLS.has(String(ev.name))) toolChangeRef.current?.();
         send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: ev.call_id, output: JSON.stringify(result) } });
         st.toolOutputs++;
         break;
@@ -205,14 +254,14 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
   };
 
   const start = useCallback(
-    async (verdict: Verdict, screen: string, firstStep?: string | null): Promise<boolean> => {
+    async (verdict: Verdict, screen: string): Promise<boolean> => {
       if (s.current) return true;
       setConnecting(true);
       try {
         const res = await fetch("/api/realtime", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...currentRocket(verdict, screen), token: true }),
+          body: JSON.stringify({ ...currentRocket(verdict, screen, memory.current ?? []), token: true }),
         });
         if (!res.ok) return false;
         const setup = (await res.json()) as Setup;
@@ -243,6 +292,9 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
           sources: new Set<AudioBufferSourceNode>(),
           responding: false,
           userTalking: false,
+          paused: false,
+          awaitingReply: false,
+          lastActivity: Date.now(),
           toolOutputs: 0,
           queue: [] as string[],
         };
@@ -251,6 +303,7 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
         let pending: Float32Array[] = [];
         let pendingLen = 0;
         capture.port.onmessage = (e: MessageEvent<Float32Array>) => {
+          if (st.paused) return; // nothing leaves the browser while paused
           pending.push(e.data);
           pendingLen += e.data.length;
           if (pendingLen < CHUNK) return;
@@ -284,14 +337,14 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
             turn_detection: { type: "server_vad" },
             audio: {
               input: { format: { type: "audio/pcm", rate: RATE }, transcription: { language_hint: "en", keyterms: setup.keyterms } },
-              output: { format: { type: "audio/pcm", rate: RATE } },
+              output: { format: { type: "audio/pcm", rate: RATE }, speed: VOICE_SPEED },
             },
             tools: VOICE_TOOLS,
           },
         });
         st.queue.push(
-          firstStep
-            ? `(Event: the user just tapped you to start talking. Say hi as Grok, their flight engineer, name the mission and payload in one exciting line, and say you will build the rocket together part by part. Then start: ${firstStep})`
+          (memory.current ?? []).length > 0
+            ? "(Event: the user is back, continuing the same conversation (see CONVERSATION SO FAR). Do not greet them or introduce yourself again; pick up right where you left off in one short line.)"
             : `(Event: the user just tapped you to start talking. ${setup.welcome})`,
         );
         flush();
@@ -300,6 +353,7 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
         const micData = new Uint8Array(micMeter.frequencyBinCount);
         const tick = (): void => {
           if (s.current !== st) return;
+          if (Date.now() - st.lastActivity > IDLE_STOP_MS && !st.responding && st.sources.size === 0) return stop();
           level.current = Math.max(loudness(outMeter, outData), loudness(micMeter, micData));
           requestAnimationFrame(tick);
         };
@@ -319,10 +373,35 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
     [stop],
   );
 
+  const pause = useCallback((): void => {
+    const st = s.current;
+    if (!st || st.paused) return;
+    st.paused = true;
+    st.stream.getAudioTracks().forEach((t) => (t.enabled = false)); // the mic itself is off
+    if (st.responding) send({ type: "response.cancel" });
+    send({ type: "input_audio_buffer.clear" });
+    silence();
+    st.userTalking = false;
+    st.awaitingReply = false;
+    setHearing(false);
+    setPaused(true);
+  }, []);
+
+  const resume = useCallback((): void => {
+    const st = s.current;
+    if (!st || !st.paused) return;
+    st.paused = false;
+    st.stream.getAudioTracks().forEach((t) => (t.enabled = true));
+    st.lastActivity = Date.now();
+    setPaused(false);
+    flush(); // anything that happened on screen meanwhile
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const notify = useCallback((event: string): void => {
     const st = s.current;
     if (!st) return;
-    st.queue = [event]; // only the latest news matters
+    st.queue = [...st.queue, event].slice(-3); // a few recent events, so a launch result isn't lost behind a part landing
     flush();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -332,12 +411,12 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
     void fetch("/api/realtime", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(currentRocket(verdict, screen)),
+      body: JSON.stringify(currentRocket(verdict, screen, memory.current ?? [])),
     })
       .then((r) => (r.ok ? (r.json() as Promise<Setup>) : null))
       .then((setup) => setup && send({ type: "session.update", session: { instructions: setup.instructions } }))
       .catch(() => {});
-  }, []);
+  }, [memory]);
 
-  return { live, connecting, speaking, hearing, level, start, stop, notify, refresh };
+  return { live, connecting, speaking, hearing, level, start, stop, notify, refresh, paused, pause, resume };
 }

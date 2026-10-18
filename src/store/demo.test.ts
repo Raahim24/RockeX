@@ -37,8 +37,8 @@ describe.skipIf(!demoPartsExist || DEMO_FIX === null)("canonical demo", () => {
     expect(green.warnings).toEqual([]);
   });
 
-  it("passes the 1.2 TWR rule honestly before and after the swap", () => {
-    expect(red.liftoffTWR).toBeGreaterThanOrEqual(1.2);
-    expect(green.liftoffTWR).toBeGreaterThanOrEqual(1.2);
+  it("passes the TWR rule honestly before and after the swap", () => {
+    expect(red.liftoffTWR).toBeGreaterThanOrEqual(1.15);
+    expect(green.liftoffTWR).toBeGreaterThanOrEqual(1.15);
   });
 });

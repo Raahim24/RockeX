@@ -5,9 +5,14 @@ import { closestRocketId } from "./closest";
 import { ispForStage_s, rocketEquationDeltaV_ms, stageMass_kg } from "./deltav";
 import { liftoffThrust_kN, liftoffTWR } from "./twr";
 
-const TWR_OK = 1.2;
+// 1.15: real rockets lift off at about 1.15 to 1.2 (Saturn V 1.18, Atlas V 401 1.17 in our data); below this the
+// climb wastes too much propellant fighting gravity. Below 1.0 it cannot leave the pad at all.
+export const TWR_OK = 1.15;
+/** The only warning that does not block (the rocket can fly, just poorly); everything else is blocking. */
+export const TWR_LOW_WARNING = `liftoff TWR below ${TWR_OK}`;
 const TWR_BLOCKING = 1.0;
-const DRY_MASS_MIN_FRACTION = 0.04;
+// 3 %: lets every real stage in src/data pass (the lightest, Falcon 9 S2, is 3.23 %) and still stops fantasy tanks.
+const DRY_MASS_MIN_FRACTION = 0.03;
 const MAX_ENGINE_COUNT = 9;
 // Spec: tune so a 3.66 m tank + Merlin = 9. 0.62 also fits the real Saturn V S-IC's 5 F-1s (0.6 allowed 4).
 const ENGINE_FIT_FACTOR = 0.62;
@@ -115,7 +120,7 @@ export const evaluateBuild = (build: BuildState, catalog: Catalog): Verdict => {
       addBlocking("engine and tank propellant differ");
     }
     if (engine && tank && tank.dryMass_kg < DRY_MASS_MIN_FRACTION * tank.propellantMass_kg) {
-      addBlocking("tank dry mass below 4 percent of propellant");
+      addBlocking(`tank dry mass below ${DRY_MASS_MIN_FRACTION * 100} percent of propellant`);
     }
     if (stageIndex === 0 && engine && isVacuumOnly(engine)) {
       addBlocking("vacuum-only engine on stage 0");
@@ -159,7 +164,7 @@ export const evaluateBuild = (build: BuildState, catalog: Catalog): Verdict => {
   if (twr < TWR_BLOCKING) {
     addBlocking("liftoff TWR below 1.0");
   } else if (!twrOk) {
-    warnings.push("liftoff TWR below 1.2");
+    warnings.push(TWR_LOW_WARNING);
   }
 
   const closestId = closestRocketId(totalMass_kg, thrust_kN, catalog.referenceRockets);

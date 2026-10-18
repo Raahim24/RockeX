@@ -3,7 +3,7 @@ import { loadCatalog } from "@/lib/physics/catalog";
 import { evaluateBuild } from "@/lib/physics/feasibility";
 import { DEMO_BUILD, useBuildStore } from "@/store/buildStore";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { guideEvent, runVoiceTool, screenSummary, slotOptions, VOICE_TOOLS, type BuildProgress } from "./voiceTools";
+import { choosePicked, guideEvent, runVoiceTool, screenSummary, setGuideProgress, slotOptions, VOICE_TOOLS, type BuildProgress } from "./voiceTools";
 
 beforeEach(() => {
   useBuildStore.setState({ build: DEMO_BUILD });
@@ -38,6 +38,16 @@ describe("voice tools", () => {
     expect(useBuildStore.getState().build).toEqual(DEMO_BUILD);
   });
 
+  it("swaps an engine and its count as one change", () => {
+    const seen: number[] = [];
+    const unsub = useBuildStore.subscribe(({ build }) => seen.push(build.stages[0].engineCount));
+    const out = runVoiceTool("swap_engine", JSON.stringify({ stageIndex: 0, engineId: "f-1", engineCount: 1 }));
+    unsub();
+    expect(out.ok).toBe(true);
+    expect(seen).toEqual([1]); // one update, never 9 x F-1 in between
+    expect(useBuildStore.getState().build.stages[0]).toMatchObject({ engineId: "f-1", engineCount: 1 });
+  });
+
   it("never removes the last stage", () => {
     useBuildStore.setState({ build: { ...DEMO_BUILD, stages: [DEMO_BUILD.stages[0]] } });
     expect(runVoiceTool("remove_stage", JSON.stringify({ stageIndex: 0 })).ok).toBe(false);
@@ -51,8 +61,12 @@ describe("voice tools", () => {
 
 describe("/api/realtime", () => {
   const verdict = evaluateBuild(DEMO_BUILD, loadCatalog());
-  const post = (token: boolean): Request =>
-    new Request("http://test/api/realtime", { method: "POST", body: JSON.stringify({ build: DEMO_BUILD, verdict, token }) });
+  const post = (token: boolean, origin = "http://test"): Request =>
+    new Request("http://test/api/realtime", {
+      method: "POST",
+      headers: { origin, host: "test" },
+      body: JSON.stringify({ build: DEMO_BUILD, verdict, token }),
+    });
 
   it("gives instructions that explain the screen and list valid ids", async () => {
     const body = (await (await realtime(post(false))).json()) as { instructions: string; keyterms: string[] };
@@ -60,6 +74,21 @@ describe("/api/realtime", () => {
     expect(body.instructions).toContain("ENGINE IDS: ");
     expect(body.instructions).toContain("Moon transfer");
     expect(body.keyterms).toContain("RL10C-1");
+  });
+
+  it("carries the conversation so far, so a new session continues it", async () => {
+    const req = new Request("http://test/api/realtime", {
+      method: "POST",
+      body: JSON.stringify({ build: DEMO_BUILD, verdict, history: [{ role: "user", text: "I want to go to Mars" }, { role: "grok", text: "Mars it is!" }] }),
+    });
+    const body = (await (await realtime(req)).json()) as { instructions: string };
+    expect(body.instructions).toContain("CONVERSATION SO FAR");
+    expect(body.instructions).toContain("User: I want to go to Mars");
+  });
+
+  it("refuses to make tokens for other sites", async () => {
+    vi.stubEnv("XAI_API_KEY", "test-key");
+    expect((await realtime(post(true, "https://evil.example"))).status).toBe(403);
   });
 
   it("returns 502 when no live token can be made", async () => {
@@ -85,7 +114,8 @@ describe("guided build", () => {
     expect(options[0]).toMatchObject({ id: "merlin-1d", current: true });
     expect(options.length).toBeGreaterThan(1);
     const vacuumOnly = loadCatalog().engines.filter((e) => e.thrustSL_kN <= 0).map((e) => e.id);
-    expect(options.some((o) => vacuumOnly.includes(o.id))).toBe(false);
+    // vacuum-only engines are offered on stage 1 too, marked as not working there, so kids learn why
+    expect(options.filter((o) => vacuumOnly.includes(o.id)).every((o) => !o.works && o.problem === "can't work at sea level")).toBe(true);
     expect(options[0].finishedRocket).toMatchObject({ feasible: false, margin_ms: -905 });
   });
 
@@ -129,5 +159,117 @@ describe("screen summary", () => {
   });
   it("says when the whole rocket is built", () => {
     expect(screenSummary(list(3))).toContain("whole rocket is built");
+  });
+});
+
+describe("show_options tool", () => {
+  const progress: BuildProgress = [
+    { id: "s0-engines", kind: "engines", stageIndex: 0, recordId: "merlin-1d", built: true },
+    { id: "s0-tank", kind: "tank", stageIndex: 0, recordId: "falcon9-s1-tank", built: false },
+  ];
+
+  it("shows the next part's options on screen as parts and gives Grok the same list", () => {
+    setGuideProgress(progress);
+    const out = runVoiceTool("show_options", "{}");
+    expect(out).toMatchObject({ ok: true, part: "stage 1 tank" });
+    expect((out.shown as { id: string }[])[0].id).toBe("falcon9-s1-tank");
+    const sent = (dispatchEvent as unknown as { mock: { calls: [CustomEvent][] } }).mock.calls.at(-1)![0];
+    expect(sent.detail).toMatchObject({ cmd: "show_options", partId: "s0-tank" });
+    expect(sent.detail.options[0]).toMatchObject({ recordId: "falcon9-s1-tank", go: false });
+  });
+
+  it("lets Grok pick which options to show, including ones that won't work, with the reason", () => {
+    setGuideProgress(progress);
+    const some = runVoiceTool("show_options", JSON.stringify({ ids: ["atlas-v-ccb-tank", "centaur-iii-tank"] }));
+    const shown = some.shown as { id: string; works: boolean; problem?: string }[];
+    expect(shown.map((o) => o.id).sort()).toEqual(["atlas-v-ccb-tank", "centaur-iii-tank"]);
+    expect(shown.find((o) => o.id === "centaur-iii-tank")).toMatchObject({ works: false, problem: "wrong fuel for this tank" });
+    expect(shown.find((o) => o.id === "atlas-v-ccb-tank")).toMatchObject({ works: true });
+  });
+
+  it("shows a teaching mix by default: current, one that works, one that won't", () => {
+    setGuideProgress(progress);
+    const shown = runVoiceTool("show_options", "{}").shown as { current: boolean; works: boolean }[];
+    expect(shown[0].current).toBe(true);
+    expect(shown.some((o) => !o.current && o.works)).toBe(true);
+    expect(shown.some((o) => !o.works)).toBe(true);
+  });
+
+  it("says so when there is nothing to choose", () => {
+    setGuideProgress(progress.map((p) => ({ ...p, built: true })));
+    expect(runVoiceTool("show_options", "{}").ok).toBe(false);
+  });
+});
+
+describe("full control of the build", () => {
+  const progress: BuildProgress = [
+    { id: "s0-engines", kind: "engines", stageIndex: 0, recordId: "merlin-1d", built: true },
+    { id: "s0-tank", kind: "tank", stageIndex: 0, recordId: "falcon9-s1-tank", built: true },
+    { id: "s0-interstage", kind: "interstage", stageIndex: 0, recordId: null, built: false },
+  ];
+  const lastCommand = () => (dispatchEvent as unknown as { mock: { calls: [CustomEvent][] } }).mock.calls.at(-1)![0].detail;
+
+  it("takes parts off and puts them back by part id", () => {
+    setGuideProgress(progress);
+    expect(runVoiceTool("remove_parts", JSON.stringify({ partId: "s0-engines" })).ok).toBe(true);
+    expect(lastCommand()).toEqual({ cmd: "remove_parts", partId: "s0-engines" });
+    expect(runVoiceTool("place_parts", "{}").ok).toBe(true);
+    expect(lastCommand()).toEqual({ cmd: "place_parts", partId: undefined });
+    expect(runVoiceTool("remove_parts", JSON.stringify({ partId: "nope" })).ok).toBe(false);
+  });
+
+  it("only inspects parts that are on the rocket", () => {
+    setGuideProgress(progress);
+    expect(runVoiceTool("inspect_part", JSON.stringify({ partId: "s0-tank" })).ok).toBe(true);
+    expect(runVoiceTool("inspect_part", JSON.stringify({ partId: "s0-interstage" })).ok).toBe(false);
+  });
+
+  it("shows choices for a part already on the rocket, to go back and swap it", () => {
+    setGuideProgress(progress);
+    const out = runVoiceTool("show_options", JSON.stringify({ partId: "s0-tank" }));
+    expect(out).toMatchObject({ ok: true, alreadyOnRocket: true, part: "stage 1 tank" });
+    expect(lastCommand()).toMatchObject({ cmd: "show_options", partId: "s0-tank", built: true });
+  });
+
+  it("swaps a placed part in place when it is picked, without placing another", () => {
+    setGuideProgress(progress);
+    choosePicked(progress[1], { recordId: "atlas-v-ccb-tank" });
+    expect(useBuildStore.getState().build.stages[0].tankId).toBe("atlas-v-ccb-tank");
+    const sent = (dispatchEvent as unknown as { mock: { calls: [CustomEvent][] } }).mock.calls.map(([e]) => e.detail?.cmd);
+    expect(sent).not.toContain("build_next");
+  });
+
+  it("tells Grok the part ids on screen", () => {
+    expect(screenSummary(progress)).toContain("stage 1 tank (Falcon 9 Block 5 first-stage tank) [s0-tank]");
+  });
+});
+
+describe("options blame only the part that causes a problem (Falcon 9 to the Moon)", () => {
+  const falcon9ToMoon = {
+    ...DEMO_BUILD,
+    missionId: "moon-transfer",
+    payloadId: "goes-r",
+    stages: [
+      { engineId: "merlin-1d", engineCount: 9, tankId: "falcon9-s1-tank" },
+      { engineId: "merlin-1d-vac", engineCount: 1, tankId: "falcon9-s2-tank" },
+    ],
+  };
+  const stage2Engines: BuildProgress[number] = { id: "s1-engines", kind: "engines", stageIndex: 1, recordId: "merlin-1d-vac", built: false };
+
+  it("does not mark the real Falcon 9 upper-stage engine as won't fly", () => {
+    const merlinVac = slotOptions(falcon9ToMoon, stage2Engines, Infinity).find((o) => o.id === "merlin-1d-vac");
+    expect(merlinVac).toMatchObject({ current: true, works: true });
+  });
+
+  it("when no engine here reaches the Moon, tells Grok the change elsewhere that would", () => {
+    useBuildStore.setState({ build: falcon9ToMoon });
+    setGuideProgress([
+      { id: "s0-engines", kind: "engines", stageIndex: 0, recordId: "merlin-1d", built: true },
+      { id: "s0-tank", kind: "tank", stageIndex: 0, recordId: "falcon9-s1-tank", built: true },
+      stage2Engines,
+    ]);
+    const out = runVoiceTool("show_options", "{}");
+    expect(out.noChoiceHereReachesGo).toBe(true);
+    expect(out.fix).toMatchObject({ resultMargin_ms: expect.any(Number) });
   });
 });

@@ -3,7 +3,7 @@
 // when asked, a short-lived token to open the WebSocket. 502 when no token can be made (UI falls back).
 import { grokRealtimeToken, REALTIME_MODEL, REALTIME_VOICE } from "@/lib/ai/grokClient";
 import { LIVE_WELCOME, realtimeInstructions, realtimeKeyterms } from "@/lib/ai/realtime";
-import { AdviseRequestSchema } from "@/lib/ai/schemas";
+import { AdviseRequestSchema, AgentTurnSchema } from "@/lib/ai/schemas";
 import { loadCatalog } from "@/lib/physics/catalog";
 import { z } from "zod";
 
@@ -14,17 +14,26 @@ const RealtimeRequestSchema = AdviseRequestSchema.extend({
   token: z.boolean().default(false),
   /** What is actually built on screen, in words (from the assembly screen). */
   screen: z.string().max(2000).default(""),
+  /** The conversation so far on this page, so a new session continues it. */
+  history: z.array(AgentTurnSchema).max(20).default([]),
 });
+
+// Tokens cost money: only pages served by this app may ask for one (browsers always send Origin on POST).
+const sameOrigin = (req: Request): boolean => {
+  const origin = req.headers.get("origin");
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  return origin !== null && host !== null && new URL(origin).host === host;
+};
 
 export async function POST(req: Request): Promise<Response> {
   const parsed = RealtimeRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return Response.json({ error: "invalid request" }, { status: 400 });
   }
-  const { build, verdict, token, screen } = parsed.data;
+  const { build, verdict, token, screen, history } = parsed.data;
   const catalog = loadCatalog();
   const body = {
-    instructions: realtimeInstructions(build, verdict, catalog, screen),
+    instructions: realtimeInstructions(build, verdict, catalog, screen, history),
     keyterms: realtimeKeyterms(catalog),
     welcome: LIVE_WELCOME,
     model: REALTIME_MODEL,
@@ -32,6 +41,9 @@ export async function POST(req: Request): Promise<Response> {
   };
   if (!token) {
     return Response.json(body);
+  }
+  if (!sameOrigin(req)) {
+    return Response.json({ error: "forbidden" }, { status: 403 });
   }
   try {
     const { value, expiresAt } = await grokRealtimeToken(TOKEN_SECONDS, TIMEOUT_MS);
