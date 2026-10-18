@@ -504,8 +504,8 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
       {/* Nothing on the pad yet: Explode and Reset would do nothing, so they stay out of sight until a part lands. */}
       {placedCount === 0 && <style>{"body .bar #btn-explode, body .bar #btn-reset { display: none; }"}</style>}
 
-      {/* Grok in the middle at the bottom, with what to do written under it. */}
-      <div className="fixed bottom-5 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
+      {/* Grok in the middle, just above the screen's control bar (never on top of it), with what to do written under it. */}
+      <div className="fixed left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5" style={{ bottom: 24 + barHeight + 12 }}>
         <button
           ref={orbRef}
           type="button"
@@ -538,7 +538,7 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
         )}
       </div>
       {(optionsHint && live.live) || caption ? (
-        <div className="fixed bottom-40 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
+        <div className="fixed left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5" style={{ bottom: 24 + barHeight + 150 }}>
           {optionsHint && live.live && (
             <p className={`${chip} bg-white/10 text-neutral-200`}>👈 Tap a part on the left, or hold Space and say it</p>
           )}
