@@ -91,10 +91,11 @@ const ORB_CSS = `
 .grok-orb .grok-eye.r { left: 61%; top: 18%; animation-delay: 40ms; }
 /* the eyes squint a little on loud syllables */
 .grok-orb .grok-eyes { position: absolute; inset: 0; transform: scaleY(calc(1 - var(--lvl, 0) * 0.3)); transition: transform 80ms linear; }
+/* live and waiting: a faint ring; green only while they hold Space (or the orb) and Grok is listening */
 .grok-orb[data-mode="live"] { box-shadow: inset -7px -9px 16px rgba(0,0,0,.22), inset 4px 5px 10px rgba(255,255,255,.7),
-  0 0 0 3px rgba(46,230,182,.6), 0 0 26px rgba(46,230,182,.35); }
+  0 0 0 2px rgba(255,255,255,.28), 0 10px 22px rgba(0,0,0,.5); }
 .grok-orb[data-mode="listening"] { box-shadow: inset -7px -9px 16px rgba(0,0,0,.22), inset 4px 5px 10px rgba(255,255,255,.7),
-  0 0 0 3px rgba(255,255,255,.65), 0 0 30px rgba(92,200,255,.55); }
+  0 0 0 3px rgba(46,230,182,.9), 0 0 30px rgba(46,230,182,.45); }
 .grok-orb[data-mode="listening"] .grok-eye { height: 40%; }
 .grok-orb[data-mode="thinking"] .grok-face { animation: grok-look 1.6s ease-in-out infinite; }
 .grok-orb[data-mode="paused"] { filter: grayscale(1) brightness(.6); }
@@ -277,11 +278,11 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
     : live.live
       ? live.paused
         ? "paused"
-        : live.speaking
-        ? "speaking"
-        : live.hearing
+        : live.hearing // holding Space shows it's listening, even when cutting in while Grok talks
           ? "listening"
-          : "live"
+          : live.speaking
+            ? "speaking"
+            : "live"
       : recorder.listening
         ? "listening"
         : speaker.speaking
