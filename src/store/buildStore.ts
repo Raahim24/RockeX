@@ -1,6 +1,6 @@
 // Owner: P2. Single source of truth. Verdict is derived, never stored (spec §6).
-import { byId, loadCatalog } from "@/lib/physics/catalog";
-import { clampEngineCount, evaluateBuild } from "@/lib/physics/feasibility";
+import { loadCatalog } from "@/lib/physics/catalog";
+import { evaluateBuild, sanitizeEngineCount } from "@/lib/physics/feasibility";
 import type { BuildState, Livery, Suggestion, Verdict } from "@/types";
 import { create } from "zustand";
 import { applySuggestionToBuild } from "./applySuggestion";
@@ -48,49 +48,15 @@ const catalogFor = () => loadCatalog();
 export const useBuildStore = create<BuildStore>((set) => ({
   build: DEMO_BUILD,
   setMission: (id) => set(({ build }) => ({ build: { ...build, missionId: id } })),
+  // Engine count is never silently cut to fit the tank: the verdict blocks it with a reason the advisor explains.
   setStageEngine: (i, id) =>
-    set(({ build }) => {
-      const catalog = catalogFor();
-      const stage = build.stages[i];
-      if (!stage) {
-        return { build };
-      }
-      const engine = byId(catalog.engines, id);
-      const tank = byId(catalog.tanks, stage.tankId);
-      return {
-        build: updateStage(build, i, {
-          engineId: id,
-          engineCount: clampEngineCount(stage.engineCount, tank, engine),
-        }),
-      };
-    }),
+    set(({ build }) => (build.stages[i] ? { build: updateStage(build, i, { engineId: id }) } : { build })),
   setEngineCount: (i, n) =>
-    set(({ build }) => {
-      const catalog = catalogFor();
-      const stage = build.stages[i];
-      if (!stage) {
-        return { build };
-      }
-      const engine = byId(catalog.engines, stage.engineId);
-      const tank = byId(catalog.tanks, stage.tankId);
-      return { build: updateStage(build, i, { engineCount: clampEngineCount(n, tank, engine) }) };
-    }),
+    set(({ build }) =>
+      build.stages[i] ? { build: updateStage(build, i, { engineCount: sanitizeEngineCount(n) }) } : { build },
+    ),
   setStageTank: (i, id) =>
-    set(({ build }) => {
-      const catalog = catalogFor();
-      const stage = build.stages[i];
-      if (!stage) {
-        return { build };
-      }
-      const tank = byId(catalog.tanks, id);
-      const engine = byId(catalog.engines, stage.engineId);
-      return {
-        build: updateStage(build, i, {
-          tankId: id,
-          engineCount: clampEngineCount(stage.engineCount, tank, engine),
-        }),
-      };
-    }),
+    set(({ build }) => (build.stages[i] ? { build: updateStage(build, i, { tankId: id }) } : { build })),
   addStage: () =>
     set(({ build }) => ({
       build: { ...build, stages: [...build.stages, { engineId: "", engineCount: 1, tankId: "" }] },
