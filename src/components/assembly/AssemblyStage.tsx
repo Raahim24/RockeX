@@ -5,6 +5,7 @@
 // The build is shared with the app store both ways, so Grok reads and edits the rocket on screen:
 // "assembly:build" (screen -> store), "assembly:apply" (store -> screen). The screen also reports which parts
 // are placed ("assembly:progress") and when the whole rocket is on the stack ("assembly:complete").
+import { FlightVideo } from "@/components/grok/FlightVideo";
 import { GrokBar } from "@/components/grok/GrokBar";
 import type { BuildProgress } from "@/components/grok/voiceTools";
 import { useBuildStore } from "@/store/buildStore";
@@ -64,6 +65,7 @@ export default function AssemblyStage({ markup }: { markup: string }) {
       <div className="fixed bottom-28 right-8 z-10 w-[min(360px,calc(100vw-2rem))]">
         <GrokBar rocketReady={complete} progress={parts} />
       </div>
+      <FlightVideo />
     </>
   );
 }

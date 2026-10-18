@@ -150,6 +150,59 @@ export const grokTranscribe = async (audio: Blob, filename: string, timeoutMs: n
   return text;
 };
 
+// Grok Imagine video. Pricing (docs.x.ai, 2026-10-18): 1.5-lite $0.02/s, base $0.05/s, 1.5 $0.08/s.
+// Lite and 8 s by default (about $0.16 a clip); override with XAI_VIDEO_MODEL and XAI_VIDEO_SECONDS.
+export const VIDEO_MODEL = process.env.XAI_VIDEO_MODEL || "grok-imagine-video-1.5-lite";
+export const VIDEO_SECONDS = Math.min(15, Math.max(1, Number(process.env.XAI_VIDEO_SECONDS) || 8));
+
+/** Starts an async video job and returns its request id. `image` (a URL or data URL) is the first frame. */
+export const grokVideoStart = async (opts: { prompt: string; image?: string; timeoutMs: number }): Promise<string> => {
+  const data = (await post(
+    "/videos/generations",
+    {
+      model: VIDEO_MODEL,
+      prompt: opts.prompt,
+      duration: VIDEO_SECONDS,
+      ...(opts.image ? { image: { url: opts.image } } : {}),
+    },
+    opts.timeoutMs,
+  )) as { request_id?: string };
+  if (!data.request_id) {
+    throw new GrokError("/videos/generations: no request_id in reply");
+  }
+  return data.request_id;
+};
+
+export type VideoStatus = { status: "pending" } | { status: "done"; url: string } | { status: "failed"; reason: string };
+
+/** One poll of a video job. xAI's terminal states are done, failed and expired; anything else is still running. */
+export const grokVideoStatus = async (requestId: string, timeoutMs: number): Promise<VideoStatus> => {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/videos/${encodeURIComponent(requestId)}`, {
+      headers: { Authorization: `Bearer ${apiKey()}` },
+      signal: AbortSignal.timeout(timeoutMs),
+      cache: "no-store",
+    });
+  } catch (err) {
+    if (err instanceof GrokError) {
+      throw err;
+    }
+    throw new GrokError(`/videos: ${err instanceof Error && err.name === "TimeoutError" ? `timeout after ${timeoutMs} ms` : String(err)}`);
+  }
+  if (!res.ok) {
+    throw new GrokError(`/videos: HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  }
+  const data = (await res.json()) as { status?: string; video?: { url?: string } };
+  if (data.status === "done") {
+    return data.video?.url ? { status: "done", url: data.video.url } : { status: "failed", reason: "done without a video url" };
+  }
+  if (data.status === "failed" || data.status === "expired") {
+    return { status: "failed", reason: data.status };
+  }
+  return { status: "pending" };
+};
+
 export const REALTIME_MODEL = "grok-voice-latest";
 export const REALTIME_VOICE = VOICE;
 

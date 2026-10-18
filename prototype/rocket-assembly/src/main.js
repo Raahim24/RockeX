@@ -487,6 +487,40 @@ function syncUi() {
 // build it shows ("assembly:build") and accepts builds from the app ("assembly:apply", e.g. Grok's Apply),
 // which animate exactly like Options. Standalone (Vite) nothing listens and nothing is sent.
 const announce = () => dispatchEvent(new CustomEvent("assembly:build", { detail: { build: current.build } }));
+// Tells the app a launch started (the Grok Imagine flight video starts filming then), with a still of the
+// stack on the pad as the video's first frame. The still is the result card's renderer, centred, 960x540 JPEG.
+function padStillJpeg() {
+  try {
+    let img;
+    try {
+      img = renderView(THREE.HalfFloatType, { offsetX: 0 });
+    } catch {
+      img = renderView(THREE.UnsignedByteType, { offsetX: 0 });
+    }
+    const full = document.createElement("canvas");
+    full.width = img.width;
+    full.height = img.height;
+    full.getContext("2d").putImageData(img, 0, 0);
+    const out = document.createElement("canvas");
+    out.width = 960;
+    out.height = 540;
+    out.getContext("2d").drawImage(full, 0, 0, 960, 540);
+    return out.toDataURL("image/jpeg", 0.85);
+  } catch {
+    return null; // the video still films from the prompt alone
+  }
+}
+// `flight` is this screen's own ascent result, so the video tells the same story as the 3D launch.
+const announceLaunch = (sim) =>
+  dispatchEvent(
+    new CustomEvent("assembly:launch", {
+      detail: {
+        build: current.build,
+        image: padStillJpeg(),
+        flight: { outcome: sim.summary.outcome, boosterLands: Boolean(sim.summary.booster?.returns) },
+      },
+    }),
+  );
 // "assembly:complete": whether every part of the current build is on the stack (the app shows Render only then).
 // "assembly:progress": every part in build order and whether it is on the stack, sent whenever that changes,
 // so Grok can walk the user through the build one part at a time.
@@ -716,6 +750,7 @@ async function launch({ countdown } = {}) {
   telemetry.final = null;
   selector.clear();
   const arrival = arrivalTimeline(current.build, catalog, sim.summary);
+  announceLaunch(sim);
   choreo.launch(sim, { pad: pad.group, anchors, onTelemetry, arrival, countdown });
 }
 
@@ -838,7 +873,7 @@ const CARD_W = 1600;
 const CARD_H = 900;
 const FONT = '"Inter", "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 const MONO = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace';
-function renderView(type) {
+function renderView(type, { offsetX = -CARD_W * 0.22 } = {}) {
   const rt = new THREE.WebGLRenderTarget(CARD_W, CARD_H, { type });
   const comp = new EffectComposer(renderer, rt);
   comp.renderToScreen = false;
@@ -848,7 +883,7 @@ function renderView(type) {
   const aspect = camera.aspect;
   camera.aspect = CARD_W / CARD_H;
   // Shift the view right so the rocket stands clear of the reading panel on the left.
-  camera.setViewOffset(CARD_W, CARD_H, -CARD_W * 0.22, 0, CARD_W, CARD_H);
+  camera.setViewOffset(CARD_W, CARD_H, offsetX, 0, CARD_W, CARD_H);
   camera.updateProjectionMatrix();
   try {
     comp.render();

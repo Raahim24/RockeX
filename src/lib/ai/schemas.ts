@@ -26,7 +26,7 @@ const StageBuildSchema = z.object({
   tankId: z.string(),
 });
 
-const BuildStateSchema = z.object({
+export const BuildStateSchema = z.object({
   missionId: z.string(),
   stages: z.array(StageBuildSchema),
   payloadId: z.string(),
