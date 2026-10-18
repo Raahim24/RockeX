@@ -3,25 +3,22 @@
 // creates whatever is missing in the expected place, rewrites the hint line from KEYS so it always lists the
 // current keys, and returns the elements. Nothing else in the demo looks elements up by id.
 //   ensureShell() -> { canvas, brand, hint, detail, hud, hudText, bar, btnRockets, rocketsEl, btnBuildAll,
-//                      btnExplode, btnReset, btnStory }
+//                      btnExplode, btnReset }
 // The site makes no sound: a host page's Sound button (#btn-sound) is removed, never created.
 
-// The shortcut legend under the title (a compact grid): [key(s), what it does]. Compare and the save card are
-// gone from the page (the user's call); their code stays for the team app's bridge commands.
+// The shortcut legend under the title (a compact grid, 2 rows of 5): [key(s), what it does].
 const KEYS = [
   [["Space"], "explode"],
   [["B"], "build"],
   [["L"], "launch"],
   [["R"], "reset"],
   [["[", "]"], "rocket"],
+  [["C"], "compare"],
   [["P"], "story"],
   [["X"], "opacity"],
-  [["N"], "day/night"],
-  [["W"], "weather"],
+  [["S"], "card"],
   [["Esc"], "close"],
 ];
-
-const LOGO_URL = new URL("../assets/brand/rockex-wordmark.png", import.meta.url).href;
 
 function make(tag, { id, className, attrs = {}, text } = {}) {
   const el = document.createElement(tag);
@@ -39,15 +36,10 @@ export function ensureShell() {
   let brand = document.querySelector("header.brand");
   if (!brand) {
     brand = make("header", { className: "brand" });
+    const title = brand.appendChild(make("h1"));
+    title.append(make("img", { className: "brand-logo", attrs: { src: "/rockex-logo.png", alt: "Rockex", width: "926", height: "127" } }));
     canvas.after(brand);
   }
-  // ROCKEX wordmark (white on black): drawn as a luminance mask over white, so its black is transparent on any
-  // backdrop, the day scrim included (a screen blend left a dark box there).
-  const title = brand.querySelector("h1") ?? brand.insertBefore(make("h1"), brand.firstChild);
-  const logo = make("span", { className: "brand-logo", attrs: { role: "img", "aria-label": "ROCKEX" } });
-  logo.style.setProperty("--logo", `url("${LOGO_URL}")`);
-  title.replaceChildren(logo);
-  document.title = "ROCKEX";
   const hint = brand.querySelector("p") ?? brand.appendChild(make("p"));
   hint.className = "keys";
   hint.replaceChildren(
@@ -80,9 +72,8 @@ export function ensureShell() {
   const btnBuildAll = button("btn-build-all", "Build all");
   const btnExplode = button("btn-explode", "Explode", undefined, { disabled: "" });
   const btnReset = button("btn-reset", "Reset", "quiet");
-  const btnStory = button("btn-story", "Story", "quiet"); // the guided demo (key P)
   document.getElementById("btn-sound")?.remove();
-  for (const b of [btnBuildAll, btnExplode, btnReset, btnStory]) if (!b.isConnected) bar.appendChild(b);
+  for (const b of [btnBuildAll, btnExplode, btnReset]) if (!b.isConnected) bar.appendChild(b);
   const btnRockets = button("btn-rockets", "Rockets", "quiet", { "aria-expanded": "false", "aria-controls": "rockets" });
   if (!btnRockets.isConnected) bar.insertBefore(btnRockets, btnBuildAll);
   let rocketsEl = document.getElementById("rockets");
@@ -92,5 +83,5 @@ export function ensureShell() {
     btnRockets.after(rocketsEl);
   }
 
-  return { canvas, brand, hint, detail, hud, hudText, bar, btnRockets, rocketsEl, btnBuildAll, btnExplode, btnReset, btnStory };
+  return { canvas, brand, hint, detail, hud, hudText, bar, btnRockets, rocketsEl, btnBuildAll, btnExplode, btnReset };
 }
