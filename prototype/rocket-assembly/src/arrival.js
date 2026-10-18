@@ -13,7 +13,8 @@
 //   A capsule stack (Apollo CSM + LM) lands its lander; a lander lands itself. Telescopes and satellites end
 //   in orbit of the body. Earth escape ends on the departure.
 // - Short (in parking orbit but not enough left) -> stranded in Earth parking orbit, "short by N m/s".
-//   No parking orbit at all -> no legs, one line saying how the ascent ended.
+//   No parking orbit at all -> no legs, one line saying how the ascent ended ("Pad abort · <reason>" when the
+//   verdict blocked the flight).
 // alt_km is only given where the simulation has it (the parking orbit); the data has no altitudes for the
 // target orbits, so those legs carry null.
 
@@ -57,6 +58,7 @@ export function arrivalTimeline(build, catalog, ascentSummary) {
 
   const result = (legs, lines) => ({ body, success, lands, lines, legs: timed(legs), mission: mission?.id ?? null, shortBy_ms: shortBy, est: true });
 
+  if (ascentSummary?.outcome === "blocked") return result([], [`Pad abort · ${ascentSummary.reason}`]);
   if (!inOrbit) {
     const how = ascentSummary?.outcome === "shortfall" ? "reached space but not orbit, and fell back" : "never reached orbit";
     return result([], [`The rocket ${how} (est.).`]);

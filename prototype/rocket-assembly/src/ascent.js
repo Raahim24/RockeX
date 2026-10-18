@@ -60,7 +60,15 @@
 // - R: the 6,371 km mean Earth radius.
 // - p0 101,325 Pa and rho0 1.225 kg/m^3: ISA sea level.
 // - The 8.5 km scale height and Cd 0.3: model choices, from the design brief.
-import { G0 } from "./physics.js";
+import { G0, evaluateBuild } from "./physics.js";
+
+// Pad abort: a build whose verdict has a blocking warning is not flown (outcome "blocked", reason = the first
+// blocking warning, no samples or events). In physics.js every warning blocks except "liftoff TWR below 1.2".
+// FLIGHT_EXEMPT lists blocking warnings that are app rules rather than physics, which a real vehicle breaks and
+// the simulation can still fly honestly: the 4 % dry-mass rule, which the real Falcon 9 second stage (3.2 %)
+// fails. Remove it to ground those builds too. opts.ignoreVerdict flies any build regardless.
+const NON_BLOCKING = new Set(["liftoff TWR below 1.2"]);
+const FLIGHT_EXEMPT = [/^tank dry mass below 4 percent of propellant$/];
 
 const MU = 3.986004418e14; // m^3/s^2
 const RE = 6371e3; // m
@@ -709,6 +717,32 @@ function returnBooster(sep, st, reserve_kg, cfg, record, mode = "rtls") {
 }
 
 export function simulateAscent(build, catalog, opts = {}) {
+  if (!opts.ignoreVerdict) {
+    const verdict = evaluateBuild(build, catalog);
+    const blocking = verdict.warnings.filter((w) => !NON_BLOCKING.has(w) && !FLIGHT_EXEMPT.some((re) => re.test(w)));
+    if (blocking.length) {
+      return {
+        samples: [],
+        events: [],
+        summary: {
+          outcome: "blocked",
+          reason: blocking[0],
+          blockingWarnings: blocking,
+          achievedDeltaV_ms: 0,
+          gravityLoss_ms: 0,
+          dragLoss_ms: 0,
+          maxQ_Pa: 0,
+          maxG: 0,
+          burnTimes_s: [],
+          perigee_km: null,
+          apogee_km: null,
+          remainingDeltaV_ms: null,
+          booster: { returns: false, reason: "blocked", events: [], samples: [], propellantReserve_kg: 0 },
+          est: true,
+        },
+      };
+    }
+  }
   const stagesFull = stagesOf(build, catalog);
   const payload = byId(catalog.payloads, build.payloadId);
   const mission = byId(catalog.missions, build.missionId);
