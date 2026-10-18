@@ -1,10 +1,6 @@
 // Owner: P1. Composition only, no logic.
-import RocketScene from "@/components/scene/RocketScene";
+import AssemblyStage from "@/components/assembly/AssemblyStage";
 
 export default function Home() {
-  return (
-    <main className="h-screen w-full bg-black">
-      <RocketScene />
-    </main>
-  );
+  return <AssemblyStage />;
 }
