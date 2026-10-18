@@ -4,7 +4,7 @@
 //   Grok can change the rocket with checked tools and reacts when a rocket finishes building.
 // - Not live: Grok comments on each finished rocket out loud, and holding the orb asks one question
 //   (speech to text -> /api/agent -> text to speech). This is also the fallback if live voice can't start.
-// No text, except a caption when the voice itself fails. Apply fix and Render it appear only when useful.
+// No text, except a caption when the voice itself fails. Apply fix appears only when useful.
 
 import { advisorCandidates, describeSuggestion } from "@/lib/ai/prompts";
 import type { AgentReply, AgentTurn } from "@/lib/ai/schemas";
@@ -14,7 +14,6 @@ import type { AdviseResponse } from "@/types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLiveGrok } from "./useLiveGrok";
 import { useSpeaker } from "./MicButton";
-import { RenderButton } from "./RenderButton";
 import { useRecorder } from "./useRecorder";
 import { choosePicked, guideEvent, screenSummary, setGuideProgress, verdictReport, type BuildProgress } from "./voiceTools";
 
@@ -135,16 +134,20 @@ const ORB_CSS = `
 body.landing .grok-dock { animation: none; opacity: 0; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .grok-dock { animation: none; } }
 @media (prefers-reduced-motion: reduce) { .grok-cloud { animation: none; } }
-body .bar { left: auto; right: 24px; bottom: 24px; transform: none; flex-direction: column; width: 220px; }
-body .bar > button { width: 100%; }
-body .bar .rockets { left: auto; right: calc(100% + 8px); bottom: 0; }
-.grok-panel { border: 1px solid rgba(255,255,255,.09); border-radius: 16px; background: rgba(28,30,38,.72); padding: 8px;
-  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
-.grok-panel-button { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 13.5px;
-  font-weight: 600; color: #f6f7fb; background: rgba(92,200,255,.16); border: 1px solid rgba(92,200,255,.35);
-  border-radius: 10px; padding: 9px 16px; cursor: pointer; }
-.grok-panel-button:hover { background: rgba(92,200,255,.26); }
-.grok-panel-button.quiet { background: transparent; border-color: rgba(255,255,255,.12); color: #a9adb8; }
+/* The screen's controls: one slim glass pill at the bottom right, like the landing page's button. Quiet text buttons,
+   one solid white pill for the main action (Build all, then Launch), last in the row. */
+body .bar { left: auto; right: 24px; bottom: 24px; transform: none; gap: 2px; padding: 5px; border-radius: 999px; }
+body .bar > button, body .bar > button.quiet { border-radius: 999px; padding: 8px 15px; background: transparent;
+  border: 1px solid transparent; color: var(--text-2); font-weight: 500; }
+body .bar > button:hover:not(:disabled) { background: rgba(255,255,255,.08); color: var(--text); }
+body .bar > #btn-build-all { order: 9; margin-left: 4px; background: #f6f7fb; color: #07080c; font-weight: 600; }
+body .bar > #btn-build-all:hover:not(:disabled) { background: #fff; color: #07080c; }
+body .bar .rockets { left: auto; right: 0; bottom: calc(100% + 10px); }
+.grok-panel-button { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--text);
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: 999px; padding: 8px 15px; cursor: pointer;
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); transition: background 160ms; }
+.grok-panel-button:hover { background: var(--surface-2); }
+.grok-panel-button.quiet { color: var(--text-2); }
 `;
 
 interface Props {
@@ -502,7 +505,6 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
     const best = advisorCandidates(build, verdict, catalog)[0];
     return best?.verdict.feasible ? best.suggestion : null;
   }, [rocketReady, build, verdict, live.live]);
-  const canRender = rocketReady && verdict.feasible;
 
   // What a screen action ended in (launch outcome, twin found): Grok reacts to what actually happened.
   useEffect(() => {
@@ -623,11 +625,11 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
 
       {/* All the buttons together on the right: Grok's group, sitting right on top of the screen's control bar. */}
       <div
-        className="fixed right-6 z-10 flex w-[220px] flex-col items-stretch gap-2"
+        className="fixed right-6 z-10 flex flex-col items-end gap-2"
         style={{ bottom: 24 + barHeight + 8 }}
       >
-        {(live.live || suggestion || rocketReady) && (
-          <div className="grok-panel flex flex-col gap-2">
+        {(live.live || suggestion) && (
+          <div className="flex flex-col items-end gap-2">
             {live.live && (
               <button
                 type="button"
@@ -662,7 +664,6 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
                 Apply fix
               </button>
             )}
-            {rocketReady && <RenderButton showButton={canRender} />}
           </div>
         )}
       </div>

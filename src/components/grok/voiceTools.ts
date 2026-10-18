@@ -89,7 +89,6 @@ export const VOICE_TOOLS = [
     built: { type: "boolean", description: "true: appears fully built; false: empty pad to build it together" },
   }),
   fn("see_through", "Toggle the see-through view that shows the insides of every part."),
-  fn("render_image", "Make a Grok Imagine picture of the rocket (takes 15 to 45 seconds; it appears on screen)."),
   fn("save_card", "Save a picture card of the rocket and its numbers to the user's computer."),
   fn("play_story", "Play the guided story mode that builds and flies a rocket on its own."),
   fn("explode", "Toggle the exploded view that pulls the stages apart, and back."),
@@ -244,10 +243,6 @@ export const runVoiceTool = (name: string, rawArgs: string): Record<string, unkn
       dispatchEvent(new CustomEvent("assembly:command", { detail: { cmd: "switch_rocket", presetId, built: args.built !== false } }));
       return { ok: true, change: `loaded ${getPreset(presetId)?.name ?? presetId}${args.built === false ? " as an empty pad" : ""}` };
     }
-    case "render_image":
-      if (guideProgress.length === 0 || guideProgress.some((p) => !p.built)) return fail("finish building the rocket first");
-      dispatchEvent(new CustomEvent("grok:render"));
-      return { ok: true, note: "rendering; it appears on screen in 15 to 45 seconds" };
     default:
       return fail(`unknown tool ${name}`);
   }

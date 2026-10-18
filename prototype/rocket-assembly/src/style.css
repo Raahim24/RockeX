@@ -62,6 +62,12 @@ body {
   letter-spacing: -0.01em;
 }
 
+.brand-logo {
+  display: block;
+  width: 200px;
+  height: auto;
+}
+
 .brand p {
   margin: 6px 0 0;
   font-size: 13px;

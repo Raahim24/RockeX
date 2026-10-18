@@ -36,7 +36,8 @@ export function ensureShell() {
   let brand = document.querySelector("header.brand");
   if (!brand) {
     brand = make("header", { className: "brand" });
-    brand.append(make("h1", { text: "Rocket assembly" }));
+    const title = brand.appendChild(make("h1"));
+    title.append(make("img", { className: "brand-logo", attrs: { src: "/rockex-logo.png", alt: "Rockex", width: "926", height: "127" } }));
     canvas.after(brand);
   }
   const hint = brand.querySelector("p") ?? brand.appendChild(make("p"));
