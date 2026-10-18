@@ -20,8 +20,10 @@ describe("mission story chapters follow the flight", () => {
   it("the screen's flight result wins over the verdict", () => {
     expect(storyScenes(fixed, catalog, { outcome: "impact", boosterLands: false }).map((s) => s.id)).toEqual(["pad", "liftoff", "lesson"]);
   });
-  it("only the pad chapter is edited from our 3D still", () => {
-    expect(storyScenes(fixed, catalog).filter((s) => s.fromStill).map((s) => s.id)).toEqual(["pad"]);
+  it("chapter 1 comes from our 3D still and every rocket chapter from chapter 1, so the rocket stays identical", () => {
+    const refs = Object.fromEntries(storyScenes(fixed, catalog).map((s) => [s.id, s.reference]));
+    expect(refs).toEqual({ pad: "still", liftoff: "pad", staging: "pad", space: "pad", payoff: null });
+    expect(storyScenes(DEMO_BUILD, catalog).find((s) => s.id === "lesson")?.reference).toBe("pad");
   });
 });
 

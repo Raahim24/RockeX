@@ -13,8 +13,9 @@ export interface StoryScene {
   title: string;
   caption: string;
   prompt: string;
-  /** Edit this scene from our own 3D still, so it shows the exact rocket (costs more than plain generation). */
-  fromStill: boolean;
+  /** What to edit this scene from, so the rocket stays identical (an edit costs more than a generation):
+   *  "still" = our own 3D render, "pad" = the finished chapter-1 photo, null = generate from the prompt alone. */
+  reference: "still" | "pad" | null;
 }
 
 const fromScreen: Record<ScreenFlight["outcome"], FlightOutcome> = { orbit: "success", shortfall: "shortfall", impact: "impact" };
@@ -118,13 +119,21 @@ export function storyScenes(build: BuildState, catalog: Catalog, flight?: Screen
     `${body === trim ? "matching" : trim} bands and a rounded nose fairing, ` +
     `${booster && booster.engineCount > 1 ? `a cluster of ${booster.engineCount} engines` : "a single engine"} at its base`;
   const p = (scene: string, subject = `The same rocket as in the reference: ${rocket}.`) => [STYLE, subject, scene, NEGATIVE].join(" ");
+  // For scenes edited from the chapter-1 photo: the rocket must not change, only where it is and what it's doing.
+  const keep = (scene: string, part = "the whole rocket") =>
+    [
+      STYLE,
+      `Keep ${part} from the reference photo exactly the same: same shape, proportions, stages, colours, markings and engines (${rocket}).`,
+      `Change only the scene: ${scene}`,
+      NEGATIVE,
+    ].join(" ");
   const where = mission?.name ?? "orbit";
   const weight_kN = (verdict.totalMass_kg * G0) / 1000;
 
   const pad: StoryScene = {
     id: "pad",
     title: "1 · Your rocket",
-    fromStill: true,
+    reference: "still",
     caption: `${stages} stage${stages === 1 ? "" : "s"}, ${t1(verdict.totalMass_kg)} tonnes fully fuelled. Most of that is fuel: it has to lift all of it.`,
     prompt: p(
       "Turn this into a real photograph: the exact same rocket standing on its floodlit launch pad at night beside its steel launch tower, vapour venting from the tanks, searchlights in the dark sky.",
@@ -135,10 +144,10 @@ export function storyScenes(build: BuildState, catalog: Catalog, flight?: Screen
   const liftoff: StoryScene = {
     id: "liftoff",
     title: "2 · Liftoff",
-    fromStill: false,
+    reference: "pad",
     caption: `${booster?.engineCount ?? 0} × ${boosterEngine?.name ?? "engine"} push ${n0(verdict.liftoffThrust_kN)} kN against ${n0(weight_kN)} kN of weight. Push beats weight ${verdict.liftoffTWR.toFixed(2)}×, so it rises.`,
-    prompt: p(
-      "Night launch, seconds after ignition: the rocket rising off its floodlit launch pad beside the launch tower on a blinding orange-white flame, huge exhaust clouds billowing across the pad, the flame lighting up the night sky.",
+    prompt: keep(
+      "the same night launch site, seconds after ignition: the rocket rising off its floodlit launch pad beside the launch tower on a blinding orange-white flame, huge exhaust clouds billowing across the pad, the flame lighting up the night sky.",
     ),
   };
 
@@ -148,12 +157,12 @@ export function storyScenes(build: BuildState, catalog: Catalog, flight?: Screen
       {
         id: "grounded",
         title: "2 · It can't leave the pad",
-        fromStill: false,
+        reference: "pad",
         caption:
           verdict.liftoffTWR < 1
             ? `Push ${n0(verdict.liftoffThrust_kN)} kN, weight ${n0(weight_kN)} kN. Push has to beat weight to lift off. Ask Grok how to fix it.`
             : `The physics grounds it: ${verdict.warnings[0] ?? "this build can't fly"}. Ask Grok how to fix it.`,
-        prompt: p("Night, the rocket standing on its floodlit launch pad, engines firing and exhaust clouds billowing, but held down and not rising, steam drifting across the pad."),
+        prompt: keep("the engines are firing and exhaust clouds billow across the floodlit pad, but the rocket stays held down on the pad and does not rise, steam drifting around it."),
       },
     ];
   }
@@ -162,19 +171,19 @@ export function storyScenes(build: BuildState, catalog: Catalog, flight?: Screen
   const staging: StoryScene = {
     id: "staging",
     title: "3 · Staging",
-    fromStill: false,
+    reference: "pad",
     caption:
       stages > 1
         ? `The empty booster drops away${lands ? " and flies back to land" : ""}. Dropping dead weight is why rockets have stages: ${kms(verdict.totalDeltaV_ms)} km/s instead of ${kms(noStaging)} km/s without staging.`
         : `One stage carries its empty ${boosterTank?.name ?? "tank"} all the way up. That's why most rockets have stages.`,
-    prompt: p(
-      lands
-        ? "High above the clouds at twilight: the empty first-stage booster on its own, falling back tail-first on a column of flame with its landing legs unfolding, a floodlit landing pad on the coast far below."
-        : "At the edge of space: the empty first stage separating and tumbling away while the upper stage's engine ignites with a bright flame, the curve of the Earth and its thin blue atmosphere below.",
-      lands
-        ? `The first-stage booster of the same rocket: a tall ${body} cylinder with ${booster?.engineCount ?? 1} engines at its base.`
-        : undefined,
-    ),
+    prompt: lands
+      ? keep(
+          "it is no longer the whole rocket but only its first-stage booster (the lower part, without the upper stage and nose), coming back down tail-first on a column of flame with its landing legs unfolding, high above the clouds at twilight, a floodlit landing pad on the coast far below.",
+          "the lower stage's body, colours and engines",
+        )
+      : keep(
+          "at the edge of space, the lower stage separating and tumbling away while the upper stage's engine ignites with a bright flame, the curve of the Earth and its thin blue atmosphere below.",
+        ),
   };
 
   if (outcome === "impact") {
@@ -184,9 +193,9 @@ export function storyScenes(build: BuildState, catalog: Catalog, flight?: Screen
       {
         id: "lesson",
         title: "3 · Not enough speed",
-        fromStill: false,
+        reference: "pad",
         caption: `It reached ${kms(verdict.totalDeltaV_ms)} km/s of its ${kms(verdict.requiredDeltaV_ms)} km/s budget: not fast enough to stay up, so it falls back. Ask Grok how to fix it.`,
-        prompt: p("Night sky high above the clouds, the rocket arcing over after its engine cut off, falling back toward the Earth, trailing smoke."),
+        prompt: keep("high above the clouds in the night sky, the rocket arcing over after its engine cut off, falling back toward the Earth, trailing smoke."),
       },
     ];
   }
@@ -195,11 +204,11 @@ export function storyScenes(build: BuildState, catalog: Catalog, flight?: Screen
   const space: StoryScene = {
     id: "space",
     title: "4 · In space",
-    fromStill: false,
+    reference: "pad",
     caption: `The ${upperEngine?.name ?? "upper stage"} keeps pushing in vacuum. Just to stay in orbit you need ${kms(orbit.speed_ms)} km/s: once around the Earth every ${Math.round(orbit.lap_min)} minutes.`,
-    prompt: p(
-      "In orbit above the Earth: only the upper stage of the rocket, alone in black space with its engine glowing, the bright blue curved Earth and swirling white clouds below, sunlight glinting off the stage.",
-      `The upper stage of the same rocket: a ${body} cylinder with ${upper && upper.engineCount > 1 ? `${upper.engineCount} engines` : "one engine"} and the nose fairing on top.`,
+    prompt: keep(
+      "only the upper part of the rocket is left (the upper stage with the nose fairing on top, the lower stage is gone), alone in black space in orbit with its engine glowing, the bright blue curved Earth and swirling white clouds below, sunlight glinting off it.",
+      "the upper stage and nose fairing",
     ),
   };
 
@@ -212,9 +221,12 @@ export function storyScenes(build: BuildState, catalog: Catalog, flight?: Screen
       {
         id: "lesson",
         title: "5 · Out of fuel",
-        fromStill: false,
+        reference: "pad",
         caption: `It ran out ${kms(Math.abs(verdict.marginDeltaV_ms))} km/s short of ${where} (it needed ${kms(verdict.requiredDeltaV_ms)} km/s). More efficient engines or one more stage would get there. Ask Grok how to fix it.`,
-        prompt: p(`In black space, the upper stage's engine flickering out with its last puff of exhaust, drifting, its destination still far away: ${DESTINATION_VIEW[mission?.id ?? ""] ?? "the Earth below"}.`),
+        prompt: keep(
+          `only the upper stage with the nose fairing is left, in black space, its engine flickering out with its last puff of exhaust, drifting, its destination still far away: ${DESTINATION_VIEW[mission?.id ?? ""] ?? "the Earth below"}.`,
+          "the upper stage and nose fairing",
+        ),
       },
     ];
   }
@@ -223,7 +235,7 @@ export function storyScenes(build: BuildState, catalog: Catalog, flight?: Screen
   const payoff: StoryScene = {
     id: "payoff",
     title: "5 · Mission accomplished",
-    fromStill: false,
+    reference: null,
     caption: payload
       ? `${payload.name.replace(/ \(stowed\)$/, "")} delivered to ${where} with ${kms(verdict.marginDeltaV_ms)} km/s to spare.${story ? ` It's ${story.why}.` : ""}`
       : `${where} reached with ${kms(verdict.marginDeltaV_ms)} km/s to spare.`,
