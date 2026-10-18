@@ -128,6 +128,12 @@ const ORB_CSS = `
 .grok-cloud-trail::before, .grok-cloud-trail::after { content: ""; position: absolute; border-radius: 50%; background: #f6f7fb; border: 1.5px solid #b9bdc9; }
 .grok-cloud-trail::before { width: 15px; height: 15px; left: -7px; top: 0; }
 .grok-cloud-trail::after { width: 9px; height: 9px; left: -4px; top: 20px; }
+/* Grok stays off the landing page and bounces up into its corner once the builder shows (body.landing goes). */
+@keyframes grok-enter { 0% { opacity: 0; translate: 0 180px; scale: .4 } 50% { opacity: 1; translate: 0 -26px; scale: 1.06 }
+  68% { translate: 0 8px; scale: .96 } 84% { translate: 0 -6px; scale: 1.02 } 100% { translate: 0 0; scale: 1 } }
+.grok-dock { transform-origin: 50% 100%; animation: grok-enter 900ms cubic-bezier(.3,.7,.4,1) 250ms both; }
+body.landing .grok-dock { animation: none; opacity: 0; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .grok-dock { animation: none; } }
 @media (prefers-reduced-motion: reduce) { .grok-cloud { animation: none; } }
 body .bar { left: auto; right: 24px; bottom: 24px; transform: none; flex-direction: column; width: 220px; }
 body .bar > button { width: 100%; }
@@ -563,7 +569,7 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
       {placedCount === 0 && <style>{"body .bar #btn-explode, body .bar #btn-reset { display: none; }"}</style>}
 
       {/* Grok at the bottom left: a cloud with what it says over its head, what to do written under it. */}
-      <div className="fixed bottom-5 left-20 z-10 flex flex-col items-center gap-1.5">
+      <div className="grok-dock fixed bottom-5 left-20 z-10 flex flex-col items-center gap-1.5">
         {bubble && (
           <div key={bubble.slice(0, 24)} role="status" aria-live="polite" className="grok-cloud">
             <svg className="grok-cloud-shape" viewBox="0 0 200 120" preserveAspectRatio="none" aria-hidden>

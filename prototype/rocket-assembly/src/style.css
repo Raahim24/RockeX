@@ -476,6 +476,13 @@ body.landing .detail {
   line-height: 1;
 }
 
+.landing-logo {
+  display: block;
+  width: clamp(260px, 48vw, 680px);
+  height: auto;
+  filter: drop-shadow(0 4px 24px rgba(0, 0, 0, 0.55));
+}
+
 .landing-go {
   margin-top: 32px;
   padding: 14px 30px;
