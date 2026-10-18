@@ -463,6 +463,46 @@ kbd {
   text-overflow: ellipsis;
 }
 
+/* Picture-in-picture (main.js renderInset): the first stage's catch, top-right where the panel sits, a frame over
+   the canvas rect the inset is drawn into. */
+.pip {
+  position: fixed;
+  top: 60px;
+  right: 32px;
+  width: min(480px, 30vw);
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px rgba(6, 8, 12, 0.35), 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  z-index: 9;
+}
+.pip[hidden] {
+  display: none;
+}
+.pip-cap {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(6, 8, 12, 0.66);
+  color: var(--text);
+  font: 500 11px/1.4 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  max-width: calc(100% - 32px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 760px) {
+  .pip {
+    top: 72px;
+    right: 16px;
+    width: 260px;
+  }
+}
+
 /* The destination row (main.js rocketsHtml): Orbit · GTO · Moon · Mars for the current build. */
 .rockets li.dest-row {
   display: flex;

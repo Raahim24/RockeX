@@ -31,7 +31,7 @@ import { mountReadiness } from "./ui/readiness.js";
 import { prepareTerrain } from "./planet.js";
 import { createGroundMap } from "./fx/launchfx.js";
 import { createWorld } from "./world.js";
-import { flightTimeline, flightSummaryText } from "./flight.js";
+import { flightTimeline, flightSummaryText, lightingFor } from "./flight.js";
 import { assessLaunch, effectsForFlight, CALM_CONDITIONS } from "./hazards.js";
 import { createLightning, createAurora } from "./fx/launchfx.js";
 import * as f from "./ui/format.js";
@@ -116,7 +116,7 @@ const root = new THREE.Group(); // shakes on lock
 scene.add(root);
 let pad = null;
 let anchors = null; // the launch complex (complex.js): tower, arms, RSS, person, masts at true size, on the pad
-const skyState = { time: "day", weather: "clear" }; // the user's Day/Night (N) and Clear/Cloudy (W) toggles
+const skyState = { time: "dusk", weather: "clear" }; // the user's sky (N: day → dusk → night) and Clear/Cloudy (W); dusk by default (user, round 25)
 const RSS_MATED = 120; // degrees; the countdown swings it away (choreo)
 // UI4's star field is a 90–130 u shell; pushed out ×30 (as in UI4's world harness) so no star sits in front of a
 // globe, with the points scaled to keep their size on screen.
@@ -257,7 +257,9 @@ function applySky() {
   if (!r) return;
   asColor(r.key?.color, key.color);
   if (Number.isFinite(r.key?.intensity)) keyBase = key.intensity = r.key.intensity;
-  skyKeyDir = r.time === "day" && r.sunDir ? new THREE.Vector3().copy(r.sunDir).normalize() : null;
+  // the key is the sun by day and at dusk (UI4: the low warm sun over the sea is the main light then); at night
+  // the fixed key direction
+  skyKeyDir = r.time !== "night" && r.sunDir ? new THREE.Vector3().copy(r.sunDir).normalize() : null;
   asColor(r.fill?.color, fill.color);
   if (Number.isFinite(r.fill?.intensity)) fill.intensity = r.fill.intensity;
   asColor(r.hemi?.sky, hemi.color);
@@ -267,7 +269,7 @@ function applySky() {
   if (Number.isFinite(r.exposure)) renderer.toneMappingExposure = r.exposure; // UI4: clear day 0.92, else 1.0
   asColor(r.fog?.color, FOG0);
   scene.fog.color.copy(FOG0);
-  skyFog = r.time === "day" ? r.fog : null; // by day the air is clear: the haze only far off (its suggested band)
+  skyFog = r.time !== "night" ? r.fog : null; // by day and at dusk the air is clear: the haze only far off (its suggested band)
   asColor(r.background, BG);
   world.clearColor.copy(BG);
   if (anchors?.setSky) anchors.setSky(r); // the complex's daylight and its coast (sun, sky colours, cloud cover)
@@ -448,8 +450,13 @@ const DEST_ROW = DESTINATIONS.length ? DESTINATIONS : [
   { id: "mars", label: "Mars", missionId: "mars-transfer" },
 ];
 const PANEL_ON = new URLSearchParams(location.search).get("panel") === "1";
+// The booster's catch as a picture-in-picture beside the release (user, round 25); ?pip=0 gives the sequential
+// story (the release, then a cut to the booster's descent).
+const PIP_ON = new URLSearchParams(location.search).get("pip") !== "0";
 const readyUi = mountReadiness({ hud: shell.hud, destinations: DESTINATIONS, onDestination: (missionId) => setMission(missionId) });
-const panelPhase = (phase) => document.body.classList.toggle("rdy-off", !PANEL_ON && phase !== "result");
+// (user, round 25: no FLIGHT RESULT card either: the end line stays in the HUD, the sentences go to Grok in
+// assembly:report, and the booster's catch holds in the picture-in-picture where the card was)
+const panelPhase = () => document.body.classList.toggle("rdy-off", !PANEL_ON);
 panelPhase("pad");
 const rangeUi = {
   setPhase: (phase) => {
@@ -570,12 +577,27 @@ const skyBar = document.createElement("div");
 skyBar.className = "sky-toggles";
 skyBar.innerHTML = `<button type="button" data-sky="time"></button><button type="button" data-sky="weather"></button>`;
 shell.brand.appendChild(skyBar);
+let destLit = null;
+function lightForBody(body) {
+  const lt = lightingFor(body);
+  key.color.set(body === "moon" ? 0xffffff : 0xffe8d0); // the sun through no air / through dust
+  keyBase = key.intensity = 3.4;
+  fill.color.set(0xffffff);
+  fill.intensity = lt.ambient * 4;
+  hemi.color.set(lt.skyColour);
+  hemi.groundColor.set(body === "moon" ? 0x2a2a2a : 0x4a3424);
+  hemi.intensity = lt.ambient * 3;
+  scene.environmentIntensity = body === "moon" ? 0.04 : 0.25;
+  renderer.toneMappingExposure = body === "moon" ? 1.15 : 1; // (the low sun is the Moon's only light: grey regolith, not dark)
+  skyFog = null;
+  FOG0.set(lt.skyColour);
+}
 function skyButtons() {
-  skyBar.querySelector('[data-sky="time"]').textContent = skyState.time === "day" ? "Day" : "Night";
+  skyBar.querySelector('[data-sky="time"]').textContent = { day: "Day", dusk: "Dusk", night: "Night" }[skyState.time] ?? "Dusk";
   skyBar.querySelector('[data-sky="weather"]').textContent = skyState.weather === "clear" ? "Clear" : "Cloudy";
 }
 function toggleSky(which) {
-  if (which === "time") skyState.time = skyState.time === "day" ? "night" : "day";
+  if (which === "time") skyState.time = { day: "dusk", dusk: "night", night: "day" }[skyState.time] ?? "dusk";
   else skyState.weather = skyState.weather === "clear" ? "cloudy" : "clear";
   applySky();
 }
@@ -825,11 +847,13 @@ function switchPreset(step, { built = true } = {}) {
   selector.clear();
   hovered = null;
   parts = current.manifest.map(makePart);
-  applyBounds(current.bounds);
+  // the launch complex (sized to the stack) a frame later: its first upload not in the same frame as the parts'
+  const cur = current;
+  requestAnimationFrame(() => current === cur && applyBounds(cur.bounds));
   choreo.setBounds(current.bounds);
   setPropLook(pad.group, "painted");
   selector.setParts(parts);
-  choreo.rebuild(parts);
+  choreo.rebuild(parts, { sliced: true });
   if (built) choreo.appearBuilt();
   if (!rocketsEl.hidden) rocketsEl.innerHTML = rocketsHtml(rocketsMode);
   announce();
@@ -989,6 +1013,7 @@ function simFor(build) {
 const idle = window.requestIdleCallback ?? ((fn) => setTimeout(fn, 250));
 // UI4's flight twin for the launch, made and compiled at idle while the stack stands complete (choreo keeps it
 // until the stack changes).
+const flightPrep = { key: null, flight: null };
 function twinSoon() {
   if (twinSoon.pending) return;
   twinSoon.pending = true;
@@ -997,7 +1022,21 @@ function twinSoon() {
       twinSoon.pending = false;
       if (!isComplete() || choreo.state.launch) return;
       // (an idle callback can starve while the scene animates: a timeout makes it run, and a busy stack retries)
-      if (!choreo.prepareTwin?.(current.build.missionId)) setTimeout(twinSoon, 500);
+      if (!choreo.prepareTwin?.(current.build.missionId)) return void setTimeout(twinSoon, 500);
+      // then, in idle slices of their own (each well under 100 ms): the flight's timeline, its landing ground
+      const key = buildKey(current.build);
+      if (flightPrep.key === key) return;
+      idle(
+        () => {
+          if (!isComplete() || choreo.state.launch || buildKey(current.build) !== key) return;
+          const sim = simFor(current.build);
+          const fl = sim?.samples?.length && sim.summary.outcome !== "blocked" ? flightTimeline(current.build, catalog, { ascent: sim, boosterInset: PIP_ON }) : null;
+          flightPrep.key = fl && !fl.blocked ? key : null;
+          flightPrep.flight = flightPrep.key ? fl : null;
+          if (flightPrep.flight) idle(() => flightPrep.flight && !choreo.state.launch && choreo.prepareGround?.(flightPrep.flight), { timeout: 1200 });
+        },
+        { timeout: 1200 },
+      );
     },
     { timeout: 1200 },
   );
@@ -1081,7 +1120,10 @@ async function launch({ countdown, brief = false } = {}) {
   selector.clear();
   const arrival = arrivalTimeline(current.build, catalog, sim.summary);
   // One timeline for the whole flight (UI 2's flight.js); the story runs it shorter.
-  const flight = brief ? null : flightTimeline(current.build, catalog, { ascent: sim }); // the story keeps its short ascent
+  // the timeline made at idle for this build (its landing ground is warm), else now; the story keeps its short ascent
+  const prepped = flightPrep.key === buildKey(current.build) ? flightPrep.flight : null;
+  flightPrep.key = flightPrep.flight = null; // (a flight marks its timeline's events: one use)
+  const flight = brief ? null : prepped ?? flightTimeline(current.build, catalog, { ascent: sim, boosterInset: PIP_ON });
   lastFlight = flight && !flight.blocked ? flight : null;
   rangeFlight = false;
   telemetry.sentences = [];
@@ -1778,14 +1820,23 @@ function frame() {
   // Daylight scenes in flight (the sun up over where the vehicle is, low enough to be under a lit sky): a faint
   // dark scrim behind the HUD line and the key legend keeps them legible (body.bright-sky).
   const vv = worldOn ? choreo.viewer() : null;
-  let bright = !vv && worldOn && skyState.time === "day"; // the day sky behind the builder
+  let bright = !vv && worldOn && skyState.time !== "night"; // the day / dusk sky behind the builder
   if (vv) {
     const up = viewerKm.copy(vv.pos_km);
     const alt = up.length() - world.bodies.earth.radius_km;
     bright = alt < 120 && up.normalize().dot(world.sunDir) > -0.08;
-    if (keyBase != null) key.intensity = keyBase * (1 - 0.25 * THREE.MathUtils.smoothstep(alt, 2, 10));
+    if (keyBase != null) key.intensity = destLit ? keyBase : keyBase * (1 - 0.25 * THREE.MathUtils.smoothstep(alt, 2, 10)); // (not at the destination: alt is Earth's)
   } else if (keyBase != null && key.intensity !== keyBase) {
     key.intensity = keyBase;
+  }
+  // At the destination the scene is lit as that body is (arrival.js lightingFor; Head 1, round 25): the Moon
+  // airless (black sky to the horizon, no fog, almost no sky light: crisp grey regolith), Mars under its dust
+  // haze; none of the pad's sky recipe (dusk blue, its fog band and exposure). Back on the pad (R) it returns.
+  const destBody = choreo.state.launch && (telemetry.body === "moon" || telemetry.body === "mars") ? telemetry.body : null;
+  if (destBody !== destLit) {
+    destLit = destBody;
+    if (destBody) lightForBody(destBody);
+    else applySky();
   }
   // Under Mars' butterscotch sky (below ~60 km) the HUD line and the logo keep their dark scrim too.
   if (vv && choreo.state.launch && telemetry.body === "mars" && telemetry.alt_m < 60000) bright = true;
@@ -1805,6 +1856,56 @@ function frame() {
     renderer.render(scene, camera);
     renderer.autoClear = true;
   }
+  renderInset();
+}
+// ---------- picture-in-picture (user, round 25): the first stage's catch, top-right, beside the release ----------
+// choreo.insetView() gives its camera and caption while it plays; it is drawn straight to the canvas into the
+// frame's rect (no post chain: a small view), the shadow maps left as the main frame made them.
+const pipEl = document.createElement("div");
+pipEl.className = "pip";
+pipEl.hidden = true;
+pipEl.setAttribute("aria-hidden", "true");
+const pipCap = document.createElement("span");
+pipCap.className = "pip-cap";
+pipEl.append(pipCap);
+document.body.append(pipEl);
+const pipPrevClear = new THREE.Color();
+function renderInset() {
+  const v = choreo.insetView?.();
+  if (!v) {
+    if (!pipEl.hidden) pipEl.hidden = true;
+    return;
+  }
+  if (pipEl.hidden) pipEl.hidden = false;
+  if (pipCap.textContent !== v.caption) pipCap.textContent = v.caption;
+  const r = pipEl.getBoundingClientRect();
+  if (r.width < 8 || r.height < 8) return;
+  const x = r.left + 1;
+  const y = innerHeight - r.bottom + 1;
+  const w = r.width - 2;
+  const h = r.height - 2;
+  if (Math.abs(v.camera.aspect - w / h) > 1e-3) {
+    v.camera.aspect = w / h;
+    v.camera.updateProjectionMatrix();
+  }
+  const shadows = renderer.shadowMap.autoUpdate;
+  const ac = renderer.autoClear;
+  const alpha = renderer.getClearAlpha();
+  renderer.getClearColor(pipPrevClear);
+  renderer.shadowMap.autoUpdate = false;
+  renderer.setRenderTarget(null);
+  renderer.setViewport(x, y, w, h);
+  renderer.setScissor(x, y, w, h);
+  renderer.setScissorTest(true);
+  renderer.setClearColor(BG, 1); // the sky colour of the recipe behind the coast
+  renderer.clear(true, true, false);
+  renderer.autoClear = false;
+  renderer.render(scene, v.camera);
+  renderer.autoClear = ac;
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, innerWidth, innerHeight);
+  renderer.setClearColor(pipPrevClear, alpha);
+  renderer.shadowMap.autoUpdate = shadows;
 }
 frame();
 

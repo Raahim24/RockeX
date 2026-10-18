@@ -2343,7 +2343,7 @@ export function createLaunchComplex({
         if (y0 === null) continue;
         adopted.push({ o, y: o.position.y });
         groundMap = o;
-        o.visible = !daylight;
+        o.visible = false; // update() shows it in the x-ray look only
         o.position.y = groundY - m(1.5) - y0; // well under the apron: a hair's gap z-fights at a distance
       }
     }
@@ -2388,8 +2388,19 @@ export function createLaunchComplex({
 
   // ---------- API ----------
   const shownWas = new Map(); // each child's visibility while the complex is hidden
+  // dusk (user feedback 8): the floodlight spots as rim accents, the ground a step darker under them
+  let dusk = false;
+  const groundTone = ["complex-hardstand", "complex-trench", "complex-apron", "complex-roads"]
+    .map((n) => object3d.getObjectByName(n))
+    .filter(Boolean)
+    .map((o) => o.userData.looks?.painted ?? o.material)
+    .filter((m) => m?.color)
+    .map((m) => ({ m, c0: m.color.clone() }));
+  const applyTone = () => {
+    for (const g of groundTone) g.m.color.copy(g.c0).multiplyScalar(dusk ? 0.7 : 1);
+  };
   const setSpots = () => {
-    for (const s of lights) s.intensity = shown ? s.userData.intensity0 * (look === "xray" ? 0.4 : 1) * (daylight ? 0.25 : 1) : 0;
+    for (const s of lights) s.intensity = shown ? s.userData.intensity0 * (look === "xray" ? 0.4 : 1) * (daylight ? 0.25 : dusk ? 0.5 : 1) : 0;
   };
   // Day or night at runtime (world.setSky): by day no night falloff on the apron and structures, dim light
   // pools and spots, no lamp glows or beams (intensities and visibility only; the light count never changes).
@@ -2397,7 +2408,7 @@ export function createLaunchComplex({
     const k = daylight ? 0.25 : 1;
     coast.setDaylight(daylight);
     lampMat.emissiveIntensity = daylight ? 0 : S.lamp.emissiveIntensity * (look === "xray" ? 0.6 : 1);
-    if (groundMap) groundMap.visible = !daylight; // the line-art map would draw grid lines over the coast
+    showGroundMap();
     groundU.uGFar.value.z = daylight ? 1 : 0.16;
     nightU.uNight.value.z = daylight ? 1 : 0.2;
     groundU.uGPoolColor.value.setRGB(1.0, 0.78, 0.55).multiplyScalar(0.9 * k);
@@ -2418,8 +2429,17 @@ export function createLaunchComplex({
   applyClutter();
   const beaconCol = beaconGeo.attributes.color;
   const padC = new THREE.Vector3();
+  // The line-art ground map (fx-ground-map) belongs to the x-ray look only: in the painted look, day, dusk or night,
+  // it drew grid lines over the coast. main switches looks with setPropLook (not setLook), so the hardstand's
+  // current material tells which look is on.
+  function showGroundMap() {
+    if (!groundMap) return;
+    const m = hardstand.userData.looks;
+    groundMap.visible = !!m && hardstand.material === m.xray;
+  }
   function update(t = 0) {
     coast.uniforms.uTime.value = t;
+    showGroundMap();
     nightU.uNightC.value.copy(object3d.getWorldPosition(padC));
     // beacons: 1.6 s cycle, alternate towers half a cycle apart, soft on/off
     for (let i = 0; i < beaconCol.count; i++) {
@@ -2503,6 +2523,8 @@ export function createLaunchComplex({
     setSky(r) {
       if (!r) return;
       daylight = r.time === "day";
+      dusk = r.time === "dusk";
+      applyTone();
       applyDaylight();
       coast.setSky(r);
     },

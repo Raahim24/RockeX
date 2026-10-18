@@ -30,7 +30,7 @@ import { attachPlumes, createPadLight, createPlume, P0 } from "./plume.js";
 import { createPlanet, createSurfacePatch, createDustPuff, createSkyDome } from "./planet.js";
 import { createDroneShip } from "./anchors.js";
 import { createParachute } from "./parachute.js";
-import { createFlightTwin, prewarmAll } from "./flightTwin.js";
+import { createFlightTwin } from "./flightTwin.js";
 
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const D = (ms) => (reduced ? ms * 0.55 : ms);
@@ -1415,10 +1415,16 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       if (pl.flicker && L.real >= pl.flicker) pl.dead = true;
       const ramp = THREE.MathUtils.clamp((t - pl.ignite) / 0.25, 0, 1);
       // On the timeline the sample's throttle is the truth (0 in coasts, the later burns relight the stage).
-      let thr = pl.dead ? 0 : L.F && t >= 1 ? ramp * (s.stage === pl.stage ? s.throttle ?? 0 : 0) : ramp * (s.stage === pl.stage || t < 1 ? Math.max(0.4, s.throttle ?? 1) : 0);
+      const inset = L.inset?.smp && pl.stage === 0; // the first stage in the picture-in-picture
+      if (inset) {
+        pl.flicker = null; // (relit for its landing burn: MECO had marked it dead)
+        pl.dead = false;
+      }
+      let thr = pl.dead ? 0 : inset ? L.inset.smp.throttle ?? 0 : L.F && t >= 1 ? ramp * (s.stage === pl.stage ? s.throttle ?? 0 : 0) : ramp * (s.stage === pl.stage || t < 1 ? Math.max(0.4, s.throttle ?? 1) : 0);
       if (pl.flicker && !pl.dead) thr *= (0.25 + 0.75 * Math.random()) * ((pl.flicker - L.real) / 0.35); // MECO: sputter out
-      pl.plume.update(dt, { throttle: thr, ambientPressure_Pa: ambient, cameraDistance: camD });
-      if (L.wind) plumeLean(pl.plume, L.wind, Math.max(0, s.alt_m)); // leans downwind low down
+      if (inset) pl.plume.update(dt, { throttle: thr, ambientPressure_Pa: P0 * Math.exp(-Math.max(0, L.inset.smp.alt_km * 1000) / SCALE_HEIGHT_M), cameraDistance: L.inset.camD ?? camD });
+      else pl.plume.update(dt, { throttle: thr, ambientPressure_Pa: ambient, cameraDistance: camD });
+      if (L.wind) plumeLean(pl.plume, L.wind, Math.max(0, inset ? L.inset.smp.alt_km * 1000 : s.alt_m)); // leans downwind low down
       if (pl.stage === 0) padThrottle = Math.max(padThrottle, thr);
     }
     return padThrottle;
@@ -1503,6 +1509,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   const bump = (u) => (u <= 0 || u >= 1 ? 0 : Math.sin(Math.PI * u) ** 2);
   const ease1 = (x, goal, dt, tau) => x + (goal - x) * (1 - Math.exp(-dt / tau));
   const chaseV = new THREE.Vector3();
+  const chaseUp = new THREE.Vector3();
+  const qChase = new THREE.Quaternion();
+  const qIdentity = new THREE.Quaternion();
   const chaseP = new THREE.Vector3();
   const goalDir = new THREE.Vector3();
   const rotAxis = new THREE.Vector3();
@@ -1569,6 +1578,21 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   const spLook = new THREE.Vector3();
   const spSide = new THREE.Vector3();
   const spChute = new THREE.Vector3();
+  // The Moon / Mars arrival frame (world axes): up from the target's centre and forward along the velocity relative
+  // to it, at the first instant of lunar-orbit insertion (Moon) or entry interface (Mars).
+  function arrivalFrame() {
+    if (L.arrive !== undefined) return L.arrive;
+    L.arrive = null;
+    const seg = L.F.segments.find((x) => x.name === (L.kind === "moon" ? "lunar-orbit" : "entry"));
+    if (!seg) return null;
+    const s = L.F.sampleAt(seg.t0_screen + 0.02);
+    const up = world.fromECI(s.pos_eci_km).sub(bodyCentre(L.kind, s)).normalize();
+    const fwd = eciDir(s.vel_kms ?? s.vel_eci_kms);
+    fwd.addScaledVector(up, -fwd.dot(up));
+    if (fwd.lengthSq() < 1e-10) return null;
+    L.arrive = { up, fwd: fwd.normalize() };
+    return L.arrive;
+  }
   const spNow = new THREE.Vector3();
   const spVel = new THREE.Vector3();
   function spaceCam(dt) {
@@ -1577,45 +1601,83 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     // burns in space the axes are LOCKED (the planet stays put in the lower frame instead of sweeping under the
     // vehicle); they ease back to the live local frame for re-entry and the descent.
     const seg0 = L.smp.segment;
-    const live = /reentry|landing|braking|approach|vertical|entry|parachute|deorbit|booster-descent|lunar-orbit|mars-orbit/.test(seg0);
+    // From the cruise on (Moon / Mars) the frame is the target's: up away from its centre, forward along the
+    // velocity relative to it. Continuous from the cruise into orbit and the descent: no turn at insertion, the
+    // target below and growing (Head 1, round 25: it swung 420° in 10 s there).
+    // (only a flight that gets there: a failed transfer's coast stays in Earth's frame)
+    const dest = (L.kind === "moon" || L.kind === "mars") && ["landed", "in-orbit-of"].includes(L.F.endState?.type) ? L.kind : null;
+    const toward = dest && (seg0 === "transfer" || seg0 === "coast" || L.smp.body === dest);
+    // (Earth after the climb: the local frame too, so the stage stays in frame while Earth turns beneath in a
+    // time-lapse; side-on like the climb's tracker, so SECO hands over without a visible move)
+    const earthOrbit = L.kind === "earth" && seg0 !== "ascent" && L.smp.body !== "space";
+    const live = toward || earthOrbit || /reentry|landing|braking|approach|vertical|entry|parachute|deorbit|booster-descent|lunar-orbit|mars-orbit/.test(seg0);
     c.lockK = ease1(c.lockK ?? 0, live ? 0 : 1, dt, 0.8); // 1 = locked
-    const centre = bodyCentre(L.smp.body === "space" ? "earth" : L.smp.body, L.smp);
+    const centre = bodyCentre(toward ? dest : L.smp.body === "space" ? "earth" : L.smp.body, L.smp);
     const upNow = spNow.copy(L.V).sub(centre).normalize().applyQuaternion(L.QnInv);
     c.upLock ??= upNow.clone();
     const black = state.cut >= 0.98; // a skip or a cut: the locked frame re-takes the new place unseen
     if (c.lockK < 0.05 || black) c.upLock.copy(upNow);
     spUp.copy(upNow).lerp(c.upLock, c.lockK).normalize();
     // Direction of travel along the surface (the velocity, or the nose when the velocity is near vertical).
-    const v = L.smp.vel_kms ?? L.smp.vel_eci_kms; // relative to the body it is at (the Moon moves ~1 km/s)
+    let v = L.smp.vel_kms ?? L.smp.vel_eci_kms; // relative to the body it is at (the Moon moves ~1 km/s)
+    if (toward && L.smp.body !== dest && L.smp.vel_eci_kms) {
+      // the cruise: relative to the target (the Moon's own motion from its position a second either side)
+      const ve = L.smp.vel_eci_kms;
+      const a = dest === "moon" ? L.F.bodyPosAt("moon", L.smp.t_sim - 1) : null;
+      const b = dest === "moon" ? L.F.bodyPosAt("moon", L.smp.t_sim + 1) : null;
+      v = a && b ? [ve[0] - (b[0] - a[0]) / 2, ve[1] - (b[1] - a[1]) / 2, ve[2] - (b[2] - a[2]) / 2] : ve;
+    }
     const f = v ? spVel.set(v[0], v[1], v[2]).applyQuaternion(world.eciFrame).applyQuaternion(L.QnInv) : null;
     if (f && (c.lockK < 0.5 || black)) {
       f.addScaledVector(spUp, -f.dot(spUp));
-      if (f.lengthSq() > 1e-8) spFwd.lerp(f.normalize(), black ? 1 : 1 - Math.exp(-dt / 0.8)).normalize(); // eased: no snaps
+      const hs = f.length(); // km/s along the ground
+      // in the local frame the camera keeps exactly to the along-track (a lag would show as the stage turning); eased
+      // only where the ground speed is too small to give a steady direction
+      const w = black ? 1 : Math.max(live ? THREE.MathUtils.smoothstep(hs, 0.005, 0.05) : 0, 1 - Math.exp(-dt / 0.8));
+      if (hs > 1e-4) spFwd.lerp(f.normalize(), w).normalize();
+    }
+    // The cruise holds the arrival's framing (its frame at insertion / entry interface, from the timeline): fixed
+    // against the stars the whole way, no swing in the fades, and insertion opens on the same view.
+    const A = toward && (seg0 === "transfer" || seg0 === "coast") ? arrivalFrame() : null;
+    if (A) {
+      spUp.copy(A.up).applyQuaternion(L.QnInv);
+      spFwd.copy(A.fwd).applyQuaternion(L.QnInv);
     }
     const seg = L.smp.segment;
     const low = /reentry|landing|braking|approach|vertical|entry|parachute|booster-descent/.test(seg);
     const away = L.kind === "moon" || L.kind === "mars";
-    // The cruise (Moon / Mars): behind the stage on the line from its target, a little above, the target ahead
-    // above the stage and growing; the stars fixed behind.
-    if (away && (seg === "transfer" || seg === "coast")) {
-      spVel.copy(bodyCentre(L.kind, L.smp)).sub(L.V).normalize().applyQuaternion(L.QnInv);
-      spFwd.lerp(spVel, 1 - Math.exp(-dt / 0.8)).normalize();
-      spUp.addScaledVector(spFwd, -spUp.dot(spFwd)).normalize();
-    }
     // Outside the cruise the held forward lies along the ground (from the cruise it points at the target, i.e.
     // down at arrival: without this the camera ends up over the stage looking straight down).
-    if (!(away && (seg === "transfer" || seg === "coast"))) {
+    {
       spFwd.addScaledVector(spUp, -spFwd.dot(spUp));
       if (spFwd.lengthSq() < 1e-6) spFwd.set(spUp.y, -spUp.x, 0).lengthSq() < 1e-6 && spFwd.set(1, 0, 0);
       spFwd.normalize();
     }
-    const el = THREE.MathUtils.degToRad(low ? 10 : away ? 14 : 24);
-    const dist = L.trackDist * (low ? 1.3 : 1.6);
+    // (eased, so a segment change never steps the framing: in the local frame the view follows it exactly)
+    const black2 = state.cut >= 0.98 || c.spEl == null;
+    const elGoal = THREE.MathUtils.degToRad(low ? 10 : toward || earthOrbit ? 8 : away ? 14 : 24);
+    const distGoal = low ? 1.3 : earthOrbit ? 1 : 1.6;
+    c.spEl = black2 ? elGoal : ease1(c.spEl, elGoal, dt, 1.2);
+    c.spDist = black2 ? distGoal : ease1(c.spDist, distGoal, dt, 1.2);
+    const el = c.spEl;
+    const dist = L.trackDist * c.spDist;
+    // Riding the target's local frame (orbit, braking, the descent): the stage steady in frame, the surface moving
+    // beneath; the 10°/s cap would make the stage turn on screen as the frame goes round (chaseCam).
+    c.ride = live && !A;
     L.flight.localToWorld(spLook.set(0, c.trackY ?? L.trackLocalY, 0));
     // Away from Earth: a three-quarter view (35° off the line of travel), never the stack end-on as a dot. The Mars
     // descent is side-on from entry interface (the turn eases in over the entry, under the 10°/s cap), so the
     // chute's lines and canopy, trailing back along the flow, are in frame beside the stage when it opens.
-    const yaw = L.kind === "mars" && low ? Math.PI / 2 : away && !low ? THREE.MathUtils.degToRad(35) : 0;
+    // (the Moon keeps its three-quarter view from the cruise to touchdown: a swing to straight-behind at braking
+    // read as the stage turning; Mars turns side-on over its entry for the chute)
+    // (Earth orbit beats after SECO, the payload release among them, the same three-quarter view: from straight
+    // behind the stage reads end-on)
+    // Earth orbit: side-on on the climb camera's side (its azimuth in the site frame)
+    spSide.crossVectors(spFwd, spUp).normalize();
+    const climbSide = Math.sign(spSide.x * Math.sin(c.azSide) + spSide.z * Math.cos(c.azSide)) || 1;
+    const yawGoal = L.kind === "mars" && low ? Math.PI / 2 : earthOrbit && !low ? (climbSide * Math.PI) / 2 : away ? THREE.MathUtils.degToRad(35) : 0;
+    c.spYaw = black2 ? yawGoal : ease1(c.spYaw ?? yawGoal, yawGoal, dt, 1.5);
+    const yaw = c.spYaw;
     spSide.crossVectors(spFwd, spUp).normalize();
     spGoal.copy(spLook).addScaledVector(spFwd, -Math.cos(el) * Math.cos(yaw) * dist).addScaledVector(spSide, Math.cos(el) * Math.sin(yaw) * dist).addScaledVector(spUp, Math.sin(el) * dist);
     // Mars under the chute: from the side, a little below the canopy, the stage, the lines and the canopy in frame.
@@ -1642,8 +1704,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       spGoal.copy(spLook).add(new THREE.Vector3(Math.sin(az) * Math.cos(e), Math.sin(e), Math.cos(az) * Math.cos(e)).multiplyScalar(d));
     }
     // In space, aim a little below the vehicle so the Earth and its limb fill the lower part of the frame.
-    if (!low && !(away && (seg === "transfer" || seg === "coast"))) spLook.addScaledVector(spUp, -0.12 * dist);
-    c.space = Math.min(1, (c.space ?? 0) + dt / 2.5); // blend in from the ascent framing over 2.5 s
+    if (!low && !toward && !earthOrbit) spLook.addScaledVector(spUp, -0.12 * dist); // (toward the target / Earth orbit: level, the surface in the lower part)
+    // blend in from the ascent framing over 2.5 s (at once on a black frame, and on Earth, where the climb's tracker
+    // already stands where the orbit framing does)
+    c.space = state.cut >= 0.98 || earthOrbit ? 1 : Math.min(1, (c.space ?? 0) + dt / 2.5);
     const k = c.space * c.space * (3 - 2 * c.space);
     camera.position.lerp(spGoal, k);
     camera.up.copy(Y).lerp(spUp, k).normalize(); // the horizon level with the planet below
@@ -1668,7 +1732,17 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     chaseDown.set(0, -1, 0);
     chaseLook.copy(chaseT).addScaledVector(chaseDown, c.look * c.dist);
     // Vehicle-anchored position, and the pad-anchored one riding down with the deck.
-    chaseV.set(Math.sin(c.az) * Math.cos(c.el), Math.sin(c.el), Math.cos(c.az) * Math.cos(c.el)).multiplyScalar(c.dist).add(chaseT);
+    chaseV.set(Math.sin(c.az) * Math.cos(c.el), Math.sin(c.el), Math.cos(c.az) * Math.cos(c.el)).multiplyScalar(c.dist);
+    // Off the deck on the timeline the tracker keeps to the vehicle's local vertical (away from Earth's centre), not
+    // the pad's: the same frame the orbit framing uses, so SECO hands over with no move (one shot after the climb).
+    if (L.F && L.smp?.segment === "ascent" && c.anchor > 0) {
+      chaseUp.copy(L.V).normalize().applyQuaternion(L.QnInv);
+      qChase.setFromUnitVectors(Y, chaseUp);
+      qChase.slerp(qIdentity, 1 - c.anchor);
+      chaseV.applyQuaternion(qChase);
+      camera.up.copy(Y).applyQuaternion(qChase);
+    }
+    chaseV.add(chaseT);
     const p = chaseP.copy(L.padCam.pose.position);
     if (L.pad) p.applyQuaternion(L.pad.quaternion).add(L.pad.position); // rides with the pad as it falls away
     // Off the deck for good once the blend is nearly done, and never more than a few chase distances behind
@@ -1695,7 +1769,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     goalDir.divideScalar(Math.max(gd, 1e-6));
     // (Snap only on a black cut frame, the opening blend and the pad shot.)
     // (And for ~3 s after a drop, so the ease-in to the shorter stack is not held back by the cap.)
-    const snap = !c.viewDir || state.cut >= 0.98 || k < 1 || c.anchor < 0.99 || (c.sep0 != null && L.real - c.sep0 < 3);
+    const snap = !c.viewDir || state.cut >= 0.98 || k < 1 || c.anchor < 0.99 || (c.sep0 != null && L.real - c.sep0 < 3) || (c.ride && L.smp?.segment !== "ascent");
     if (snap) c.viewDir = (c.viewDir ?? new THREE.Vector3()).copy(goalDir);
     else {
       const ang = c.viewDir.angleTo(goalDir);
@@ -1729,7 +1803,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     else skyF.copy(L.bg0).lerp(NIGHT_HAZE, 0.5 * haze);
     const dist = camera.position.distanceTo(controls.target);
     const below = L.pad ? Math.max(0, -L.pad.position.y) : 0;
-    state.sky = { w: L.skyW, horizon: skyF, stars: 1, near: dist + 5, far: dist + 300 + below * 1.5 };
+    // (airless Moon: no near fog at all; Mars: its dust haze, far out, the ground near the stage crisp)
+    if (body === "moon") state.sky = { w: L.skyW, horizon: skyF, stars: 1, near: 1e7, far: 2e7 };
+    else if (body === "mars") state.sky = { w: L.skyW, horizon: skyF, stars: 1, near: dist + 2500, far: dist + 30000 };
+    else state.sky = { w: L.skyW, horizon: skyF, stars: 1, near: dist + 5, far: dist + 300 + below * 1.5 };
   }
   // Where the near origin is above the pad (km, world axes): it rides up with the vehicle (the pad drops away).
   const originKm = new THREE.Vector3();
@@ -1776,6 +1853,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       if (L.sunSite) world.setSunDir(L.sun0.clone().lerp(L.sunSite, k).normalize());
     }
     L.QnInv.copy(L.Qn).invert();
+    // Moon / Mars cruise: the stage holds its arrival attitude (prograde at insertion / entry interface) the whole
+    // way, instead of turning on screen as the arc bends (user: no visible flips after the climb).
+    const cruiseA = (smp.segment === "transfer" || smp.segment === "coast") && (L.kind === "moon" || L.kind === "mars") ? arrivalFrame() : null;
     // The camera's held directions turn with the near axes, so they stay fixed against the stars while the axes
     // swing to the landing site's frame over the transfer (no swing round the vehicle).
     if (L.QnPrev) {
@@ -1787,7 +1867,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       }
     }
     (L.QnPrev ??= new THREE.Quaternion()).copy(L.Qn);
-    fA.copy(eciDir(smp.axis)).applyQuaternion(L.QnInv).normalize();
+    if (cruiseA) fA.copy(cruiseA.fwd).applyQuaternion(L.QnInv).normalize();
+    else fA.copy(eciDir(smp.axis)).applyQuaternion(L.QnInv).normalize();
     L.flight.quaternion.setFromUnitVectors(Yv, fA);
     // The vehicle's base at the origin: the bottom of what is still flying (after each drop the remaining stack's
     // bottom is the point flight.js tracks), with the flight group's pivot up the axis from it.
@@ -1810,13 +1891,14 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     L.flight.position.copy(fA).multiplyScalar(L.pivotY - L.baseY);
     if (L.pad) {
       fP.copy(L.P0).sub(L.V).multiplyScalar(NEAR_PER_KM).applyQuaternion(L.QnInv);
-      if (L.catch && (smp.segment === "landing" || smp.segment === "booster-descent")) {
+      const insetSmp = L.inset?.smp;
+      if (L.catch && (smp.segment === "landing" || smp.segment === "booster-descent" || insetSmp)) {
         // The stage's base stops where its catch point (just below its top) meets the arms: the pad sinks under
         // it by that height over the last kilometre, so at touchdown it hangs in the arms beside the tower.
         // The track's touchdown is within a few hundred metres of the pad: the complex is set over by that much
         // for the whole descent (no slide) so the arms close round the stage exactly.
         if (!L.catch.shift) {
-          const end = L.F.sampleAt(L.F.totalScreen_s);
+          const end = insetSmp ? L.inset.B.sampleAt(L.inset.B.duration_s) : L.F.sampleAt(L.F.totalScreen_s);
           const fEnd = new THREE.Vector3().copy(L.P0).sub(world.fromECI(end.pos_eci_km)).multiplyScalar(NEAR_PER_KM).applyQuaternion(L.QnInv);
           const cpN = L.catch.cp.clone().applyQuaternion(L.QnInv);
           L.catch.shift = new THREE.Vector3(-cpN.x - fEnd.x, 0, -cpN.z - fEnd.z);
@@ -1824,14 +1906,14 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         fP.add(L.catch.shift);
         // The arms ride to the stage's grip, 88 % up its length (just under the grid fins), with its base ~30 % of
         // its height above the deck (UI4's catchArms y_u), so it hangs in them clear of the ring.
-        const { lo, hi } = flyingSpan();
-        if (!L.catch.opts && L.boosterOn) {
+        const { lo, hi } = insetSmp ? { lo: 0, hi: L.inset.H } : flyingSpan();
+        if (!L.catch.opts && (L.boosterOn || insetSmp)) {
           const H = hi - lo;
           L.catch.armY = 1.18 * H;
           L.catch.opts = { y_u: L.catch.armY };
         }
         const lift = Math.max(0, L.catch.armY - (hi - lo) * 0.88);
-        const alt_m = Math.max(0, smp.alt_km * 1000);
+        const alt_m = Math.max(0, (insetSmp ?? smp).alt_km * 1000);
         const w = 1 - THREE.MathUtils.smoothstep(alt_m, 0, 1000);
         fP.y -= lift * w;
         // Arms: open from ~1 km (k to 0.4), close over the last 40 m (k to 1).
@@ -1912,7 +1994,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     L.landingReady = true;
     const body = L.F.endState.body ?? L.kind;
     L.landBody = body;
-    L.turnSeg = L.F.segments.find((x) => x.name === (body === "earth" ? "deorbit-coast" : "transfer"));
+    // (the near axes turn to the landing site's frame across the cruise: UI 2's one cut after the climb, "cruise";
+    // without it they would stand in the site's frame from the countdown, the climb seen tilted)
+    L.turnSeg = L.F.segments.find((x) => x.name === (body === "earth" ? "deorbit-coast" : "transfer")) ?? (body === "earth" ? null : L.F.segments.find((x) => x.name === "cruise"));
     if (body === "earth") {
       // Back on Earth: the launch pad itself, or UI4's local ocean with the drone ship at the landing point.
       const land = L.F.endState.landing ?? {};
@@ -1939,33 +2023,87 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       L.siteFrame = L.ground.frame.clone();
       return;
     }
-    const last = L.F.sampleAt(L.F.totalScreen_s);
-    const pos = eciDir(last.pos_km); // body-relative km, world axes
-    // UI4's 3 km patch (fills the view to the horizon from ~1.5 km), without its own shadow sun: a new light in the
-    // scene would recompile every material (seconds). The scene's key light takes the site's sun direction instead
-    // while the ground shows (state.keyDir, main.js); the terrain's crater shadows are baked toward that sun.
-    L.ground = world.createLocalGround({ body, pos_km: pos, size_km: 3, sunLight: false });
-    if (L.ground.inner?.sunDir) L.groundKeyDir = L.ground.inner.sunDir.clone().normalize();
-    if (warmRenderer) L.ground.inner?.prewarm?.(warmRenderer); // its detail textures, now rather than at ~1 km
-    const lights = [];
-    L.ground.object3d.traverse((o) => o.isLight && lights.push(o));
-    for (const l of lights) {
-      if (l.isDirectionalLight) L.groundKeyDir = l.position.clone().sub(l.target.position).normalize();
-      l.target?.removeFromParent();
-      l.removeFromParent();
-    }
-    root.add(L.ground.object3d);
+    // The ground made at idle for this very timeline (prepareGround), else now.
+    const prep = groundPrep?.F === L.F ? groundPrep : null;
+    if (groundPrep && !prep) disposeGroundPrep();
+    groundPrep = null;
+    const g = prep ?? makeGround(L.F);
+    const pos = g.pos;
+    L.ground = g.ground;
+    L.groundKeyDir = g.keyDir;
+    if (!prep) root.add(L.ground.object3d);
     makeChute();
-    // Compile it now, while it is first added (the countdown), not on the frame it first shows.
     L.groundShown = null;
-    showGround(true);
-    if (L.chute) L.chute.c.object3d.visible = true;
-    warmRenderer?.compile(scene, camera);
+    if (!prep) {
+      // compiled now, while it is first added (the countdown), not on the frame it first shows
+      showGround(true);
+      if (L.chute) L.chute.c.object3d.visible = true;
+      warmOffscreen();
+      if (L.chute) L.chute.c.object3d.visible = false;
+    }
     showGround(false);
-    if (L.chute) L.chute.c.object3d.visible = false;
     L.siteFrame = L.ground.frame.clone();
     L.sun0 = world.sunDir.clone();
     L.sunSite = world.sunForSite(body, pos).clone();
+  }
+  // UI4's 3 km patch (fills the view to the horizon from ~1.5 km), without its own shadow sun: a new light in the
+  // scene would recompile every material (seconds). The scene's key light takes the site's sun direction instead
+  // while the ground shows (state.keyDir, main.js); the terrain's crater shadows are baked toward that sun.
+  function makeGround(F) {
+    const body = F.endState?.body ?? F.kind;
+    const pos = eciDir(F.sampleAt(F.totalScreen_s).pos_km); // body-relative km, world axes
+    const ground = world.createLocalGround({ body, pos_km: pos, size_km: 3, sunLight: false });
+    let keyDir = ground.inner?.sunDir ? ground.inner.sunDir.clone().normalize() : null;
+    if (warmRenderer) ground.inner?.prewarm?.(warmRenderer); // its detail textures, now rather than at ~1 km
+    const lights = [];
+    ground.object3d.traverse((o) => o.isLight && lights.push(o));
+    for (const l of lights) {
+      if (l.isDirectionalLight) keyDir = l.position.clone().sub(l.target.position).normalize();
+      l.target?.removeFromParent();
+      l.removeFromParent();
+    }
+    return { ground, keyDir, pos };
+  }
+  // One offscreen render (the post chain's render-target program variants and the shadow pass's depth ones) plus
+  // the canvas variants: what is shown now is warm for the flight.
+  // The same, asynchronous (KHR_parallel_shader_compile): the programs link in the GPU process while frames go on
+  // (UI 6: ~1 s of compile at DPR 2 for the twin's materials); resolves when they are ready.
+  function warmAsync() {
+    if (!warmRenderer) return Promise.resolve();
+    if (!warmRenderer.compileAsync) return Promise.resolve(warmOffscreen());
+    const prev = warmRenderer.getRenderTarget();
+    warmRenderer.setRenderTarget(warmTarget); // (compile reads the bound target for the program keys)
+    const a = warmRenderer.compileAsync(scene, camera);
+    warmRenderer.setRenderTarget(prev);
+    const b = warmRenderer.compileAsync(scene, camera);
+    return Promise.all([a, b]).catch(() => {});
+  }
+  function warmOffscreen() {
+    if (!warmRenderer) return;
+    const prev = warmRenderer.getRenderTarget();
+    warmRenderer.setRenderTarget(warmTarget);
+    warmRenderer.compile(scene, camera);
+    warmRenderer.render(scene, camera);
+    warmRenderer.setRenderTarget(prev);
+    warmRenderer.compile(scene, camera);
+  }
+  // At idle (main, once the stack is complete): the Moon / Mars landing ground for the timeline main will fly,
+  // made, added hidden and warmed, so L does not build or compile it.
+  let groundPrep = null;
+  function disposeGroundPrep() {
+    groundPrep?.ground.dispose?.();
+    groundPrep?.ground.object3d.removeFromParent();
+    groundPrep = null;
+  }
+  function prepareGround(F) {
+    if (state.launch || !world || !F || F.blocked || F.endState?.type !== "landed" || !/moon|mars/.test(F.endState.body ?? F.kind)) return;
+    if (groundPrep?.F === F) return;
+    disposeGroundPrep();
+    const g = makeGround(F);
+    root.add(g.ground.object3d);
+    g.ground.object3d.traverse((o) => o !== g.ground.object3d && (o.isMesh || o.isPoints || o.isLine || o.isSprite) && (o.visible = false));
+    groundPrep = { F, ...g };
+    warmAsync(); // (compile takes hidden objects too; it shows at the descent, long after this has finished)
   }
   // Mars (UI4's parachute.js): the canopy at the top of the stack, sized by arrival.js's canopy (6 × the
   // payload's diameter, a model choice), deployed from the sample's chute (0 packed → 1 open); when it drops to 0
@@ -2001,47 +2139,64 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const key = twinKey();
     if (twinPrep?.key === key) return true;
     twinPrep?.twin.dispose();
-    twinPrep = { key, twin: buildTwin() };
-    warmTwin(twinPrep.twin);
+    const twin = buildTwin();
+    twinPrep = { key, twin };
+    // (its compile dispatched a task later: the build and the warm-up each in a frame of their own)
+    setTimeout(() => twinPrep?.twin === twin && warmAsync().then(() => (twin.ready = true)), 0);
     return true;
   }
   // Its programs as the flight draws them: the post chain renders into a render target (no tone mapping, linear
   // output: other program variants than renderer.compile gives for the canvas), and the shadow pass needs its depth
   // materials; so one offscreen render of the scene with the twin shown, then the canvas variants too (the
   // picture-in-picture draws straight to the canvas). UI 6: without it, 13 programs (~1 s) linked at L.
-  function warmTwin(twin) {
-    if (!warmRenderer) return;
-    const prev = warmRenderer.getRenderTarget();
-    twin.group.visible = true;
-    warmRenderer.setRenderTarget(warmTarget);
-    warmRenderer.compile(scene, camera);
-    warmRenderer.render(scene, camera);
-    warmRenderer.setRenderTarget(prev);
-    prewarmAll(warmRenderer, scene, camera, { extras: [twin.group] });
-    twin.group.visible = false;
-  }
-  // At L: the prepared twin if it is ready for this stack; otherwise it is made and warmed in the countdown's
-  // first second (on the pad, the camera still), never on the launch frame.
+  // At L: the prepared twin once its programs are ready (now, or a few frames into the countdown); not prepared
+  // for this stack: made in the countdown's first second and swapped in when warm. The builder flies until then,
+  // and for the whole flight if the twin is not ready before the first drop.
   function attachTwin() {
     const twin = twinPrep?.key === twinKey() ? twinPrep.twin : null;
-    if (twin) return swapTwin(twin);
-    twinPrep?.twin.dispose();
+    if (!twin) {
+      twinPrep?.twin.dispose();
+      twinPrep = null;
+      L.twinPending = true;
+      return;
+    }
     twinPrep = null;
-    L.twinPending = true;
+    if (twin.ready) swapTwin(twin);
+    else L.twinWait = twin;
+  }
+  function twinStep() {
+    if (L.twinPending && L.real > -L.countdown + 0.3) {
+      L.twinPending = false;
+      const twin = buildTwin();
+      warmAsync().then(() => (twin.ready = true));
+      L.twinWait = twin;
+    }
+    if (!L.twinWait) return;
+    if (L.gone.size || L.done) {
+      L.twinWait.dispose(); // too late: the builder flies this one
+      L.twinWait = null;
+    } else if (L.twinWait.ready) {
+      swapTwin(L.twinWait);
+      L.twinWait = null;
+    }
   }
   function swapTwin(twin) {
     twinPrep = null;
-    // the Max-Q halo, hung on a builder group at L, moves to its twin (a swap in the countdown comes after it)
-    const halo = L.fx?.halo?.object3d;
-    const haloPart = halo ? parts.find((p) => p.group === halo.parent) : null;
-    if (haloPart) twin.partGroup(haloPart)?.attach(halo);
     for (const part of parts) {
       const tg = twin.partGroup(part);
       if (!tg) continue;
+      // in the builder group's place (same parent, same local pose: the twin's part frame is the part's), and what
+      // already hangs on it (the halo, plumes from engine start, the chute) moves over at the same local pose
+      const bg = part.group;
+      bg.parent.add(tg);
+      tg.position.copy(bg.position);
+      tg.quaternion.copy(bg.quaternion);
+      tg.scale.copy(bg.scale);
       tg.visible = true;
-      L.flight.attach(tg); // the flight group's frame, where the builder group hangs
-      part.builderGroup = part.group;
-      part.group.visible = false;
+      const own = new Set(part.pieces.map((q) => q.mesh));
+      for (const o of [...bg.children]) if (!own.has(o)) tg.add(o);
+      part.builderGroup = bg;
+      bg.visible = false;
       part.group = tg;
     }
     L.twin = twin;
@@ -2165,48 +2320,168 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   // rotation). Where the timeline turns the vehicle faster than ~15°/s outside the climb, the screen fades to black
   // for the turn (held while it lasts, at most 2 s) and the camera re-takes its place on the black frame.
   const flipA = new THREE.Vector3();
+  const fgUp = new THREE.Vector3();
+  const fgAlong = new THREE.Vector3();
+  const fgCross = new THREE.Vector3();
   function flipGuard(smp, dt) {
     flipA.set(smp.axis[0], smp.axis[1], smp.axis[2]);
+    // Measured as the camera sees it: in the local orbital frame (up, along-track, cross-track) where the camera
+    // rides it, so a prograde stage going round its orbit reads as steady; star-fixed in the cruise.
+    const cruise = smp.segment === "transfer" || smp.segment === "coast" || smp.body === "space";
+    const mode = cruise ? "cruise" : "local";
+    if (L.flipMode !== mode) {
+      L.flipMode = mode; // (the measure changes frame: start it afresh)
+      L.flipPrev = null;
+    }
+    if (cruise && (L.kind === "moon" || L.kind === "mars") && (smp.segment === "transfer" || smp.segment === "coast")) {
+      L.flipping = false; // the cruise holds its attitude (placeFlight); its end is a cut of its own
+      return;
+    }
+    if (!cruise && smp.pos_km && smp.vel_kms) {
+      fgUp.set(smp.pos_km[0], smp.pos_km[1], smp.pos_km[2]).normalize();
+      fgAlong.set(smp.vel_kms[0], smp.vel_kms[1], smp.vel_kms[2]);
+      fgAlong.addScaledVector(fgUp, -fgAlong.dot(fgUp));
+      if (fgAlong.lengthSq() < 1e-6) return; // (near the ground, falling straight: no along-track to measure in)
+      fgAlong.normalize();
+      fgCross.crossVectors(fgUp, fgAlong);
+      flipA.set(flipA.dot(fgAlong), flipA.dot(fgUp), flipA.dot(fgCross));
+    }
     const prev = (L.flipPrev ??= flipA.clone());
     const rate = dt > 0 ? THREE.MathUtils.radToDeg(prev.angleTo(flipA)) / dt : 0;
     prev.copy(flipA);
-    const exempt = smp.segment === "ascent" || L.tumbling || L.brokenUp || L.F.endState?.type === "lost" || L.real < 0;
+    const exempt = smp.segment === "ascent" || L.tumbling || L.brokenUp || L.F.endState?.type === "lost" || L.real < 0 || L.real < (L.lapseUntil ?? -Infinity);
     L.flipping = !exempt && rate > 15;
     if (L.flipping && !L.cut) {
       const until = L.real + 2;
-      L.cut = { t: 0, up: 0, fired: false, hold: 1, wait: () => L.flipping && L.real < until, fn: () => {} };
+      L.cut = { why: "turn", t: 0, up: 0, fired: false, hold: 1, wait: () => L.flipping && L.real < until, fn: () => {} };
     }
+  }
+  // ---------- picture-in-picture (user, round 25): the first stage's catch beside the release ----------
+  // UI 2's boosterInset timeline: the main view stays with the upper stage through the 10 s release beat while the
+  // booster's final descent (f.booster, its own clock) plays in a small view top-right. The first stage's groups
+  // come back as one booster, placed from f.booster.sampleAt about the pad, which stays where the flight left it
+  // (thousands of km below the main view, far outside its far plane); the arms catch it. main renders
+  // insetView() into the inset's rect after the main frame.
+  const insetCam = new THREE.PerspectiveCamera(30, 16 / 9, 0.5, 40000);
+  const iA = new THREE.Vector3();
+  const iLook = new THREE.Vector3();
+  const iDir = new THREE.Vector3();
+  function startInset() {
+    const B = L.F.booster;
+    const first = L.stage0?.length ? L.stage0 : parts.filter((p) => p.stageIndex === 0);
+    const g = new THREE.Group();
+    g.name = "inset-booster";
+    root.add(g);
+    L.debris = L.debris.filter((d) => !first.includes(d.part));
+    const lo = Math.min(...first.map((p) => p.slotY));
+    for (const p of first) {
+      g.add(p.group);
+      p.group.position.set(0, p.slotY - lo, 0);
+      p.group.quaternion.identity();
+      p.group.visible = true;
+    }
+    L.deps ??= [];
+    for (const p of first) for (const piece of deployables(p)) if (piece.mesh.userData.role === "gridFin") L.deps.push({ piece, t0: L.real }); // fins out
+    L.inset = { g, B, first, H: Math.max(...first.map((p) => p.slotY + p.height)) - lo, beats: new Set(), smp: null, camD: null };
+  }
+  function updateInset() {
+    const I = L.inset;
+    const tl = THREE.MathUtils.clamp(L.real - I.B.start_screen, 0, I.B.duration_s);
+    const b = (I.smp = I.B.sampleAt(tl));
+    iA.copy(eciDir(b.axis)).applyQuaternion(L.QnInv).normalize();
+    I.g.quaternion.setFromUnitVectors(Yv, iA);
+    I.g.position.copy(world.fromECI(b.pos_eci_km)).sub(L.V).multiplyScalar(NEAR_PER_KM).applyQuaternion(L.QnInv);
+    for (const bt of I.B.beats ?? []) {
+      if (I.beats.has(bt) || tl < bt.t_local) continue;
+      I.beats.add(bt);
+      if (bt.type === "touchdown" && L.catch) {
+        L.anchors.catchArms((L.catch.k = 1), L.catch.opts);
+        L.catch.burst.fire(L.pad.worldToLocal(I.g.getWorldPosition(new THREE.Vector3())), stackRadius());
+      }
+    }
+    // Its camera (Head 1, round 25): low, across the tower–stage line (the tower and its arms beside the booster,
+    // nothing in front of it: the leaned strongback stands on the far side), the booster ~60 % of the frame height.
+    if (I.az == null) {
+      // the tower's bearing from the stage, in the near frame (world positions: the tower's own is complex-local)
+      const tw = L.anchors?.tower ? L.anchors.tower.getWorldPosition(new THREE.Vector3()).sub(I.g.getWorldPosition(new THREE.Vector3())) : null;
+      const phiT = tw ? Math.atan2(tw.x, tw.z) : L.chase.azSide - Math.PI / 2;
+      const off = (a) => Math.abs(Math.atan2(Math.sin(a - L.chase.azSide), Math.cos(a - L.chase.azSide)));
+      I.az = off(phiT + Math.PI / 2) <= off(phiT - Math.PI / 2) ? phiT + Math.PI / 2 : phiT - Math.PI / 2;
+    }
+    // The whole booster (~60 % of the frame) through the landing burn; over the last ~40 m the view pushes in on
+    // its upper part, the grip, where the arms close (a slender stage reads as a sliver otherwise; Head 1).
+    const close = 1 - THREE.MathUtils.smoothstep(Math.max(0, b.alt_km * 1000), 4, 40); // (the burn in frame until the last metres)
+    I.close = THREE.MathUtils.lerp(I.close ?? close, close, 0.08); // eased: no jump in the inset
+    const span = THREE.MathUtils.lerp(I.H / 0.6, I.H * 0.62, I.close); // the height the frame shows
+    I.g.localToWorld(iLook.set(0, I.H * THREE.MathUtils.lerp(0.58, 0.8, I.close), 0));
+    const d = span / (2 * Math.tan(THREE.MathUtils.degToRad(insetCam.fov / 2)));
+    const az = I.az;
+    const e = THREE.MathUtils.degToRad(4);
+    iDir.set(Math.sin(az) * Math.cos(e), Math.sin(e), Math.cos(az) * Math.cos(e));
+    insetCam.position.copy(iLook).addScaledVector(iDir, d);
+    insetCam.up.set(0, 1, 0);
+    insetCam.lookAt(iLook);
+    I.camD = d;
+  }
+  // For main: the inset's camera and caption while the booster's catch plays (null otherwise).
+  function insetView() {
+    const I = L?.inset;
+    if (!I?.smp) return null; // (held at the end on the caught booster until R)
+    const b = I.smp;
+    const caught = [...I.beats].some((x) => x.type === "touchdown");
+    const what = caught ? " · CAUGHT" : b.throttle > 0.01 ? " · LANDING BURN" : "";
+    return { camera: insetCam, caption: `FIRST STAGE · ${Math.max(0, b.alt_km).toFixed(1)} km${what}` };
+  }
+  // Across a skip (minutes to days of flight in a cut) the spent stages and fairing halves are long gone.
+  function clearDebris() {
+    for (const d of L.debris) d.part.group.visible = false;
   }
   function flightUpdate(dt) {
     const F = L.F;
     L.dtFrame = dt;
     if (L.cut) stepCut(L, dt);
+    // The Moon / Mars cruise's end: the held attitude gives way to the arrival's own on a black frame.
+    if ((L.kind === "moon" || L.kind === "mars") && !L.cruiseEndCut) {
+      const cruiseSegs = F.segments.filter((x) => x.name === "transfer" || x.name === "coast");
+      const tEnd = cruiseSegs.length ? cruiseSegs[cruiseSegs.length - 1].t1_screen : null;
+      if (tEnd != null && L.real >= tEnd - CUT_DOWN && L.real < tEnd + 0.3) {
+        L.cruiseEndCut = true;
+        if (!L.cut) L.cut = { why: "cruise-end", t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < tEnd + 0.05, fn: () => {} };
+      }
+    }
     // Round 24: where the vehicle on screen changes (f._cuts, story time: the release → the booster's final
     // descent), the same quick fade; the swap happens on the black frame once the sample is the booster's.
-    for (const ct of F._cuts ?? []) {
+    for (const ct of F.booster?.inset ? [] : F._cuts ?? []) { // (none with the picture-in-picture: no cut in the main view)
       const ts = F.simToScreen(ct);
       if ((L.cutsDone ??= new Set()).has(ct) || L.real < ts - CUT_DOWN || L.real > ts + 0.3) continue;
       L.cutsDone.add(ct);
-      if (!L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < ts + 0.03, fn: () => {} };
+      if (!L.cut) L.cut = { why: "vehicle", t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < ts + 0.03, fn: () => {} };
     }
     // UI 2's time-skips (coasts cut out of the story): a quick fade to black just before, held black while the
     // vehicle jumps (≤ 0.5 s), back up after; the camera snaps to its new view on the black frame.
     for (const e of F.events) {
-      if (e.type !== "time-skip" || e.cutDone || L.real < e.t_screen - CUT_DOWN || L.real > e.t_screen + 0.3) continue;
+      if (e.type !== "time-skip" || e.cutDone || L.real < e.t_screen - CUT_DOWN - 0.05 || L.real > e.t_screen + 0.3) continue;
       e.cutDone = true;
       const until = e.to_t_screen ?? e.t_screen;
-      if (until - e.t_screen > 0.6) continue; // the Moon / Mars cruise (~2 s) is shown: the stage, the target growing ahead
-      if (!L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 0, wait: () => L.real < until, fn: () => {} };
+      if (L.kind === "earth") {
+        clearDebris(); // an Earth coast plays as a time-lapse on the same camera: no black frame (user, round 25)
+        L.lapseUntil = until + 0.2; // (the turn guard stands down through it: a time-lapse lands in its next attitude)
+        continue;
+      }
+      if (until - e.t_screen > 0.6) {
+        // the Moon / Mars cruise (~2 s) is shown: a quick fade at its start only, the camera taking the target's
+        // frame on the black frame
+        const t1 = e.t_screen + 0.15;
+        if (!L.cut) L.cut = { why: "cruise", t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < t1, fn: clearDebris };
+        continue;
+      }
+      // (fully black from just before the jump until a beat after it: the attitude and the camera re-place unseen)
+      if (!L.cut) L.cut = { why: "skip", t: 0, up: 0, fired: false, hold: 2, wait: () => L.real < until + 0.06, fn: clearDebris };
     }
     if (!L.done) L.real += dt;
     const tS = L.real;
     state.countdown = tS < 0;
-    if (L.twinPending && tS > -L.countdown + 0.3 && tS < -3) {
-      L.twinPending = false;
-      const twin = buildTwin();
-      warmTwin(twin);
-      swapTwin(twin);
-    }
+    if (L.twinPending || L.twinWait) twinStep();
     const smp = F.sampleAt(THREE.MathUtils.clamp(tS, 0, F.totalScreen_s));
     L.smp = smp;
     const t = tS < 0 ? tS : smp.t_sim;
@@ -2217,8 +2492,15 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     if (smp.segment !== "ascent") prepareLanding();
     if (smp.segment === "booster-descent" && !L.boosterOn) showBooster();
+    // (from just before the landing burn: the burn, the arms, the catch; user, round 25)
+    if (F.booster?.inset && !L.inset && !L.done) {
+      const burn = F.booster.beats?.find((b) => b.type === "landing-burn-start");
+      const from = F.booster.start_screen + Math.max(0, (burn?.t_local ?? 0) - 0.8);
+      if (L.real >= from) startInset();
+    }
     flipGuard(smp, dt);
     placeFlight(smp);
+    if (L.inset) updateInset(); // (after the near origin moved: the booster and the pad from the same vehicle position)
     // The release beat is lit (story, est.; Head 1): UI4's story sun over the ground below the stage from the black
     // frame before the release to the cut after it, the stage's key light from the same side.
     if (smp.segment === "payload-release" && !L.sunOv && world.setSunOverride) {
@@ -3123,6 +3405,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     disposeEnding();
     if (!L) return;
     storySunOff();
+    L.twinWait?.dispose();
     for (const d of L.deps ?? []) deployPiece(d.piece, 0);
     L.les?.group.removeFromParent();
     dropTwin();
@@ -3195,6 +3478,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       part.group.visible = true;
     }
     root.remove(L.flight);
+    L.inset?.g.removeFromParent();
     L.resolve?.(false);
     L = null;
     state.launch = null;
@@ -3311,6 +3595,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         piece.mesh.quaternion.copy(piece.rest.quaternion);
       }
       part.group.position.y = part.slotY + (i + 1) * gap;
+      if (warmParts.includes(part)) part.group.visible = false; // (shown on its upload frame, in the drop)
     });
     const gen = state.gen;
     state.busy++;
@@ -3384,14 +3669,50 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   }
 
   // Preset switch: cancel everything, dispose the old stack, set up the new one.
-  function rebuild(next) {
+  function rebuild(next, { sliced = false } = {}) {
     clear();
     for (const part of parts) retirePart(part);
     parts = next;
     for (const part of parts) setupPart(part);
-    if (warmRenderer) prewarm(warmRenderer);
+    // (a switch in the builder: its geometry goes up a part per frame instead of all in one ~300 ms frame; the
+    // programs are the session's already, the materials being shared)
+    if (sliced && warmRenderer) {
+      warmParts = [...parts];
+      warmSkip = 1; // (not in the switch's own frame)
+    }
+    else if (warmRenderer) prewarm(warmRenderer);
     home();
     changed();
+  }
+  // One part's geometry uploaded: an offscreen render with a camera that frames only that part (the scene's
+  // lights as ever, so the same programs), its pieces shown for it.
+  let warmParts = [];
+  let warmSkip = 0;
+  const warmCam = new THREE.PerspectiveCamera(30, 1, 0.1, 1e5);
+  const warmBox = new THREE.Box3();
+  const warmSph = new THREE.Sphere();
+  function warmPartStep() {
+    const part = warmParts.shift();
+    if (!part || !parts.includes(part)) return;
+    const shown = part.pieces.map((q) => q.mesh.visible);
+    for (const q of part.pieces) q.mesh.visible = true;
+    const gv = part.group.visible;
+    part.group.visible = true;
+    warmBox.setFromObject(part.group).getBoundingSphere(warmSph);
+    const r = Math.max(0.1, warmSph.radius);
+    warmCam.position.copy(warmSph.center).add(new THREE.Vector3(0, 0, r * 3));
+    warmCam.near = r * 0.5;
+    warmCam.far = r * 6;
+    warmCam.updateProjectionMatrix();
+    warmCam.lookAt(warmSph.center);
+    warmCam.updateMatrixWorld();
+    const prev = warmRenderer.getRenderTarget();
+    warmRenderer.setRenderTarget(warmTarget);
+    warmRenderer.render(scene, warmCam);
+    warmRenderer.setRenderTarget(prev);
+    part.pieces.forEach((q, i) => (q.mesh.visible = shown[i]));
+    part.group.visible = part.built ? true : gv; // a built part (appearBuilt) shows from now
+    part.warmed = true;
   }
 
   // Warm-up so the first build has no hitch: compile every program and upload every geometry (one offscreen
@@ -3478,6 +3799,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
 
   function update(dt, t) {
     if (uploadQueue.size) uploadNext();
+    if (warmParts.length && warmSkip-- <= 0) warmPartStep();
     for (const part of parts) {
       part.holoGhost.update(t);
       if (part.ghost.visible) part.ghost.position.y = part.slotY + Math.sin(t * 2.6) * 0.05;
@@ -3565,6 +3887,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     setBounds,
     prewarm,
     prepareTwin,
+    insetView,
+    prepareGround,
     uploadWarmTextures,
     nearOriginKm,
     viewer,

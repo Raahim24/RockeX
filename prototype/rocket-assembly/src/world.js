@@ -36,7 +36,7 @@
 // Scattering coefficients, cloud height, haze and colours are visual.
 import * as THREE from "three";
 import { atmosphereFor, lightingFor } from "./arrival.js";
-import { planetTexture, createTerrain, createOcean, horizonDisc, skyAt as daySkyAt } from "./planet.js";
+import { planetTexture, createTerrain, createOcean, horizonDisc, airlessMaterial, skyAt as daySkyAt } from "./planet.js";
 import { createCloudLayer } from "./fx/launchfx.js";
 import { SCALE } from "./layout.js";
 
@@ -891,11 +891,11 @@ export function createWorld({ renderer = null } = {}) {
       return {
         ...skyState,
         sunDir: sunDir.clone(),
-        exposure: 0.85,
+        exposure: 0.8,
         key: cloudy ? { color: C(0.62, 0.64, 0.72), intensity: 0.7 } : { color: C(1.0, 0.62, 0.36), intensity: 2.2 },
         fill: { color: C(0.34, 0.44, 0.74), intensity: cloudy ? 0.35 : 0.3 },
         hemi: cloudy ? { sky: C(0.26, 0.29, 0.36), ground: C(0.07, 0.07, 0.07), intensity: 0.9 } : { sky: C(0.3, 0.36, 0.56), ground: C(0.12, 0.08, 0.06), intensity: 1.0 }, // the coast and sea catch the sky light
-        environmentIntensity: 0.25,
+        environmentIntensity: 0.15,
         fog: { color: s.horizon, near_u: 3000, far_u: cloudy ? 12000 : 30000 },
         background: s.horizon.clone(),
         sky: { zenith: s.zenith.clone(), horizon: s.horizon.clone() },
@@ -991,7 +991,8 @@ export function createWorld({ renderer = null } = {}) {
       // shows below the horizon: black sky right down to the ground, no seam
       if (!b.atmo) {
         const am = inner.albedoMean;
-        horizonRing = new THREE.Mesh(horizonDisc(120 * NEAR_U_PER_KM, RADIUS_KM[name] * NEAR_U_PER_KM, size_u * 0.35), new THREE.MeshStandardMaterial({ color: new THREE.Color(tint.r * am * ch("r"), tint.g * am * ch("g"), tint.b * am * ch("b")), roughness: 0.97, metalness: 0 }));
+        // (airless: lit by the sun alone, like the patch; a scene's sky fill would wash it into a pale plane)
+        horizonRing = new THREE.Mesh(horizonDisc(120 * NEAR_U_PER_KM, RADIUS_KM[name] * NEAR_U_PER_KM, size_u * 0.35), airlessMaterial(new THREE.MeshStandardMaterial({ color: new THREE.Color(tint.r * am * ch("r"), tint.g * am * ch("g"), tint.b * am * ch("b")), roughness: 0.97, metalness: 0 })));
         horizonRing.position.y = -0.001 * NEAR_U_PER_KM; // 1 m under the patch's rim
         horizonRing.frustumCulled = false;
         horizonRing.name = "world-local-horizon";
