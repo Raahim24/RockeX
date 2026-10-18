@@ -112,6 +112,14 @@ const ORB_CSS = `
 @media (prefers-reduced-motion: reduce) {
   .grok-orb, .grok-orb .grok-face, .grok-orb .grok-eye, .grok-orb::before, .grok-orb::after { animation: none !important; }
 }
+@keyframes grok-pop { from { opacity: 0; transform: translateY(6px) scale(.92) } to { opacity: 1; transform: none } }
+.grok-bubble { position: relative; max-width: min(340px, calc(100vw - 48px)); padding: 10px 14px;
+  border-radius: 18px; background: #f6f7fb; color: #11131a; font-size: 14px; line-height: 1.4; font-weight: 500;
+  box-shadow: 0 10px 28px rgba(0,0,0,.45); transform-origin: bottom left; animation: grok-pop 220ms ease-out both; }
+/* the tail, pointing down at Grok's face (the face is 84px wide, so its centre is 42px in) */
+.grok-bubble::after { content: ""; position: absolute; left: 33px; bottom: -8px; width: 18px; height: 18px;
+  background: #f6f7fb; transform: rotate(45deg); border-radius: 3px; }
+@media (prefers-reduced-motion: reduce) { .grok-bubble { animation: none; } }
 body .bar { left: auto; right: 24px; bottom: 24px; transform: none; flex-direction: column; width: 220px; }
 body .bar > button { width: 100%; }
 body .bar .rockets { left: auto; right: calc(100% + 8px); bottom: 0; }
@@ -153,6 +161,8 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
   });
   const [thinking, setThinking] = useState(false);
   const [caption, setCaption] = useState<string | null>(null);
+  // The line Grok is saying out loud when not live (live mode streams its own transcript: live.subtitle).
+  const [said, setSaid] = useState<string | null>(null);
   const [everLive, setEverLive] = useState(false);
   const latest = useRef("");
   const busy = useRef(false); // a spoken turn is in progress: reactions wait
@@ -198,9 +208,14 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
     async (text: string, stillCurrent: () => boolean): Promise<void> => {
       if (!hasUserActivation()) {
         // Browsers block audio until the first click or key press: say it then instead of failing now.
-        sayOnFirstGesture(() => stillCurrent() && void speaker.speak(text));
+        sayOnFirstGesture(() => {
+          if (!stillCurrent()) return;
+          setSaid(text);
+          void speaker.speak(text).then((ok) => !ok && stillCurrent() && setCaption(text));
+        });
         return;
       }
+      setSaid(text);
       if (!(await speaker.speak(text)) && stillCurrent()) setCaption(text);
     },
     [speaker],
@@ -507,6 +522,19 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
     speaking: "Grok is speaking. Hold Space to jump in",
   }[mode];
 
+  // The speech bubble: what Grok is saying right now (live transcript as it streams, or the spoken line), or a
+  // caption when the voice failed. It stays up a few seconds after Grok stops, then fades.
+  const talking = live.live ? live.speaking : speaker.speaking;
+  const spoken = (live.live ? live.subtitle : said)?.trim() || "";
+  const current = caption || (talking && spoken ? spoken : null);
+  // The last line, kept for a moment after Grok stops so the bubble doesn't vanish mid-read.
+  const [linger, setLinger] = useState<string | null>(null);
+  useEffect(() => {
+    const t = current ? setTimeout(() => setLinger(current), 0) : setTimeout(() => setLinger(null), 3500);
+    return () => clearTimeout(t);
+  }, [current]);
+  const bubble = current ?? linger;
+
   const [barHeight, setBarHeight] = useState(0);
   useEffect(() => {
     const bar = document.querySelector(".bar");
@@ -525,8 +553,14 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
       {/* Nothing on the pad yet: Explode and Reset would do nothing, so they stay out of sight until a part lands. */}
       {placedCount === 0 && <style>{"body .bar #btn-explode, body .bar #btn-reset { display: none; }"}</style>}
 
-      {/* Grok in the middle at the bottom, with what to do written under it. */}
-      <div className="fixed bottom-5 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
+      {/* Grok at the bottom left: a speech bubble with what it says above its head, what to do written under it. */}
+      <div className="fixed bottom-5 left-6 z-10 flex flex-col items-start gap-3">
+        {bubble && (
+          <div key={bubble.slice(0, 24)} role="status" aria-live="polite" className="grok-bubble">
+            {bubble.length > 260 ? `…${bubble.slice(-260)}` : bubble}
+          </div>
+        )}
+      <div className="flex flex-col items-center gap-1.5">
         <button
           ref={orbRef}
           type="button"
@@ -563,16 +597,10 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
           </p>
         )}
       </div>
-      {(optionsHint && live.live) || caption ? (
+      </div>
+      {optionsHint && live.live ? (
         <div className="fixed bottom-40 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
-          {optionsHint && live.live && (
-            <p className={`${chip} bg-white/10 text-neutral-200`}>👈 Tap a part on the left, or hold Space and say it</p>
-          )}
-          {caption && (
-            <p role="status" className="max-w-xs rounded-lg bg-black/70 px-3 py-2 text-center text-xs text-neutral-200">
-              {caption}
-            </p>
-          )}
+          <p className={`${chip} bg-white/10 text-neutral-200`}>👈 Tap a part on the left, or hold Space and say it</p>
         </div>
       ) : null}
 
