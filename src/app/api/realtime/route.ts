@@ -1,6 +1,7 @@
 // Owner: P3. POST { build, verdict, token? } -> { instructions, keyterms, model, voice, token?, expiresAt? }.
 // Gives the browser what it needs for the live voice session: fresh instructions for the rocket on screen and,
 // when asked, a short-lived token to open the WebSocket. 502 when no token can be made (UI falls back).
+import { guard } from "@/lib/ai/guard";
 import { grokRealtimeToken, REALTIME_MODEL, REALTIME_VOICE } from "@/lib/ai/grokClient";
 import { LIVE_WELCOME, realtimeInstructions, realtimeKeyterms } from "@/lib/ai/realtime";
 import { AdviseRequestSchema, AgentTurnSchema } from "@/lib/ai/schemas";
@@ -18,14 +19,11 @@ const RealtimeRequestSchema = AdviseRequestSchema.extend({
   history: z.array(AgentTurnSchema).max(20).default([]),
 });
 
-// Tokens cost money: only pages served by this app may ask for one (browsers always send Origin on POST).
-const sameOrigin = (req: Request): boolean => {
-  const origin = req.headers.get("origin");
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-  return origin !== null && host !== null && new URL(origin).host === host;
-};
-
 export async function POST(req: Request): Promise<Response> {
+  // Refreshes (instructions only) happen as the rocket changes; tokens cost money, so they get a tight budget.
+  const wantsToken = req.headers.get("x-grok-token") === "1";
+  const blocked = guard(req, wantsToken ? { bucket: "realtime-token", perMinute: 6, maxBytes: 64_000 } : { bucket: "realtime", perMinute: 120, maxBytes: 64_000 });
+  if (blocked) return blocked;
   const parsed = RealtimeRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return Response.json({ error: "invalid request" }, { status: 400 });
@@ -42,8 +40,8 @@ export async function POST(req: Request): Promise<Response> {
   if (!token) {
     return Response.json(body);
   }
-  if (!sameOrigin(req)) {
-    return Response.json({ error: "forbidden" }, { status: 403 });
+  if (!wantsToken) {
+    return Response.json({ error: "token requests must be marked" }, { status: 400 }); // keeps them on the tight budget
   }
   try {
     const { value, expiresAt } = await grokRealtimeToken(TOKEN_SECONDS, TIMEOUT_MS);

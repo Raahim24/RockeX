@@ -1,4 +1,5 @@
 // Owner: P3. POST AdviseRequest -> AdviseResponse. Always 200 with a usable message for a valid request.
+import { guard } from "@/lib/ai/guard";
 import { advisorContext } from "@/lib/ai/context";
 import { grokJson } from "@/lib/ai/grokClient";
 import {
@@ -27,6 +28,8 @@ const reply = (body: AdviseResponse, source: "grok" | "fallback"): Response =>
   Response.json(body, { headers: { "x-advise-source": source } });
 
 export async function POST(req: Request): Promise<Response> {
+  const blocked = guard(req, { bucket: "advise", perMinute: 30, maxBytes: 64_000 });
+  if (blocked) return blocked;
   const parsed = AdviseRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return Response.json({ error: "invalid AdviseRequest" }, { status: 400 });

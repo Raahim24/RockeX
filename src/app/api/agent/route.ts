@@ -1,6 +1,7 @@
 // Owner: P3. POST { question, history, build, verdict } -> { message, action }. Talk to Grok about the rocket.
 // Grok may return one change; ids are checked against the catalog and anything invalid is dropped (the
 // message is kept). Always 200 with a usable message for a valid request.
+import { guard } from "@/lib/ai/guard";
 import { AGENT_SYSTEM, agentUserPrompt, WELCOME_QUESTION } from "@/lib/ai/agent";
 import { grokJson } from "@/lib/ai/grokClient";
 import {
@@ -27,6 +28,8 @@ const reply = (body: AgentReply, source: "grok" | "fallback"): Response =>
   Response.json(body, { headers: { "x-agent-source": source } });
 
 export async function POST(req: Request): Promise<Response> {
+  const blocked = guard(req, { bucket: "agent", perMinute: 30, maxBytes: 64_000 });
+  if (blocked) return blocked;
   const parsed = AgentRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return Response.json({ error: "invalid AgentRequest" }, { status: 400 });
