@@ -83,7 +83,7 @@ body.bright-sky .brand p.keys {
 /* Shortcut legend under the title: 2 rows of key + action. */
 .brand p.keys {
   display: grid;
-  grid-template-columns: repeat(5, max-content);
+  grid-template-columns: repeat(5, max-content); /* 10 keys: 2 rows of 5 */
   gap: 7px 18px;
   margin-top: 10px;
 }
@@ -704,4 +704,28 @@ body.landing .bar {
   .bar button {
     transition: none;
   }
+}
+
+/* Day/Night and Clear/Cloudy toggles under the key legend (main.js). */
+.sky-toggles {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  pointer-events: auto;
+}
+.sky-toggles button {
+  padding: 4px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: rgba(10, 12, 18, 0.55);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sky-toggles button:hover,
+.sky-toggles button:focus-visible {
+  color: var(--text);
+  outline: none;
+  border-color: var(--holo);
 }

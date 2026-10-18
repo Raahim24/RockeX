@@ -2,7 +2,7 @@
 // visually and keeps its API shape so the integrator can swap one for the other.
 //
 //   createLaunchComplex({ baseRadius_u, stackHeight_u, scale = SCALE, manifest, lightingSun,
-//                         cameraAzimuth = 0.58, spotLights = true, pad = null })
+//                         cameraAzimuth = 0.58, spotLights = true, pad = null, look = "minimal" })
 //     -> { object3d, setVisible(bool), update(t), setLook("painted" | "xray"), setRssAngle(deg), dispose(),
 //          tower, arms, person (= human), masts, waterTower, rss, towerFrame, towerHeight_u, lamps, lights,
 //          cableTray, trench, hardstand, apron, groundY_u, hardstandY_u, radius_u, height_u, rssAngle, rssMaxDeg,
@@ -853,6 +853,7 @@ export function createLaunchComplex({
   cameraAzimuth = 0.58,
   spotLights = true,
   pad = null,
+  look: look0 = "minimal",
 } = {}) {
   const S = shared();
   const L = padLayout({ baseRadius_u, cameraAzimuth });
@@ -2116,12 +2117,61 @@ export function createLaunchComplex({
   object3d.addEventListener("removed", restorePad);
   if (pad) adoptPad(pad);
 
+  // ---------- catch (round 22): SpaceX-style "chopsticks" ----------
+  // catchArms(k), k 0 → 1: the two lowest arms ride to the lower one's height, step out to either side of the
+  // stack axis and swing open (k ≤ 0.4), then close straight in, lengthened so they straddle the stage either side
+  // of the axis (k = 1). k = 0 restores the pose they had at the first call. catchPoint_u: the stack axis at the
+  // arms' height, tower-local (anchors.tower.localToWorld(point.clone()) for world).
+  const catchList = [...arms].sort((p, q) => p.y_u - q.y_u).slice(0, 2);
+  const catchY = catchList[0]?.y_u ?? topY;
+  const catchPoint = v3(-dT, catchY, 0);
+  const catchRest = new Map();
+  const ease = (x) => x * x * (3 - 2 * x);
+  function catchArms(k = 1) {
+    k = clamp(Number(k) || 0, 0, 1);
+    const ride = ease(Math.min(1, k / 0.4));
+    const close = ease(Math.max(0, (k - 0.4) / 0.6));
+    catchList.forEach((a, i) => {
+      if (!catchRest.has(a)) catchRest.set(a, { p: a.mesh.position.clone(), r: a.mesh.rotation.y, s: a.mesh.scale.x });
+      const r0 = catchRest.get(a);
+      const side = i ? 1 : -1;
+      const stretch = (dT - hw + baseRadius_u * 0.9) / a.reach_u;
+      a.mesh.position.set(r0.p.x, r0.p.y + (catchY - r0.p.y) * ride, r0.p.z + side * (baseRadius_u + armW * 0.6) * ride);
+      const open = r0.r + (side * 1.0 - r0.r) * ride;
+      a.mesh.rotation.y = open * (1 - close);
+      a.mesh.scale.x = r0.s + (stretch - r0.s) * ride;
+    });
+    return k;
+  }
+
   // ---------- API ----------
   const shownWas = new Map(); // each child's visibility while the complex is hidden
   const setSpots = () => {
-    for (const s of lights) s.intensity = shown ? s.userData.intensity0 * (look === "xray" ? 0.4 : 1) : 0;
+    for (const s of lights) s.intensity = shown ? s.userData.intensity0 * (look === "xray" ? 0.4 : 1) * (daylight ? 0.25 : 1) : 0;
   };
+  // Day or night at runtime (world.setSky): by day no night falloff on the apron and structures, dim light
+  // pools and spots, no lamp glows or beams (intensities and visibility only; the light count never changes).
+  let daylight = !night;
+  function applyDaylight() {
+    const k = daylight ? 0.25 : 1;
+    groundU.uGFar.value.z = daylight ? 1 : 0.16;
+    nightU.uNight.value.z = daylight ? 1 : 0.2;
+    groundU.uGPoolColor.value.setRGB(1.0, 0.78, 0.55).multiplyScalar(0.9 * k);
+    glowCore.visible = glowHalo.visible = beamsLit.visible = !daylight;
+    setSpots();
+  }
   let look = "painted";
+  applyDaylight();
+  // Minimal (the default, round 22): the pad, hardstand, trench, apron and roads, the FSS with its arms, the water
+  // tower and the lightning masts; the farm, pipe racks, buildings, fence, light poles and the RSS are hidden (the
+  // chase camera flew through them). "full" shows everything.
+  const CLUTTER = ["complex-farm", "complex-rack-bents", "complex-buildings", "complex-windows", "complex-fence-posts", "complex-fence-wires", "complex-light-poles", "complex-rss"];
+  const clutter = CLUTTER.map((n) => object3d.getObjectByName(n)).filter(Boolean);
+  let minimal = look0 !== "full";
+  const applyClutter = () => {
+    for (const o of clutter) o.visible = !minimal;
+  };
+  applyClutter();
   const beaconCol = beaconGeo.attributes.color;
   const padC = new THREE.Vector3();
   function update(t = 0) {
@@ -2192,7 +2242,19 @@ export function createLaunchComplex({
     get visible() {
       return shown;
     },
+    catchArms,
+    catchPoint_u: catchPoint,
+    setDaylight(day = true) {
+      daylight = !!day;
+      applyDaylight();
+    },
+    // "minimal" | "full": what stands (painted look); "painted" | "xray": the look only, keeping what stands
     setLook(next = "painted") {
+      if (next === "minimal" || next === "full") {
+        minimal = next === "minimal";
+        applyClutter();
+        next = "painted";
+      }
       look = next === "xray" ? "xray" : "painted";
       setPropLook(object3d, look);
       setSpots();

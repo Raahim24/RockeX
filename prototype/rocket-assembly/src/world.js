@@ -95,7 +95,13 @@ const bodyFragment = /* glsl */ `
   uniform sampler2D uColor, uBump, uNight, uClouds;
   uniform float uHasNight, uHasClouds, uOcean, uRelief, uHasAtmo, uCloudU;
   uniform vec3 uBetaR, uBetaM, uExtM, uGlowColor;
-  uniform float uHR, uHM, uMieG, uGlow;
+  uniform float uHR, uHM, uMieG, uGlow, uDustH, uCloudCover, uMS, uCumulus, uSkyGain;
+  float cuH(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float cuN(vec2 p) {
+    vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cuH(i), cuH(i + vec2(1.0, 0.0)), f.x), mix(cuH(i + vec2(0.0, 1.0)), cuH(i + vec2(1.0, 1.0)), f.x), f.y);
+  }
+  uniform vec4 uDust;
   varying vec3 vPos;
 
   const float PI = 3.14159265;
@@ -159,7 +165,9 @@ const bodyFragment = /* glsl */ `
       float h = texture2D(uBump, uv).r;
       // relief fades when one map texel covers many pixels (close to the surface): the GPU's bilinear weights are
       // quantized and their steps would show as stripes; camera-relative P: pG = d·t − C loses digits there
-      float texelsPerPx = length(fwidth(uv)) * 1024.0;
+      // (the narrower axis of the pixel's footprint: at grazing angles the long axis spans texels while the short
+      // one is still magnified, and the quantized steps show as a speckled band below the horizon)
+      float texelsPerPx = min(length(dFdx(uv)), length(dFdy(uv))) * 1024.0;
       vec3 N = bumpN(nG, d * tG, h * uRelief * smoothstep(0.004, 0.03, texelsPerPx));
       float ndl0 = dot(nG, uSun);
       float diff = max(dot(N, uSun), 0.0) * smoothstep(-0.03, 0.06, ndl0);
@@ -188,7 +196,7 @@ const bodyFragment = /* glsl */ `
         vec3 pc = d * tc - C;
         vec3 nc = normalize(pc);
         vec2 uv = uvOf(nc);
-        cloudA = smoothstep(0.12, 0.85, texture2D(uClouds, vec2(uv.x + uCloudU, uv.y)).r) * 0.92;
+        cloudA = smoothstep(0.12 - 0.3 * uCloudCover, 0.85 - 0.62 * uCloudCover, texture2D(uClouds, vec2(uv.x + uCloudU, uv.y)).r) * (0.92 + 0.06 * uCloudCover);
         float lit = smoothstep(-0.08, 0.25, dot(nc, uSun));
         cloudCol = vec3(uSunI) * (0.004 + 0.996 * lit);
       }
@@ -196,6 +204,7 @@ const bodyFragment = /* glsl */ `
     // ---- the atmosphere along the ray (single scattering), plus the night haze ----
     vec3 inscatter = vec3(0.0);
     vec3 T = vec3(1.0);
+    float dustK = 0.0;
     if (uHasAtmo > 0.5) {
       vec2 a = hit(d, uRa, uDCC.y);
       if (a.y > 0.0) {
@@ -206,15 +215,17 @@ const bodyFragment = /* glsl */ `
         vec3 sumR = vec3(0.0);
         vec3 sumM = vec3(0.0);
         float dens = 0.0;
+        float dust = 0.0;
         for (int i = 0; i < 16; i++) {
           vec3 p = d * (t0 + (float(i) + 0.5) * dt) - C;
           float h = max(length(p) - uR, 0.0);
           vec2 rho = vec2(exp(-h / uHR), exp(-h / uHM)) * dt;
           od += rho;
           dens += rho.x;
+          dust += exp(-h / uDustH) * dt;
           vec2 ld = lightDepth(p);
           if (ld.x >= 0.0) {
-            vec3 att = exp(-(uBetaR * (od.x + ld.x) + uExtM * (od.y + ld.y)));
+            vec3 att = exp(-(uBetaR * (od.x + ld.x) + uExtM * (od.y + ld.y)) * uMS);
             sumR += rho.x * att;
             sumM += rho.y * att;
           }
@@ -223,24 +234,53 @@ const bodyFragment = /* glsl */ `
         float pR = 3.0 / (16.0 * PI) * (1.0 + mu * mu);
         float g2 = uMieG * uMieG;
         float pM = 3.0 / (8.0 * PI) * ((1.0 - g2) * (1.0 + mu * mu)) / ((2.0 + g2) * pow(1.0 + g2 - 2.0 * uMieG * mu, 1.5));
-        inscatter = uSunI * (sumR * uBetaR * pR + sumM * uBetaM * pM) * 12.0;
+        inscatter = uSunI * (sumR * uBetaR * pR + sumM * uBetaM * pM) * uSkyGain;
         // night haze: thickest along the horizon, saturating to skyAt's haze colour over ~50 km of low air, so the
         // far ground near the horizon meets the near layer's fog colour
         inscatter += uGlowColor * uGlow * (1.0 - exp(-dens * 0.5));
         T = exp(-(uBetaR * od.x + uExtM * od.y));
+        // dust haze (Mars): a layer ~1.5 km thick over the ground; long low paths (the far ground, the horizon)
+        // fade into the dusty horizon colour, in daylight; from orbit it is a few per cent
+        if (uDust.a > 0.0) dustK = (1.0 - exp(-dust * uDust.a)) * smoothstep(-0.1, 0.2, dot(normalize(d * t0 - C), uSun));
       } else if (!ground) discard;
     } else if (!ground) {
       discard;
     }
     if (ground) {
       surf = mix(surf, cloudCol, cloudA);
-      col = surf * T + inscatter;
+      col = mix(surf * T + inscatter, uDust.rgb, dustK);
       trans = 0.0;
     } else {
       float tAvg = dot(T, vec3(0.3333));
-      col = mix(inscatter, cloudCol * tAvg + inscatter, cloudA);
-      trans = tAvg * (1.0 - cloudA);
+      col = mix(mix(inscatter, cloudCol * tAvg + inscatter, cloudA), uDust.rgb, dustK);
+      trans = tAvg * (1.0 - cloudA) * (1.0 - dustK);
+      // fair-weather cumulus low on the horizon (setSky day + clear): flat-based puffs a few degrees high, sunlit
+      // tops, hazed like the sky around them
+      if (uCumulus > 0.0) {
+        vec3 upC = normalize(-C);
+        float el = dot(d, upC);
+        vec3 ax = normalize(cross(upC, vec3(0.0, 0.0, 1.0)) + vec3(1e-5, 0.0, 0.0));
+        float az = atan(dot(d, cross(upC, ax)), dot(d, ax));
+        vec2 q = vec2(az * 14.0, el * 90.0);
+        float n = cuN(q) * 0.55 + cuN(q * 2.3 + 7.0) * 0.3 + cuN(q * 5.1 + 3.0) * 0.15;
+        float dens = n - 0.55 * clamp((el - 0.012) / 0.05, 0.0, 1.0) - 0.25 * cuN(vec2(az * 3.0, 1.7));
+        float cu = smoothstep(0.42, 0.55, dens) * smoothstep(0.008, 0.016, el) * uCumulus;
+        vec3 cuCol = mix(vec3(0.62, 0.66, 0.72), vec3(1.0, 0.98, 0.95), smoothstep(0.45, 0.75, n + 0.3 * (el - 0.012) / 0.05)) * uSunI * 0.95;
+        col = mix(col, mix(cuCol, col, 0.25), cu);
+        trans *= 1.0 - cu;
+      }
+      // overcast (setSky cloudy): under the deck the whole sky is its grey base, brightest overhead
+      if (uCloudCover > 0.0) {
+        vec3 upC = normalize(-C);
+        float under = step(length(C), uRc);
+        float el = dot(d, upC);
+        vec3 deck = vec3(0.4, 0.43, 0.47) * uSunI * (0.85 + 0.25 * el);
+        float k = uCloudCover * under * smoothstep(-0.03, 0.04, el);
+        col = mix(col, deck, k);
+        trans *= 1.0 - k;
+      }
     }
+    if (ground && uCloudCover > 0.0) col = mix(col, vec3(0.4, 0.43, 0.47) * uSunI, uCloudCover * step(length(C), uRc) * (1.0 - exp(-length(d * tG) * 0.12)));
     gl_FragColor = vec4(col, trans);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -253,10 +293,10 @@ function bodyLook(name) {
   const air = atmosphereFor(name);
   const H = air && !air.none ? air.scaleHeight_m / 1000 / KM_PER_UNIT : 0;
   if (name === "earth")
-    return { maps: ["earth_day", "earth_bump", "earth_night", "earth_clouds"], ocean: 1, relief: 0.8, atmo: { H, HM: 0.12, betaR: [0.058, 0.135, 0.331], betaM: [0.21, 0.21, 0.21], extM: [0.231, 0.231, 0.231], g: 0.76, top: 10 * H, glow: 1, glowColor: [0.008, 0.022, 0.07] } }; // glow = skyAt("earth", 0).haze
+    return { maps: ["earth_day", "earth_bump", "earth_night", "earth_clouds"], ocean: 1, relief: 0.8, atmo: { H, HM: 0.12, betaR: [0.058, 0.135, 0.331], betaM: [0.1, 0.1, 0.1], extM: [0.231, 0.231, 0.231], g: 0.76, top: 10 * H, glow: 1, glowColor: [0.008, 0.022, 0.07], ms: 0.3, gain: 8 } }; // glow = skyAt("earth", 0).haze
   if (name === "mars")
     // Mars: dust scatters red most but absorbs blue, so its extinction is roughly neutral (butterscotch sky)
-    return { maps: ["mars_color", "mars_bump"], ocean: 0, relief: 1.2, atmo: { H, HM: H, betaR: [0.004, 0.007, 0.014], betaM: [0.36, 0.21, 0.09], extM: [0.2, 0.2, 0.2], g: 0.6, top: 8 * H, glow: 0, glowColor: [0, 0, 0] } };
+    return { maps: ["mars_color", "mars_bump"], ocean: 0, relief: 1.2, atmo: { H, HM: H, betaR: [0.004, 0.007, 0.014], betaM: [0.36, 0.21, 0.09], extM: [0.2, 0.2, 0.2], g: 0.6, top: 8 * H, glow: 0, glowColor: [0, 0, 0], dust: null, dustH: 0.15 } }; // dust (parked with the Mars relief): [0.25, 0.15, 0.09, 0.4] = the horizon's colour, 1/e over ~25 km of low air (est.)
   return { maps: ["moon_color", "moon_disp"], ocean: 0, relief: 0.6, atmo: null };
 }
 
@@ -297,6 +337,14 @@ function createBody(name) {
     uHM: { value: atmo?.HM || 1 },
     uMieG: { value: atmo?.g ?? 0.7 },
     uGlow: { value: atmo?.glow ?? 0 },
+    uDust: { value: new THREE.Vector4(...(atmo?.dust ?? [0, 0, 0, 0])) },
+    uCloudCover: { value: 0 }, // 0 fair weather (the cloud map as it is) … 1 overcast (setSky)
+    // in-scattered light's extinction factor: < 1 stands in for multiple scattering, so a low daytime sky stays
+    // pale blue instead of going yellow (single scattering loses the blue over long low paths); Earth only
+    uMS: { value: atmo?.ms ?? 1 },
+    uCumulus: { value: 0 }, // fair-weather cumulus on the horizon (setSky day + clear)
+    uSkyGain: { value: atmo?.gain ?? 12 }, // in-scatter brightness (visual)
+    uDustH: { value: atmo?.dustH || 1 },
   };
   const mat = new THREE.ShaderMaterial({
     uniforms,
@@ -518,6 +566,7 @@ export function createWorld({ renderer = null } = {}) {
   const rel = new THREE.Vector3();
   let time0 = typeof performance !== "undefined" ? performance.now() : 0;
   function update() {
+    if (retint.size) retintPending();
     geo.copy(bodies[viewer.body].center_km).add(viewer.pos_km); // viewer, geocentric km (doubles)
     camera.position.set(0, 0, 0);
     camera.quaternion.copy(viewer.frame).multiply(viewer.quaternion);
@@ -735,8 +784,62 @@ export function createWorld({ renderer = null } = {}) {
       return { ...s, haze: s.horizon.clone() };
     }
     const k = 1 - THREE.MathUtils.smoothstep(alt_km, 0, 30); // the haze band thins to nothing by ~30 km
+    if (skyState.time === "day") {
+      // day (setSky): blue overhead, pale toward the horizon; overcast: grey; fading to space with height
+      const space = THREE.MathUtils.smoothstep(alt_km, 5, 60);
+      const cloudy = skyState.weather === "cloudy";
+      const zenith = (cloudy ? new THREE.Color(0.4, 0.43, 0.48) : new THREE.Color(0.07, 0.21, 0.64)).multiplyScalar(1 - space);
+      const horizon = (cloudy ? new THREE.Color(0.52, 0.55, 0.59) : new THREE.Color(0.5, 0.65, 0.86)).multiplyScalar(1 - 0.9 * space);
+      return { zenith, horizon, haze: horizon.clone().multiplyScalar(k), stars: space };
+    }
     const haze = new THREE.Color(0.008, 0.022, 0.07).multiplyScalar(k);
     return { zenith: new THREE.Color(0.0015, 0.002, 0.005).multiplyScalar(0.3 + 0.7 * k), horizon: haze.clone(), haze, stars: 1 };
+  }
+  // ---- the sky over the pad: day / night, clear / cloudy (round 22) ----
+  // setSky({ time: "day" | "night", weather: "clear" | "cloudy" }) (default day + clear; the world starts at night
+  // until it is called) moves the world's sun (day: 40° up, from the
+  // south-west, behind the home view's left shoulder; night: the round-17 sun below the horizon), turns the night
+  // haze off by day, thickens the cloud map to overcast and dims the sun under it. It returns the near layer's
+  // light recipe for those conditions (main's key / fill / hemisphere and fog take colours and intensities from
+  // it; the light count never changes): { time, weather, sunDir (world = the pad's site frame: +x east, +y up,
+  // +z south), key: { color, intensity }, fill: { color, intensity }, hemi: { sky, ground, intensity },
+  // environmentIntensity, fog: { color, near_u, far_u }, background } (colours linear; visual values).
+  const skyState = { time: "night", weather: "clear" };
+  const DAY_SUN = new THREE.Vector3(-0.34, 0, 0.94).normalize().multiplyScalar(Math.cos(40 * DEG)).setY(Math.sin(40 * DEG));
+  const NIGHT_SUN = sunDir.clone();
+  function setSky({ time = "day", weather = "clear" } = {}) {
+    skyState.time = time === "day" ? "day" : "night";
+    skyState.weather = weather === "cloudy" ? "cloudy" : "clear";
+    const day = skyState.time === "day";
+    const cloudy = skyState.weather === "cloudy";
+    setSunDir(day ? DAY_SUN : NIGHT_SUN);
+    const e = bodies.earth.uniforms;
+    e.uGlow.value = day ? 0 : 1;
+    e.uCloudCover.value = cloudy ? 1 : 0;
+    e.uCumulus.value = day && !cloudy ? 1 : 0;
+    e.uSunI.value = 1.2 * (cloudy && day ? 0.6 : 1);
+    sun.sprite.material.opacity = cloudy ? 0.15 : 1;
+    return skyRecipe();
+  }
+  function skyRecipe() {
+    const day = skyState.time === "day";
+    const cloudy = skyState.weather === "cloudy";
+    const s = skyAt("earth", 0);
+    const C = (r, g, b) => new THREE.Color(r, g, b);
+    if (!day)
+      return { ...skyState, sunDir: sunDir.clone(), key: { color: new THREE.Color(0xffb48a), intensity: 2.8 }, fill: { color: new THREE.Color(0x6a7fa8), intensity: 0.3 }, hemi: { sky: new THREE.Color(0x8fa6c8), ground: new THREE.Color(0x0f1118), intensity: 0.08 }, environmentIntensity: 0.25, fog: { color: s.horizon, near_u: 45, far_u: 130 }, background: new THREE.Color(0x0b0d12) };
+    return {
+      ...skyState,
+      sunDir: sunDir.clone(),
+      // clear: a strong sun over a light fill (contrast), fog only far out (a crisp pad to the horizon, haze at
+      // the sea line); cloudy: flat light and a closer haze
+      key: cloudy ? { color: C(0.86, 0.88, 0.92), intensity: 0.9 } : { color: C(1.0, 0.91, 0.78), intensity: 4.8 },
+      fill: cloudy ? { color: C(0.7, 0.73, 0.78), intensity: 0.5 } : { color: C(0.5, 0.64, 0.95), intensity: 0.3 },
+      hemi: cloudy ? { sky: C(0.62, 0.65, 0.7), ground: C(0.24, 0.24, 0.23), intensity: 2.0 } : { sky: C(0.38, 0.55, 0.92), ground: C(0.4, 0.32, 0.22), intensity: 0.55 },
+      environmentIntensity: cloudy ? 0.7 : 0.4,
+      fog: cloudy ? { color: s.horizon, near_u: 400, far_u: 5000 } : { color: s.horizon, near_u: 6000, far_u: 40000 },
+      background: s.horizon.clone(),
+    };
   }
   function surfaceColourAt(name, lat, lon) {
     const b = bodies[name];
@@ -770,6 +873,7 @@ export function createWorld({ renderer = null } = {}) {
     const f = surfaceFrame(name, up);
     const surface_km = up.clone().multiplyScalar(b.radius_km);
     const tint = surfaceColourAt(name, f.lat, f.lon);
+    const tintLater = !samplePixel(b.uniforms.uColor.value, f.lat, f.lon); // map still loading: a stand-in colour
     const size_u = size_km * NEAR_U_PER_KM;
     let kind;
     let inner;
@@ -782,6 +886,7 @@ export function createWorld({ renderer = null } = {}) {
         kind = "ground";
         // a disc out to the horizon, curving with the Earth (like the ocean), fogged by the near layer far out
         const m = new THREE.Mesh(horizonDisc(120 * NEAR_U_PER_KM, RADIUS_KM.earth * NEAR_U_PER_KM), new THREE.MeshStandardMaterial({ color: tint, roughness: 0.95 }));
+        if (tintLater) retint.set(m, { name, lat: f.lat, lon: f.lon, apply: (t) => m.material.color.copy(t) });
         m.frustumCulled = false;
         m.receiveShadow = true;
         m.name = "world-local-ground";
@@ -804,6 +909,10 @@ export function createWorld({ renderer = null } = {}) {
       const si = inner.sun?.intensity ?? (name === "mars" ? 2.2 : 2.8);
       const ch = (k) => far / (inner.albedoMean * ((sc[k] * si * nl) / Math.PI + (L.ambient ?? 0) * Math.max(sky[k], 0.05)));
       inner.scaleAlbedo([ch("r"), ch("g"), ch("b")]);
+      // the far layer's dust haze on the patch too (at ground density), so its edge meets the far ground
+      const dust = b.atmo?.dust;
+      if (dust && inner.setHaze) inner.setHaze(new THREE.Color(dust[0], dust[1], dust[2]), (KM_PER_UNIT / dust[3]) * NEAR_U_PER_KM);
+      if (tintLater) retint.set(inner, { name, lat: f.lat, lon: f.lon, apply: (t) => inner.scaleAlbedo([t.r / tint.r, t.g / tint.g, t.b / tint.b]) });
     }
     const object3d = new THREE.Group();
     object3d.name = `world-local-${name}`;
@@ -822,10 +931,23 @@ export function createWorld({ renderer = null } = {}) {
         object3d.position.copy(surface_km).sub(nearOrigin_km).applyQuaternion(inv).multiplyScalar(NEAR_U_PER_KM);
       },
       dispose() {
+        retint.delete(inner);
+        object3d.traverse((o) => retint.delete(o));
         inner.dispose?.();
         object3d.removeFromParent();
       },
     };
+  }
+  // Local grounds made before the colour map loaded took a stand-in colour; update() gives them the map's colour
+  // as soon as it is there (else the patch would stand out from the far ground around it).
+  const retint = new Map();
+  function retintPending() {
+    for (const [k, r] of retint) {
+      const px = samplePixel(bodies[r.name].uniforms.uColor.value, r.lat, r.lon);
+      if (!px) continue;
+      r.apply(new THREE.Color().setRGB(...px, THREE.SRGBColorSpace));
+      retint.delete(k);
+    }
   }
   // A cloud deck for the near layer at alt_km above the local ground (Earth only; null elsewhere).
   function cloudDeck(name = "earth", alt_km = CLOUD_ALT_KM) {
@@ -844,5 +966,5 @@ export function createWorld({ renderer = null } = {}) {
     quad.geometry.dispose();
     quadMat.dispose();
   }
-  return { scene, camera, bodies, sunDir, sunLight, stats, setResolutionScale, setEnabled, clearColor, setViewer, setViewerECI, setDestination, setBodyECI, fromECI, toECI, eciFrame, setSunDir, sunForSite, landingSite, skyAt, surfaceColourAt, isOceanAt, atmosphereLimb, createLocalGround, cloudDeck, attach, update, render, createPass, dispose };
+  return { scene, camera, bodies, sunDir, sunLight, stats, setSky, skyRecipe, get sky() { return { ...skyState }; }, setResolutionScale, setEnabled, clearColor, setViewer, setViewerECI, setDestination, setBodyECI, fromECI, toECI, eciFrame, setSunDir, sunForSite, landingSite, skyAt, surfaceColourAt, isOceanAt, atmosphereLimb, createLocalGround, cloudDeck, attach, update, render, createPass, dispose };
 }

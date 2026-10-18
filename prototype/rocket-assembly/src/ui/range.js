@@ -1,5 +1,6 @@
 // The range line: hazards.js's launch call as one HUD line, with its factors one click away.
-//   mountRange({ host, assessment, onOpen? }) -> { update(assessment), setPhase(phase), dispose() }
+//   mountRange({ host, assessment, onOpen?, dock? }) -> { update(assessment), setPhase(phase), dispose() }
+//     dock: false keeps the line in host at every width (the readiness panel hosts it).
 //     host: the HUD element (ensureShell's .hud). phase: "pad" | "countdown" | "flight" | "result".
 //     onOpen(): called when the factors popover opens.
 //   buildLine(assessment, phase = "pad") -> plain text ("" when the phase shows nothing)
@@ -130,7 +131,7 @@ body.bright-sky .rng-dock { background: rgba(6, 8, 12, 0.42); box-shadow: 0 0 0 
 let styleRefs = 0;
 let styleEl = null;
 
-export function mountRange({ host, assessment = null, onOpen = null } = {}) {
+export function mountRange({ host, assessment = null, onOpen = null, dock: canDock = true } = {}) {
   if (!styleRefs++) {
     styleEl = el("style", { "data-range": true, text: CSS });
     document.head.append(styleEl);
@@ -152,7 +153,7 @@ export function mountRange({ host, assessment = null, onOpen = null } = {}) {
     wrap.style.top = r && r.height > 0 ? `${Math.round(r.bottom + GAP)}px` : ""; // "" = the CSS 80 px
   }
   function place() {
-    const dock = Boolean(mq?.matches) || !host;
+    const dock = !host || (canDock && Boolean(mq?.matches));
     wrap.classList.toggle("rng-dock", dock);
     const parent = dock ? document.body : host;
     if (wrap.parentNode !== parent) parent.append(wrap);

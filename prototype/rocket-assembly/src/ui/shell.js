@@ -3,20 +3,21 @@
 // creates whatever is missing in the expected place, rewrites the hint line from KEYS so it always lists the
 // current keys, and returns the elements. Nothing else in the demo looks elements up by id.
 //   ensureShell() -> { canvas, brand, hint, detail, hud, hudText, bar, btnRockets, rocketsEl, btnBuildAll,
-//                      btnExplode, btnReset }
+//                      btnExplode, btnReset, btnStory }
 // The site makes no sound: a host page's Sound button (#btn-sound) is removed, never created.
 
-// The shortcut legend under the title (a compact grid, 2 rows of 5): [key(s), what it does].
+// The shortcut legend under the title (a compact grid): [key(s), what it does]. Compare and the save card are
+// gone from the page (the user's call); their code stays for the team app's bridge commands.
 const KEYS = [
   [["Space"], "explode"],
   [["B"], "build"],
   [["L"], "launch"],
   [["R"], "reset"],
   [["[", "]"], "rocket"],
-  [["C"], "compare"],
   [["P"], "story"],
   [["X"], "opacity"],
-  [["S"], "card"],
+  [["N"], "day/night"],
+  [["W"], "weather"],
   [["Esc"], "close"],
 ];
 
@@ -71,8 +72,9 @@ export function ensureShell() {
   const btnBuildAll = button("btn-build-all", "Build all");
   const btnExplode = button("btn-explode", "Explode", undefined, { disabled: "" });
   const btnReset = button("btn-reset", "Reset", "quiet");
+  const btnStory = button("btn-story", "Story", "quiet"); // the guided demo (key P)
   document.getElementById("btn-sound")?.remove();
-  for (const b of [btnBuildAll, btnExplode, btnReset]) if (!b.isConnected) bar.appendChild(b);
+  for (const b of [btnBuildAll, btnExplode, btnReset, btnStory]) if (!b.isConnected) bar.appendChild(b);
   const btnRockets = button("btn-rockets", "Rockets", "quiet", { "aria-expanded": "false", "aria-controls": "rockets" });
   if (!btnRockets.isConnected) bar.insertBefore(btnRockets, btnBuildAll);
   let rocketsEl = document.getElementById("rockets");
@@ -82,5 +84,5 @@ export function ensureShell() {
     btnRockets.after(rocketsEl);
   }
 
-  return { canvas, brand, hint, detail, hud, hudText, bar, btnRockets, rocketsEl, btnBuildAll, btnExplode, btnReset };
+  return { canvas, brand, hint, detail, hud, hudText, bar, btnRockets, rocketsEl, btnBuildAll, btnExplode, btnReset, btnStory };
 }

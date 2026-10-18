@@ -114,24 +114,30 @@ const GEO_R = Math.cbrt(398600.4418 * ((23.9345 * 3600) / (2 * Math.PI)) ** 2); 
 const EASE_S = 86400; // Mars cruise: speed eases over the first and the last day (model choice)
 const SITE = { lat: 28.5, lon: -80.6 };
 const LAMBDA = 6; // 1/s: sim speed = 1 + LAMBDA * (sim seconds since the window)
+// Beats in space ramp faster (sim speed e^14 per screen second, about 26 % per frame), so the coasts stay short on
+// screen (Earth missions: everything after the ascent within 20 s; a transfer within 4 s) and nothing is seen
+// going round; the ascent and the descents keep the gentle ramp. Screen time only: the sim is unchanged.
+const LAMBDA_SPACE = 14;
+// ("reentry" counts: most of it is high, thin air; the landing burn keeps the gentle ramp)
+const SPACE_SEGMENTS = new Set(["orbit", "parking-orbit", "departure-burn", "transfer", "coast", "lunar-orbit", "mars-orbit", "escape", "deorbit-burn", "deorbit-coast", "reentry"]);
 const SOFT_P = 4; // soft-minimum exponent between the window ramp and the base rate (4: two square roots)
 const DROP = { speed_ms: 2, duration_s: 2 }; // model choice
 const BURN_CUE_S = 1;
 const TURN_FRACTION = 0.25; // a coast turns to the next attitude over its last quarter
 const SHARE = {
-  earth: { ascent: 22, orbit: 6, "deorbit-burn": 2, "deorbit-coast": 4, reentry: 8, landing: 6 }, // 48 (LEO, then home)
-  gto: { ascent: 22, "parking-orbit": 4, "departure-burn": 3.5, transfer: 4.5, "deorbit-burn": 2, "deorbit-coast": 4, reentry: 7, landing: 6 }, // 53
-  moon: { ascent: 22, "parking-orbit": 4, "departure-burn": 3.5, transfer: 8, "lunar-orbit": 4, braking: 5, approach: 3.5, vertical: 5 }, // 55
-  "moon-orbit": { ascent: 22, "parking-orbit": 4, "departure-burn": 3.5, transfer: 8, "lunar-orbit": 4.5 }, // 42
-  mars: { ascent: 22.5, "parking-orbit": 4, "departure-burn": 3.5, transfer: 9, entry: 8, parachute: 5, approach: 5, vertical: 8 }, // 65
-  "mars-orbit": { ascent: 22.5, "parking-orbit": 4, "departure-burn": 3.5, transfer: 9, "mars-orbit": 5 }, // 44
-  failed: { ascent: 23, "parking-orbit": 4, "departure-burn": 3.5, transfer: 6, coast: 9.5 }, // 40 (46 with a Moon pass)
+  earth: { ascent: 22, orbit: 5, "deorbit-burn": 1.5, "deorbit-coast": 2.5, reentry: 6, landing: 4 }, // 41 (LEO, then home: 19 s after the ascent)
+  gto: { ascent: 22, "parking-orbit": 3, "departure-burn": 1.8, transfer: 2.8, "deorbit-burn": 0.5, "deorbit-coast": 2.2, reentry: 4.8, landing: 2.8 }, // ~40 (<= 20 after; segments at their floors)
+  moon: { ascent: 22, "parking-orbit": 4, "departure-burn": 3.5, transfer: 3.6, "lunar-orbit": 4, braking: 6.5, approach: 4.5, vertical: 6.9 }, // 55
+  "moon-orbit": { ascent: 22, "parking-orbit": 4, "departure-burn": 3.5, transfer: 3.6, "lunar-orbit": 5 }, // 38.1
+  mars: { ascent: 22.5, "parking-orbit": 4, "departure-burn": 3.5, transfer: 3.6, entry: 9.5, parachute: 6, approach: 6.5, vertical: 9.4 }, // 65
+  "mars-orbit": { ascent: 22.5, "parking-orbit": 4, "departure-burn": 3.5, transfer: 3.6, "mars-orbit": 5 }, // 38.6
+  failed: { ascent: 23, "parking-orbit": 4, "departure-burn": 3.5, transfer: 3.6, coast: 6 }, // 36.5 (40.1 with a Moon pass)
   lost: { ascent: 35 },
 };
 const FAILED_ASCENT_S = 35; // a flight that never reaches orbit is all ascent
-// The real-time windows and the ramps out of them set a floor per segment (about 3.9 s for the parking orbit,
-// 3.3 s for the departure burn, 7.9 s for a Moon transfer, 3.6 s for a lunar orbit ending in a descent, 5 s for
-// the vertical descent, 16-20 s for an ascent); the shares sit above it.
+// The real-time windows and the ramps out of them set a floor per segment (about 3.1-3.4 s for the parking orbit,
+// 1.8-2.1 s for the departure burn, 3.3 s for a transfer, 2.1 s for a lunar orbit ending in a descent, 5 s for the
+// vertical descent, 16-20 s for an ascent); the shares sit above it.
 
 // ---------- vector helpers ----------
 const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -280,25 +286,29 @@ function elements(p, v, mu) {
 function buildClock(segs, windows) {
   const T0 = segs[0].t0;
   const T1 = segs.at(-1).t1;
+  // [a, b, lambda before, lambda after]: merged windows keep the gentler ramp on each side
   const win = windows
-    .map(([a, b]) => [Math.max(T0, a), Math.min(T1, b)])
+    .map(([a, b, lb = LAMBDA, la = lb]) => [Math.max(T0, a), Math.min(T1, b), lb, la])
     .filter(([a, b]) => b >= a)
     .sort((x, y) => x[0] - y[0])
     .reduce((m, w) => {
       const last = m.at(-1);
-      if (last && w[0] <= last[1]) last[1] = Math.max(last[1], w[1]);
-      else m.push([...w]);
+      if (last && w[0] <= last[1]) {
+        last[1] = Math.max(last[1], w[1]);
+        last[2] = Math.min(last[2], w[2]);
+        last[3] = Math.min(last[3], w[3]);
+      } else m.push([...w]);
       return m;
     }, []);
   const pts = [T0, T1];
   for (const s of segs) for (let i = 0; i <= 1500; i++) pts.push(s.t0 + ((s.t1 - s.t0) * i) / 1500);
-  for (const [a, b] of win) {
+  for (const [a, b, lb, la] of win) {
     for (let t = a; t < b; t += 0.05) pts.push(t);
     pts.push(b);
     for (let k = 1; k < 2000; k++) {
-      const d = (Math.exp(k * 0.02) - 1) / LAMBDA;
-      if (a - d < T0 && b + d > T1) break;
-      pts.push(a - d, b + d);
+      const u = Math.exp(k * 0.02) - 1;
+      if (a - u / lb < T0 && b + u / la > T1) break;
+      pts.push(a - u / lb, b + u / la);
     }
   }
   const grid = Float64Array.from(pts.filter((t) => t >= T0 && t <= T1)).sort();
@@ -312,13 +322,14 @@ function buildClock(segs, windows) {
   for (let i = 0; i < n; i++) {
     const t = sim[i];
     while (w < win.length - 1 && win[w + 1][0] <= t) w++;
-    let d = Infinity;
+    let r = 0;
     for (const j of [w - 1, w, w + 1]) {
       const x = win[j];
       if (!x) continue;
-      d = Math.min(d, t < x[0] ? x[0] - t : t > x[1] ? t - x[1] : 0);
+      const d = t < x[0] ? x[0] - t : t > x[1] ? t - x[1] : 0;
+      r = Math.max(r, 1 / (1 + (t < x[0] ? x[2] : x[3]) * d));
     }
-    rw[i] = 1 / (1 + LAMBDA * d);
+    rw[i] = r;
     while (k < segs.length - 1 && t > segs[k].t1) k++;
     seg[i] = k;
   }
@@ -436,7 +447,8 @@ export function flightTimeline(build, catalog, opts = {}) {
   const windows = [];
   const stageDrops = [];
   const ev = (type, t, extra = {}) => events.push({ type, t_sim: round(t, 3), ...extra });
-  const win = (a, b) => windows.push([a, b]);
+  const win = (a, b, lam = LAMBDA, lamAfter = lam) => windows.push([a, b, lam, lamAfter]);
+  const winSpace = (a, b) => win(a, b, LAMBDA_SPACE); // beats in space: the clock leaves them faster
   const burnCue = (t, burns) => {
     for (const [tb, name] of burns) if (Math.abs(t - tb) <= BURN_CUE_S) return name;
     return null;
@@ -612,8 +624,8 @@ export function flightTimeline(build, catalog, opts = {}) {
         },
       });
       ev("deorbit-burn", plan.tD, { body: "earth", stage: upper, dv_ms: Math.round(plan.dvB * 1000), modelled: plan.modelled });
-      win(plan.tD - 0.5, plan.tD + 0.5);
-      win(plan.tB - 0.5, plan.tB + 0.5);
+      winSpace(plan.tD - 0.5, plan.tD + 0.5);
+      winSpace(plan.tB - 0.5, plan.tB + 0.5);
       pieces.push({
         name: "deorbit-coast",
         body: "earth",
@@ -651,9 +663,10 @@ export function flightTimeline(build, catalog, opts = {}) {
       for (const e of ret.events) {
         const type = { entry: "entry-burn", lost: "touchdown" }[e.type] ?? e.type;
         ev(type, tE + e.t, { body: "earth", stage: upper, ...(e.phase ? { phase: e.phase } : {}), ...(type === "touchdown" ? { site, speed_ms: round(ret.touchdownSpeed_ms, 2) } : {}) });
-        if (type === "entry-burn" || type === "landing-burn") win(tE + e.t - 0.5, tE + e.t + 0.5);
+        if (type === "entry-burn") winSpace(tE + e.t - 0.5, tE + e.t + 0.5);
+        if (type === "landing-burn") win(tE + e.t - 0.5, tE + e.t + 0.5);
       }
-      win(tDown - 3, tDown);
+      win(tDown - 2, tDown); // the last 2 s of an Earth landing in real time
       const thPad = wrap(thE + ret.landingX_m / 1000 / R.earth); // the touchdown's angle from the Cape, along the track
       const legs = Boolean(catalog.visuals?.tanks?.[stg?.tankId]?.features?.includes("landing-legs"));
       const touch = posAt(tDown).pos;
@@ -688,7 +701,7 @@ export function flightTimeline(build, catalog, opts = {}) {
       pieces.push({ name: "orbit", body: "earth", t0: tEndAscent, t1: tD, fn: stageOrbit(tRel), coast: true });
       if (release) {
         ev("payload-release", release.t, { body: "earth", stage: upper });
-        win(release.t - 0.5, release.t + 1.5);
+        winSpace(release.t - 0.3, release.t + 0.7);
         stageDrops.push(dropAway("payload-release", upper, release.t, stageOrbit(tRel)(release.t), PAYLOAD_OFF, { part: "payload" }));
         if (ownEscape) ev("spacecraft-departure", release.t + 1, { body: "earth", dv_ms: Math.round(departure * 1000), note: "the spacecraft's own escape burn (est.; not flown)" });
       }
@@ -730,10 +743,10 @@ export function flightTimeline(build, catalog, opts = {}) {
       const pCut = burn.at(-1).p;
       const vCut = burn.at(-1).v;
       ev("departure-burn", tDep, { body: "earth", stage: upper, dv_ms: Math.round(burnDv * 1000), duration_s: round(burnT, 1) });
-      win(tDep - 0.5, tDep + 0.5);
+      winSpace(tDep - 0.5, tDep + 0.5);
       if (depleted) ev("depleted", tCut, { body: "earth", stage: upper, stageIndex: upper, altitude_m: Math.round((len(pCut) - R.earth) * 1000), v_ms: Math.round(len(vCut) * 1000), dv_ms: Math.round(burnDv * 1000) });
       else ev("departure-cutoff", tCut, { body: "earth", stage: upper, dv_ms: Math.round(burnDv * 1000) });
-      win(tCut - 0.5, tCut + 0.5);
+      winSpace(tCut - 0.5, tCut + 0.8); // cutoff, and the spacecraft leaving the stage half a second later
       if (burnT >= 1) {
         pieces.push({
           name: "departure-burn",
@@ -747,13 +760,12 @@ export function flightTimeline(build, catalog, opts = {}) {
           },
         });
       }
-      // the spacecraft leaves the spent stage 30 s after cutoff
-      const tSep = tCut + 30;
+      // the spacecraft leaves the spent stage 0.5 s after cutoff (inside the cutoff's real-time window)
+      const tSep = tCut + 0.5;
       // Earth missions follow the stage home; the others follow the spacecraft
       const homeBound = arrival.success && arrival.body === "earth";
       const craft = (t) => (homeBound ? { stageIndex: upper, mass_kg: t < tSep ? mCut : mCut - (payload?.mass_kg ?? 0) } : { stageIndex: t < tSep ? upper : null, mass_kg: t < tSep ? mCut : payloadMass });
       ev("spacecraft-sep", tSep, { body: "space", stage: upper });
-      win(tSep - 0.3, tSep + 0.7);
       const el = elements(pCut, vCut, MU.earth);
       const orbitOut = { apogee_km: Number.isFinite(el.apogee) ? round(el.apogee - R.earth, 0) : null, perigee_km: round(el.perigee - R.earth, 0), period_s: Number.isFinite(el.period) ? round(el.period, 0) : null };
       const coastPiece = (name, arc, extra = () => ({})) => (t) => {
@@ -839,7 +851,7 @@ export function flightTimeline(build, catalog, opts = {}) {
           const ring = (beta, r) => add(mul(u1, r * Math.cos(beta)), mul(u2, r * Math.sin(beta)));
           const ringV = (beta, v) => add(mul(u1, -v * Math.sin(beta)), mul(u2, v * Math.cos(beta)));
           ev("lunar-orbit-insertion", tArr, { body: "moon" });
-          win(tArr - 0.5, tArr + 0.5);
+          winSpace(tArr - 0.5, tArr + 0.5);
           const loState = (t) => {
             const beta = omLo * (t - tArr);
             const rel = ring(beta, rLo);
@@ -921,7 +933,7 @@ export function flightTimeline(build, catalog, opts = {}) {
           const u2 = unit(sub(dHat, mul(u1, dot(dHat, u1))));
           if (arrival.lands) {
             ev("entry-interface", tEi, { body: "mars" });
-            win(tEi - 0.5, tEi + 0.5);
+            winSpace(tEi - 0.5, tEi + 0.5);
             const tEnd = addDescent(descentTimeline(payload, { body: "mars" }), "mars", tEi, 0, u1, u2, () => marsC, () => [0, 0, 0]);
             endState = end("landed", arrival.lines.at(-1), { body: "mars" });
             ev("end", tEnd, { body: "mars" });
@@ -930,7 +942,7 @@ export function flightTimeline(build, catalog, opts = {}) {
             const omO = vO / rEnd;
             const tEnd = tEi + Math.PI / 2 / omO;
             ev("mars-orbit-insertion", tEi, { body: "mars" });
-            win(tEi - 0.5, tEi + 0.5);
+            winSpace(tEi - 0.5, tEi + 0.5);
             const moState = (t) => {
               const beta = omO * (t - tEi);
               const rel = add(mul(u1, rEnd * Math.cos(beta)), mul(u2, rEnd * Math.sin(beta)));
@@ -1018,7 +1030,11 @@ export function flightTimeline(build, catalog, opts = {}) {
   }
 
   // ---- the clock: every boundary sits in a real-time window, so the rate is continuous across segments
-  for (let i = 1; i < pieces.length; i++) win(pieces[i].t0 - 0.3, pieces[i].t0 + 0.3);
+  for (let i = 1; i < pieces.length; i++) {
+    // each side of a boundary ramps as its own segment does: fast in space, gentle in the air
+    const lam = (piece) => (SPACE_SEGMENTS.has(piece.name) ? LAMBDA_SPACE : LAMBDA);
+    win(pieces[i].t0 - 0.3, pieces[i].t0 + 0.3, lam(pieces[i - 1]), lam(pieces[i]));
+  }
   const failed = pieces.length === 1;
   const share = SHARE[shareKey];
   const sumShare = failed ? FAILED_ASCENT_S : pieces.reduce((a, p) => a + (share[p.name] ?? 0), 0);

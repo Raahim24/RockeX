@@ -26,7 +26,8 @@ import { createCard } from "./ui/card.js";
 import { createScrub } from "./ui/scrub.js";
 import { ensureShell } from "./ui/shell.js";
 import { createLanding } from "./ui/landing.js";
-import { mountRange, narrationFor } from "./ui/range.js";
+import { narrationFor } from "./ui/range.js";
+import { mountReadiness } from "./ui/readiness.js";
 import { createGroundMap } from "./fx/launchfx.js";
 import { createWorld } from "./world.js";
 import { flightTimeline, flightSummaryText } from "./flight.js";
@@ -103,12 +104,16 @@ scene.add(key, key.target);
 const fill = new THREE.DirectionalLight(0x6a7fa8, 0.3);
 fill.position.set(0.34, 0.45, -0.94).multiplyScalar(40);
 scene.add(fill);
-scene.add(new THREE.HemisphereLight(0x8fa6c8, 0x0f1118, 0.08));
+const hemi = new THREE.HemisphereLight(0x8fa6c8, 0x0f1118, 0.08);
+scene.add(hemi);
+let skyKeyDir = null; // by day the key light is the sun (world.setSky's sunDir)
+let skyFog = null;
 
 const root = new THREE.Group(); // shakes on lock
 scene.add(root);
 let pad = null;
 let anchors = null; // the launch complex (complex.js): tower, arms, RSS, person, masts at true size, on the pad
+const skyState = { time: "day", weather: "clear" }; // the user's Day/Night (N) and Clear/Cloudy (W) toggles
 const RSS_MATED = 120; // degrees; the countdown swings it away (choreo)
 // UI4's star field is a 90–130 u shell; pushed out ×30 (as in UI4's world harness) so no star sits in front of a
 // globe, with the points scaled to keep their size on screen.
@@ -152,7 +157,7 @@ function placeShadow(dt, snap) {
   const ax = s.c.dot(SHADOW_AXES.x);
   const ay = s.c.dot(SHADOW_AXES.y);
   key.target.position.copy(s.c).addScaledVector(SHADOW_AXES.x, Math.round(ax / texel) * texel - ax).addScaledVector(SHADOW_AXES.y, Math.round(ay / texel) * texel - ay);
-  key.position.copy(key.target.position).addScaledVector(choreo.state.keyDir ?? KEY_DIR, s.dist); // a landing site's sun on its ground
+  key.position.copy(key.target.position).addScaledVector(choreo.state.keyDir ?? skyKeyDir ?? KEY_DIR, s.dist); // a landing site's sun on its ground; the day sun
 }
 
 // Contact shadow: a soft dark blob on the deck under the stack, where the key light's shadow map is too coarse to
@@ -219,6 +224,7 @@ function applyBounds(b) {
   anchors?.dispose();
   anchors = createLaunchComplex({ baseRadius_u: b.baseRadius_u, stackHeight_u: b.height_u, manifest: current.manifest, pad: pad.group });
   anchors.setRssAngle(RSS_MATED); // the service structure stands mated around the vehicle on the pad
+  anchors.setDaylight?.(skyState.time === "day");
   pad.group.add(anchors.object3d);
 }
 applyBounds(current.bounds);
@@ -234,7 +240,31 @@ const sfx = createSfx();
 // Off during the landing dive, which draws its own planet and sky.
 const world = createWorld({ renderer });
 const BG = scene.background;
+const FOG0 = scene.fog.color.clone();
 world.clearColor.copy(BG); // what shows behind the builder while the far layer is off
+// The sky (UI4's world.setSky): one recipe for the far layer and for main's existing lights, fog and background
+// (colours and intensities only; no light is ever added or removed). Day + clear by default.
+const asColor = (c, out) => (c?.isColor ? out.copy(c) : Array.isArray(c) ? out.setRGB(c[0], c[1], c[2]) : c != null ? out.set(c) : out);
+function applySky() {
+  const r = world.setSky?.({ ...skyState });
+  if (!r) return;
+  asColor(r.key?.color, key.color);
+  if (Number.isFinite(r.key?.intensity)) key.intensity = r.key.intensity;
+  skyKeyDir = r.time === "day" && r.sunDir ? new THREE.Vector3().copy(r.sunDir).normalize() : null;
+  asColor(r.fill?.color, fill.color);
+  if (Number.isFinite(r.fill?.intensity)) fill.intensity = r.fill.intensity;
+  asColor(r.hemi?.sky, hemi.color);
+  asColor(r.hemi?.ground, hemi.groundColor);
+  if (Number.isFinite(r.hemi?.intensity)) hemi.intensity = r.hemi.intensity;
+  if (Number.isFinite(r.environmentIntensity)) scene.environmentIntensity = r.environmentIntensity;
+  asColor(r.fog?.color, FOG0);
+  scene.fog.color.copy(FOG0);
+  skyFog = r.time === "day" ? r.fog : null; // by day the air is clear: the haze only far off (its suggested band)
+  asColor(r.background, BG);
+  world.clearColor.copy(BG);
+  anchors?.setDaylight?.(r.time === "day");
+  skyButtons();
+}
 const aurora = createAurora({});
 world.attach("earth", aurora); // its glow follows the day's simulated space weather (hazards.js stormGlow)
 const PAD_KM = new THREE.Vector3(0, world.bodies.earth.radius_km, 0);
@@ -396,8 +426,30 @@ createScrub({
 
 // ---------- UI ----------
 const { btnRockets, rocketsEl, btnBuildAll, btnExplode, btnReset, hudText } = shell;
-// The range line (UI 5's range.js): a persistent "Range: GO · …" button in the HUD with a factors popover.
-const rangeUi = mountRange({ host: shell.hud, onOpen: () => selector.clear() });
+// The readiness panel (UI 5's readiness.js): destination picker (Orbit · GTO · Moon · Mars), Speed / Push /
+// Parts rows, the range line with its factors popover, and the flight result. rangeUi keeps its phase calls.
+const readyUi = mountReadiness({ hud: shell.hud, destinations: catalogModule.destinations?.() ?? [], onDestination: (missionId) => setMission(missionId) });
+const rangeUi = { setPhase: (phase) => readyUi.setPhase(phase), update: () => pushReadiness() };
+function pushReadiness() {
+  const mission = catalog.missions.find((m) => m.id === current.build.missionId) ?? null;
+  readyUi.update({
+    build: current.build,
+    verdict: current.verdict,
+    mission,
+    readiness: catalogModule.readiness?.(current.verdict, current.build.missionId ?? mission) ?? null,
+    assessment: range.a,
+    complete: isComplete(),
+    summary: telemetry.final ? { headline: telemetry.headline ?? "", ok: Boolean(telemetry.ok), sentences: telemetry.sentences ?? [] } : null,
+  });
+}
+// The picker: the same build for another destination (no part changes): new verdict, range, bridge, HUD.
+function setMission(missionId) {
+  if (!missionId || missionId === current.build.missionId || choreo.state.launch || choreo.state.busy) return;
+  current = loadBuild(current.preset, { ...current.build, missionId });
+  announce();
+  if (isComplete()) assessRange();
+  syncUi();
+}
 
 // Build all becomes Launch once the stack is complete.
 btnBuildAll.addEventListener("click", () => (isComplete() ? launch() : choreo.buildAll()));
@@ -435,10 +487,6 @@ function rocketsHtml(mode = "switch") {
     const cur = mode === "switch" && i === presetIndex && !current.modified;
     rows.push(`<li><button type="button" class="opt" data-i="${i}"${cur ? ' aria-current="true"' : ""}><span class="opt-name">${f.esc(p.name)}</span><span class="opt-meta" title="${f.esc(meta)}">${f.esc(meta)}</span></button></li>`);
   });
-  if (mode === "switch" && matchMedia("(pointer: coarse)").matches && isComplete() && !choreo.state.launch) {
-    const [name, meta] = twin || rival ? ["Clear comparison", "Back to this rocket alone"] : ["Compare…", "Beside the closest real rocket or another preset"];
-    rows.push(`<li class="more"><button type="button" class="opt" data-compare="1"><span class="opt-name">${name}</span><span class="opt-meta">${meta}</span></button></li>`);
-  }
   return `<ul>${rows.join("")}</ul>`;
 }
 function setRocketsOpen(open, mode = "switch") {
@@ -476,6 +524,27 @@ addEventListener("pointerdown", (e) => {
 });
 btnExplode.addEventListener("click", () => choreo.toggleExplode());
 btnReset.addEventListener("click", () => reset());
+shell.btnStory?.addEventListener("click", () => runStory());
+// Day/Night (N) and Clear/Cloudy (W): two small buttons under the key legend.
+const skyBar = document.createElement("div");
+skyBar.className = "sky-toggles";
+skyBar.innerHTML = `<button type="button" data-sky="time"></button><button type="button" data-sky="weather"></button>`;
+shell.brand.appendChild(skyBar);
+function skyButtons() {
+  skyBar.querySelector('[data-sky="time"]').textContent = skyState.time === "day" ? "Day" : "Night";
+  skyBar.querySelector('[data-sky="weather"]').textContent = skyState.weather === "clear" ? "Clear" : "Cloudy";
+}
+function toggleSky(which) {
+  if (which === "time") skyState.time = skyState.time === "day" ? "night" : "day";
+  else skyState.weather = skyState.weather === "clear" ? "cloudy" : "clear";
+  applySky();
+}
+skyBar.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-sky]");
+  if (!b) return;
+  toggleSky(b.dataset.sky);
+  b.blur();
+});
 
 
 // HUD: running tally while building (parts, stacked height, stacked mass from the records via physics),
@@ -542,6 +611,7 @@ function syncUi() {
   if (sel && (!sel.built || (sel.busy && !swapping) || !parts.includes(sel))) selector.clear();
   if (card.part) card.refresh(cardContext());
   selector.refresh();
+  pushReadiness();
 }
 
 // ---------- app bridge (team PR #30, ported verbatim in behaviour) ----------
@@ -830,7 +900,10 @@ function onTelemetry(tel) {
     const headline = sum?.headline ?? st.line ?? st.text ?? "";
     const html = `<strong class="${ok ? "go" : "nogo"}">${f.esc(headline)}</strong> · est.`;
     telemetry.final = html;
+    telemetry.headline = headline;
+    telemetry.ok = ok;
     telemetry.sentences = [...(sum?.sentences ?? []), ...[].concat(range.a ? narrationFor(range.a) ?? [] : [])];
+    pushReadiness();
     report("launch", [headline, ...telemetry.sentences].join(" "));
     hudText.innerHTML = html;
     return;
@@ -1270,13 +1343,8 @@ async function runStory() {
     await until(() => !choreo.state.ending && !choreo.state.deploying); // the planet ending (≤ 8 s)
     await hold(600);
 
-    // Back on the pad beside its closest real twin, then a slow orbit around both.
-    choreo.returnToPad();
-    await hold(700);
-    showTwin();
-    await hold(800);
-    controls.autoRotate = true;
-    controls.autoRotateSpeed = 0.5;
+    // The story ends on the flight result: the end line holds with the readiness panel's FLIGHT RESULT (R, Esc
+    // or a double-click goes back to the pad, as after any launch).
   } catch (e) {
     if (e !== CANCELLED) throw e;
   } finally {
@@ -1299,9 +1367,6 @@ function showStoryEnd() {
   else choreo.appearBuilt();
   setTimeout(() => {
     if (choreo.state.busy) choreo.skip();
-    showTwin();
-    controls.autoRotate = true;
-    controls.autoRotateSpeed = 0.5;
   }, 900);
 }
 
@@ -1376,10 +1441,11 @@ addEventListener("keydown", (e) => {
   } else if (k === "b") choreo.buildAll();
   else if (k === "r") reset();
   else if (k === "l") launch();
-  else if (k === "c") toggleCompare();
-  else if (k === "s") saveCard();
+  // (C compare and S save card are gone from the page; the bridge's show_twin / save_card still reach them.)
   else if (k === "x") setPropLook(pad.group, choreo.toggleLookAll() === "clear" ? "xray" : "painted"); // pad and anchors follow the build
   else if (k === "p") runStory();
+  else if (k === "n") toggleSky("time");
+  else if (k === "w") toggleSky("weather");
   else if (k === "[") switchPreset(-1);
   else if (k === "]") switchPreset(1);
 });
@@ -1435,6 +1501,7 @@ addEventListener("pointerdown", unlock);
 addEventListener("keydown", unlock);
 
 // ---------- loop ----------
+applySky();
 choreo.prewarm(renderer);
 // The planets' maps load after the warm-up: upload them as soon as they arrive, not on the frame they first show.
 const loaded = THREE.DefaultLoadingManager.onLoad;
@@ -1530,7 +1597,7 @@ function updateDof(dt) {
 }
 
 const band = { near: null, far: null }; // fog band widths, eased
-const FOG0 = scene.fog.color.clone();
+// (FOG0 is declared with the world above: the sky recipe sets it)
 const STAR0 = stars.material.opacity;
 let hadSky = false;
 // The fade through black between the ending's scenes (choreo.state.cut): over the canvas, under the page UI.
@@ -1541,12 +1608,12 @@ canvas.after(cutEl);
 const clock = new THREE.Clock();
 function frame() {
   const rawDt = clock.getDelta();
-  const dt = Math.min(rawDt, 0.05);
+  const dt = rawDt > 1 ? 0 : Math.min(rawDt, 0.05); // a stall over 1 s (tab hidden, GPU blocked) never advances the flight clock
   const t = clock.elapsedTime;
   luxuryBudget(rawDt);
   // The far layer draws only in flight; at home it just clears to the builder's background (UI4's setEnabled),
   // and the landing dive draws its own sky over a cleared near pass.
-  const worldOn = !landingOn() && Boolean(choreo.state.launch);
+  const worldOn = !landingOn(); // at home too: the day sky and the sea behind the pad
   world.setEnabled(worldOn);
   scene.background = landingOn() ? BG : null;
   stars.visible = !worldOn; // the world draws its own
@@ -1577,6 +1644,11 @@ function frame() {
   band.near = band.near == null ? goalNear : band.near + (goalNear - band.near) * kb;
   band.far = band.far == null ? goalFar : band.far + (goalFar - band.far) * kb;
   const dist = camera.position.distanceTo(controls.target);
+  if (skyFog && Number.isFinite(skyFog.near_u)) {
+    // Day: the builder's tight depth band would wash the far side of everything into the bright haze.
+    scene.fog.near = Math.max(scene.fog.near, skyFog.near_u);
+    scene.fog.far = Math.max(scene.fog.far, skyFog.far_u ?? skyFog.near_u * 4);
+  }
   const open = landing?.fogOpen ?? 0; // the landing's dive opens the band wide (ground map, cloud deck)
   scene.fog.near = Math.max(0.1, THREE.MathUtils.lerp(dist - band.near, dist * 0.5, open));
   scene.fog.far = THREE.MathUtils.lerp(dist + band.far, dist * 8, open);
@@ -1603,7 +1675,7 @@ function frame() {
   // Daylight scenes in flight (the sun up over where the vehicle is, low enough to be under a lit sky): a faint
   // dark scrim behind the HUD line and the key legend keeps them legible (body.bright-sky).
   const vv = worldOn ? choreo.viewer() : null;
-  let bright = false;
+  let bright = !vv && worldOn && skyState.time === "day"; // the day sky behind the builder
   if (vv) {
     const up = viewerKm.copy(vv.pos_km);
     const alt = up.length() - world.bodies.earth.radius_km;

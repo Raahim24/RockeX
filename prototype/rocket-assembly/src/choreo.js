@@ -1210,6 +1210,12 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         const top = spent.reduce((a, b) => (!a || b.slotY > a.slotY ? b : a), null);
         if (top) puffsOn(top, [0.1, 0.45]); // cold-gas push-off from its top ring
         L.chase.sep0 = L.real;
+        // The onboard look-back (first stage only, on the timeline): cut in, ~2 s, cut back to the chase.
+        if (L.F && e.stage === 0 && top && !L.onboardDone) {
+          L.onboardDone = true;
+          const sepY = top.slotY + top.height - L.pivotY;
+          L.cut = { t: 0, up: 0, fired: false, hold: 0, fn: () => (L.onboard = { part: top, sepY, until: L.real + 2 }) };
+        }
         break;
       }
       case "tea-teb":
@@ -1502,10 +1508,54 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     return g;
   }
+  const spUp = new THREE.Vector3();
+  const spFwd = new THREE.Vector3(1, 0, 0);
+  const spGoal = new THREE.Vector3();
+  const spLook = new THREE.Vector3();
+  function spaceCam(dt) {
+    const c = L.chase;
+    // Local up at the vehicle, in near axes: from the current body's centre out to the vehicle.
+    const centre = bodyCentre(L.smp.body === "space" ? "earth" : L.smp.body, L.smp);
+    spUp.copy(L.V).sub(centre).normalize().applyQuaternion(L.QnInv);
+    // Direction of travel along the surface (the velocity, or the nose when the velocity is near vertical).
+    const v = L.smp.vel_eci_kms ?? L.smp.vel_kms;
+    const f = v ? new THREE.Vector3(v[0], v[1], v[2]).applyQuaternion(world.eciFrame).applyQuaternion(L.QnInv) : null;
+    if (f) {
+      f.addScaledVector(spUp, -f.dot(spUp));
+      if (f.lengthSq() > 1e-8) spFwd.lerp(f.normalize(), 1 - Math.exp(-dt / 0.8)).normalize(); // eased: no snaps
+    }
+    const seg = L.smp.segment;
+    const low = /reentry|landing|braking|approach|vertical|entry|parachute/.test(seg);
+    const el = THREE.MathUtils.degToRad(low ? 10 : 24);
+    const dist = L.trackDist * (low ? 1.3 : 1.6);
+    L.flight.localToWorld(spLook.set(0, c.trackY ?? L.trackLocalY, 0));
+    spGoal.copy(spLook).addScaledVector(spFwd, -Math.cos(el) * dist).addScaledVector(spUp, Math.sin(el) * dist);
+    // In space, aim a little below the vehicle so the Earth and its limb fill the lower part of the frame.
+    if (!low) spLook.addScaledVector(spUp, -0.12 * dist);
+    c.space = Math.min(1, (c.space ?? 0) + dt / 2.5); // blend in from the ascent framing over 2.5 s
+    const k = c.space * c.space * (3 - 2 * c.space);
+    camera.position.lerp(spGoal, k);
+    camera.up.copy(Y).lerp(spUp, k).normalize(); // the horizon level with the planet below
+    chaseLook.lerp(spLook, k);
+  }
+  // The onboard look-back at first-stage separation (round 22): a camera on the upper stage looking back down at
+  // the booster falling away, ~2 s, in and out through quick fades.
+  const obEye = new THREE.Vector3();
+  const obAim = new THREE.Vector3();
+  function onboardCam() {
+    const r = stackRadius();
+    const o = L.onboard;
+    const side = new THREE.Vector3(Math.sin(0.58), 0, Math.cos(0.58));
+    L.flight.localToWorld(obEye.set(side.x * r * 3.4, o.sepY + r * 4.5, side.z * r * 3.4));
+    if (o.part?.group.visible) o.part.group.localToWorld(obAim.set(0, o.part.height * 0.3, 0));
+    else L.flight.localToWorld(obAim.set(0, o.sepY - r * 8, 0));
+    camera.position.copy(obEye);
+    chaseLook.copy(obAim);
+  }
   function chaseCam(dt, t, done = false) {
     const c = L.chase;
     const g = chaseGoals(t, done);
-    if (done || (L.smp && L.smp.segment !== "ascent" && !/braking|approach|vertical|reentry|landing/.test(L.smp.segment))) c.azDrift += dt * 0.04;
+    // (No drift round the vehicle: the user read it as the rocket spinning round the planet.)
     let dAz = g.az + c.azDrift - c.az;
     dAz = Math.atan2(Math.sin(dAz), Math.cos(dAz));
     c.az += dAz * (1 - Math.exp(-dt / TAU.ang));
@@ -1530,6 +1580,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const lag = p.sub(chaseV);
     if (lag.length() > 2.5 * c.dist) lag.setLength(2.5 * c.dist);
     camera.position.copy(chaseV).addScaledVector(lag, 1 - c.anchor);
+    // Past the ascent on the timeline: behind the vehicle in ITS local frame (up = away from the planet's centre,
+    // forward = its direction of travel), Earth below with the limb in frame, eased in, never orbiting. The near
+    // axes stay the launch site's, so the pad-frame rule above would tilt the planet as the vehicle goes round.
+    if (L.F && L.smp && L.smp.segment !== "ascent") spaceCam(dt);
+    if (L.onboard) onboardCam();
     // The first 1.8 s: from wherever the builder's camera was into the pad shot.
     const k = L.padCam.k.v;
     if (k < 1) camera.position.lerpVectors(L.padCam.from, camera.position, k);
@@ -1737,6 +1792,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   function flightUpdate(dt) {
     const F = L.F;
     L.dtFrame = dt;
+    if (L.cut) stepCut(L, dt);
+    if (L.onboard && L.real >= L.onboard.until && !L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 0, fn: () => (L.onboard = null) };
     if (!L.done) L.real += dt;
     const tS = L.real;
     state.countdown = tS < 0;
@@ -2681,6 +2738,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     controls.maxPolarAngle = L.maxPolar0;
     controls.maxDistance = L.maxDist0;
+    camera.up.set(0, 1, 0);
     state.pastTower = false;
     state.countdown = false;
     if (L.far0) {

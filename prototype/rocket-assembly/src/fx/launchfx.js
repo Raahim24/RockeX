@@ -90,21 +90,23 @@ const SPRITE_VERT = (body, { nearFade = false } = {}) => /* glsl */ `
     vUv = position.xy + 0.5; vA = a; vCol = col; vSoft = soft;
   }
 `;
-const SPRITE_FRAG = (additive) => /* glsl */ `
+// blend: "add" (additive), "normal", or "premult": one draw mixing both (a particle with soft < 0 adds light, the
+// rest cover like "normal"; |soft| is the falloff either way)
+const SPRITE_FRAG = (additive, premult = false) => /* glsl */ `
   varying vec2 vUv;
   varying float vA;
   varying vec3 vCol;
   varying float vSoft;
   void main() {
     float r = length(vUv * 2.0 - 1.0);
-    float g = pow(max(0.0, 1.0 - r), 1.0 + vSoft);
+    float g = pow(max(0.0, 1.0 - r), 1.0 + abs(vSoft));
     if (g <= 0.001) discard;
-    ${additive ? "gl_FragColor = vec4(vCol * vA * g, 1.0);" : "gl_FragColor = vec4(vCol, clamp(vA * g, 0.0, 1.0));"}
+    ${premult ? "float ag = clamp(vA * g, 0.0, 1.0); gl_FragColor = vec4(vCol * ag, vSoft < 0.0 ? 0.0 : ag);" : additive ? "gl_FragColor = vec4(vCol * vA * g, 1.0);" : "gl_FragColor = vec4(vCol, clamp(vA * g, 0.0, 1.0));"}
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }
 `;
-function sprites({ count, uniforms = {}, body, additive = true, nearFade = false, seed = 1, name }) {
+function sprites({ count, uniforms = {}, body, additive = true, premult = false, nearFade = false, seed = 1, name }) {
   const geo = new THREE.InstancedBufferGeometry();
   geo.index = QUAD.index;
   geo.setAttribute("position", QUAD.attributes.position);
@@ -116,10 +118,11 @@ function sprites({ count, uniforms = {}, body, additive = true, nearFade = false
   const mat = new THREE.ShaderMaterial({
     uniforms: { uTime: { value: 0 }, uI: { value: 0 }, ...uniforms },
     vertexShader: SPRITE_VERT(body, { nearFade }),
-    fragmentShader: SPRITE_FRAG(additive),
+    fragmentShader: SPRITE_FRAG(additive && !premult, premult),
     transparent: true,
+    premultipliedAlpha: premult,
     depthWrite: false,
-    blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    blending: additive && !premult ? THREE.AdditiveBlending : THREE.NormalBlending,
     side: THREE.DoubleSide, // the velocity-aligned basis can mirror the quad; never cull it
     fog: false,
   });
@@ -1098,6 +1101,91 @@ function glowTexture() {
   glowTex.magFilter = glowTex.minFilter = THREE.LinearFilter;
   glowTex.needsUpdate = true;
   return glowTex;
+}
+
+// (16) Touchdown burst (round 22): an Earth landing's last moment, when the landing burn ends. A brief engine
+// flare at the base (adds light), then a ring of billows thrown out along the surface: grey dust on the pad,
+// white steam and spray on the drone ship; for a tower catch ("catch") a puff round the engines instead, no ground
+// ring. 2.6 s, one draw, no lights. fire(position, scale_u): position in the object3d's frame (the engine base on
+// the surface), scale_u ~ the stage radius. Visual model, every size and time est.
+export function createTouchdownBurst({ surface = "pad" } = {}) {
+  const DUR = 2.6;
+  const kind = surface === "ship" ? 1 : surface === "catch" ? 2 : 0;
+  const u = { uStart: { value: -100 }, uOrigin: { value: new THREE.Vector3() }, uScale: { value: 1 }, uKind: { value: kind } };
+  const mesh = sprites({
+    count: 48,
+    premult: true,
+    seed: 91,
+    name: "fx-touchdown-billows",
+    uniforms: u,
+    body: /* glsl */ `
+      uniform float uStart, uScale, uKind;
+      uniform vec3 uOrigin;
+      void particle(inout vec3 c, inout vec2 sz, inout float a, inout vec3 col, inout vec3 vel, inout float soft) {
+        float t = uTime - uStart;
+        if (t < 0.0 || t > ${DUR.toFixed(1)}) return;
+        float k = t / ${DUR.toFixed(1)};
+        if (gl_InstanceID >= 45) {                      // the flare at the base as the burn ends (drawn last: on top)
+          float f = t / 0.4;
+          if (f > 1.0) return;
+          float j = float(gl_InstanceID - 45);
+          c = uOrigin + vec3(0.0, uScale * (0.1 + 0.6 * j), 0.0);
+          sz = vec2(uScale * (7.0 - 1.8 * j) * (0.7 + 0.6 * f));   // wider than the stage
+          a = 2.2 * (1.0 - f) * (1.0 - f);
+          col = mix(vec3(1.0, 0.85, 0.6), vec3(1.0, 0.5, 0.2), f) * 1.6;
+          soft = -1.2;                                  // adds light
+          return;
+        }
+        bool catchK = uKind > 1.5;
+        vec3 tint = uKind > 0.5 && uKind < 1.5 ? vec3(0.88, 0.91, 0.94) : catchK ? vec3(0.78, 0.78, 0.77) : vec3(0.6, 0.57, 0.52);
+        if (gl_InstanceID < 37) {                       // the ring (or the catch's puff)
+          float ang = (float(gl_InstanceID) + aSeed.x) * 6.2831853 / 37.0;
+          float d0 = catchK ? 0.8 : 1.2;
+          float reach = catchK ? 3.0 : 8.0;
+          float r = uScale * (d0 + reach * sqrt(k) * (0.6 + 0.6 * aSeed.w));
+          float s = uScale * (1.6 + (catchK ? 2.6 : 3.4) * k) * (0.7 + 0.6 * aSeed.y);
+          float y = catchK ? uScale * (aSeed.z - 0.5) * 2.0 - uScale * 0.8 * k : 0.45 * s + uScale * 0.2 * aSeed.z;
+          c = uOrigin + vec3(cos(ang) * r, y, sin(ang) * r);
+          sz = vec2(s * 1.3, s);
+          a = (catchK ? 0.5 : 0.65) * smoothstep(0.0, 0.06, t) * (1.0 - smoothstep(0.45, 1.0, k));
+          // lit by the flare at first
+          col = mix(vec3(1.0, 0.7, 0.45), tint, smoothstep(0.05, 0.3, t / 1.0));
+          soft = 2.4;
+          return;
+        }
+        // what lingers (37–44): a few billows over the spot, rising slowly
+        vec2 o = (aSeed.xy - 0.5) * uScale * 3.0;
+        float s = uScale * (2.2 + 3.0 * k) * (0.7 + 0.6 * aSeed.w);
+        c = uOrigin + vec3(o.x, 0.5 * s + uScale * (0.4 + 1.6 * k) * aSeed.z, o.y);
+        sz = vec2(s);
+        a = 0.4 * smoothstep(0.1, 0.5, t) * (1.0 - smoothstep(0.6, 1.0, k));
+        col = tint * 0.95;
+        soft = 2.6;
+      }
+    `,
+  });
+  const object3d = group("fx-touchdown", mesh);
+  object3d.visible = false;
+  let time = 0;
+  let until = -1;
+  return {
+    object3d,
+    surface: ["pad", "ship", "catch"][kind],
+    fire(position, scale_u = 1) {
+      u.uOrigin.value.copy(position ?? new THREE.Vector3());
+      u.uScale.value = Math.max(1e-3, scale_u);
+      u.uStart.value = time;
+      until = time + DUR;
+      object3d.visible = true;
+    },
+    update(dt) {
+      time += dt;
+      mesh.material.uniforms.uTime.value = time;
+      object3d.visible = time < until;
+    },
+    active: () => time < until,
+    dispose: disposeAll(object3d),
+  };
 }
 
 // (15) Impact: a failed ascent hitting the sea or the ground. One additive burst (flash, fireball, glowing
