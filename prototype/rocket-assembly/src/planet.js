@@ -1,9 +1,10 @@
 // Planets, landing surface and touchdown dust, in the demo's x-ray palette (dark shaded bodies, warm key,
 // peach rims and lines). Everything procedural, no textures.
-//   createPlanet({ kind: "earth" | "moon" | "mars", radius_u }) -> { object3d, update(t), setSunDir(v3), dispose() }
+//   createPlanet({ kind: "earth" | "moon" | "mars", radius_u }) -> { object3d, update(t, camera?), setSunDir(v3), dispose() }
 //     3 draws: the body (one ShaderMaterial: shading, surface, Earth's clouds), a peach graticule every 15°
 //     (opacity 0.12, turns with the body), and a thin additive atmosphere shell (Earth, Mars; the Moon has none).
-//     Slow self-rotation in update(t) (t in seconds). setSunDir(world direction) moves the terminator.
+//     Slow self-rotation in update(t) (t in seconds); pass the camera too and the graticule fades as the globe
+//     gets small on screen (15° lines would crowd into a cage). setSunDir(world direction) moves the terminator.
 //     Built to read both huge (landing page, radius ~40 u filling the lower half of the frame) and small.
 //   createSurfacePatch({ kind, radius_u }) -> { object3d, dispose() }
 //     flat ground disc for the landing close-up with peach line-art (opacity 0.2, fog on): craters and rocks
@@ -20,7 +21,7 @@ const DEFAULT_SUN = new THREE.Vector3(-0.45, 0.75, 0.5).normalize(); // matches 
 
 // Per kind: surface colours (linear) and atmosphere.
 const KINDS = {
-  earth: { define: "KIND_EARTH", base: [0.035, 0.05, 0.075], land: [0.085, 0.095, 0.085], atmo: [0.3, 0.5, 1.0], atmoGain: 0.55 },
+  earth: { define: "KIND_EARTH", base: [0.03, 0.045, 0.07], land: [0.08, 0.09, 0.08], atmo: [0.3, 0.5, 1.0], atmoGain: 0.4 },
   moon: { define: "KIND_MOON", base: [0.13, 0.13, 0.135], land: [0.085, 0.085, 0.09], atmo: null, atmoGain: 0 },
   mars: { define: "KIND_MARS", base: [0.2, 0.08, 0.04], land: [0.11, 0.05, 0.03], atmo: [0.9, 0.55, 0.35], atmoGain: 0.3 },
 };
@@ -98,7 +99,7 @@ const bodyFragment = /* glsl */ `
     float a = uTime * 0.01;
     vec3 cp = vec3(vObj.x * cos(a) - vObj.z * sin(a), vObj.y, vObj.x * sin(a) + vObj.z * cos(a));
     float band = smoothstep(0.75, 0.2, abs(vObj.y)) * smoothstep(0.0, 0.25, abs(vObj.y) + 0.05);
-    clouds = smoothstep(0.55, 0.75, fbm3(cp * vec3(3.0, 7.0, 3.0) + 5.3)) * band * 0.45;
+    clouds = smoothstep(0.58, 0.78, fbm3(cp * vec3(4.0, 9.0, 4.0) + 5.3)) * band * 0.3;
   #endif
   #ifdef KIND_MOON
     float maria = smoothstep(0.45, 0.62, fbm3(vObj * 1.6 + 7.0));
@@ -116,13 +117,14 @@ const bodyFragment = /* glsl */ `
   #endif
     float ndl = dot(N, L);
     float diff = smoothstep(-0.04, 1.0, ndl);
-    vec3 col = albedo * (uSunColor * diff * 1.7 + uAmbient);
+    vec3 col = albedo * (uSunColor * diff * 1.25 + uAmbient);
     col = mix(col, vec3(0.55, 0.57, 0.6) * (uSunColor * diff * 1.5 + uAmbient * 2.0), clouds);
     col += uSunColor * glint * diff;
     float ndl0 = dot(N0, L);
     col += uRim * exp(-pow(ndl0 / 0.1, 2.0)) * 0.06;                                  // warm terminator
     float fres = pow(1.0 - clamp(dot(N0, V), 0.0, 1.0), 4.0);
-    col += uRim * fres * (0.12 + 0.88 * smoothstep(-0.25, 0.6, ndl0)) * 0.55;          // peach fresnel rim
+    fres = pow(fres, 1.25);                                                              // narrow on huge globes
+    col += uRim * fres * (0.1 + 0.9 * smoothstep(-0.25, 0.6, ndl0)) * 0.35;           // peach fresnel rim
     gl_FragColor = vec4(col, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -211,12 +213,18 @@ export function createPlanet({ kind = "earth", radius_u = 40 } = {}) {
     object3d.add(atmo);
   }
 
+  const centre = new THREE.Vector3();
   return {
     object3d,
     radius_u: R,
-    update(t = 0) {
+    update(t = 0, camera = null) {
       body.rotation.y = t * SPIN;
       time.value = t;
+      if (camera) {
+        // angular radius on screen: full graticule above ~0.12 rad, down to a quarter below ~0.02 rad
+        const ang = R / Math.max(1e-6, camera.position.distanceTo(object3d.getWorldPosition(centre)));
+        gratMat.opacity = 0.12 * THREE.MathUtils.clamp((ang - 0.02) / 0.1, 0.25, 1);
+      }
     },
     setSunDir(v) {
       if (v && v.lengthSq() > 0) sun.value.copy(v).normalize();
@@ -355,7 +363,8 @@ const dustFragment = /* glsl */ `
   varying float vAlpha;
   void main() {
     vec2 c = gl_PointCoord - 0.5;
-    float g = exp(-dot(c, c) * 10.0);
+    float r = length(c) * 2.0;                                  // 0 centre .. 1 edge of the point sprite
+    float g = (1.0 - smoothstep(0.0, 1.0, r)) * exp(-r * r * 2.0);
     gl_FragColor = vec4(uColor * g * vAlpha, 1.0);
   }
 `;
@@ -378,7 +387,7 @@ export function createDustPuff() {
   geo.setAttribute("aSpeed", new THREE.BufferAttribute(speed, 1));
   geo.setAttribute("aSize", new THREE.BufferAttribute(size, 1));
   geo.setAttribute("aRise", new THREE.BufferAttribute(rise, 1));
-  const uniforms = { uT: { value: 0 }, uRadius: { value: 1 }, uViewportH: { value: 900 }, uColor: { value: new THREE.Color(0.55, 0.45, 0.36) } };
+  const uniforms = { uT: { value: 0 }, uRadius: { value: 1 }, uViewportH: { value: 900 }, uColor: { value: new THREE.Color(0.3, 0.24, 0.18) } }; // dusty grey-brown
   const mat = new THREE.ShaderMaterial({ uniforms, vertexShader: dustVertex, fragmentShader: dustFragment, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, fog: false });
   const points = new THREE.Points(geo, mat);
   points.frustumCulled = false; // positions come from the shader
