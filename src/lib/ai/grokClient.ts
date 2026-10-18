@@ -5,6 +5,7 @@ const BASE_URL = "https://api.x.ai/v1";
 export const ADVISOR_MODEL = "grok-4.20-non-reasoning";
 export const IMAGE_MODEL = "grok-imagine-image-2.0";
 const VOICE = "eve";
+const TRANSCRIBE_MODEL = "grok-voice-transcribe-2.0";
 
 export class GrokError extends Error {}
 
@@ -54,12 +55,14 @@ export const grokJson = async (opts: {
   schemaName: string;
   schema: Record<string, unknown>;
   timeoutMs: number;
+  /** 0 (default) for repeatable output; higher for livelier wording. */
+  temperature?: number;
 }): Promise<unknown> => {
   const data = (await post(
     "/responses",
     {
       model: ADVISOR_MODEL,
-      temperature: 0,
+      temperature: opts.temperature ?? 0,
       store: false,
       input: [
         { role: "system", content: opts.system },
@@ -110,4 +113,54 @@ export const grokSpeech = async (text: string, timeoutMs: number): Promise<Array
     throw new GrokError("/tts: empty audio");
   }
   return audio;
+};
+
+interface TranscriptOutput {
+  text?: string;
+}
+
+/** Speech to text (grok-voice-transcribe-2.0). The container format is auto-detected. */
+export const grokTranscribe = async (audio: Blob, filename: string, timeoutMs: number): Promise<string> => {
+  const form = new FormData();
+  form.append("model", TRANSCRIBE_MODEL);
+  form.append("language", "en");
+  form.append("file", audio, filename); // xAI: the file must be the last field
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/stt`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey()}` },
+      body: form,
+      signal: AbortSignal.timeout(timeoutMs),
+      cache: "no-store",
+    });
+  } catch (err) {
+    if (err instanceof GrokError) {
+      throw err;
+    }
+    throw new GrokError(`/stt: ${err instanceof Error && err.name === "TimeoutError" ? `timeout after ${timeoutMs} ms` : String(err)}`);
+  }
+  if (!res.ok) {
+    throw new GrokError(`/stt: HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  }
+  const text = ((await res.json()) as TranscriptOutput).text?.trim();
+  if (!text) {
+    throw new GrokError("/stt: empty transcript");
+  }
+  return text;
+};
+
+export const REALTIME_MODEL = "grok-voice-latest";
+export const REALTIME_VOICE = VOICE;
+
+/** Short-lived token for a browser to open the live voice WebSocket; the real key never leaves the server. */
+export const grokRealtimeToken = async (seconds: number, timeoutMs: number): Promise<{ value: string; expiresAt: number }> => {
+  const data = (await post("/realtime/client_secrets", { expires_after: { seconds } }, timeoutMs)) as {
+    value?: string;
+    expires_at?: number;
+  };
+  if (!data.value) {
+    throw new GrokError("/realtime/client_secrets: no token in reply");
+  }
+  return { value: data.value, expiresAt: data.expires_at ?? 0 };
 };

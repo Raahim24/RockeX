@@ -75,14 +75,26 @@ const rankAll = (build: BuildState, catalog: Catalog): Candidate[] =>
 export const rankCandidates = (build: BuildState, catalog: Catalog): Candidate[] =>
   rankAll(build, catalog).slice(0, MAX_CANDIDATES);
 
+/** Who Grok is, shared by the advisor and the agent. The audience is young people meeting rocket science for the first time. */
+export const GROK_PERSONA = [
+  "You are Grok, the flight engineer and guide in a rocket-building game for young people who are new to space. Your job is to get them hooked on rockets and space: playful, hype, a bit chaotic and funny, like a favorite science YouTuber who roasts bad rockets but always roots for the builder.",
+  "Teach one real idea at a time in plain words a 13-year-old gets, and explain any term the first time you use it (delta-v is the rocket's speed budget; thrust-to-weight is whether the engines can lift the rocket off the pad). Make them want to try the next thing. Talk to them like a fellow engineer; never call them kid. Name the mission exactly as given; do not add destinations it does not have.",
+  "Hard limits: the verdict and every number come from the app's physics code and are correct. Never calculate, estimate or invent a number; only quote numbers given to you. Facts about real rockets and parts come only from the context you are given. Roast the rocket, never the person; never call them dumb or bad. No slurs, no profanity, no jokes about crewed accidents or deaths.",
+  "The only rule problems are the ones listed under Warnings in VERDICT; if Warnings is none, never claim a rule is broken. Stage 1 is the bottom stage; read each stage line carefully before naming its parts.",
+].join(" ");
+
+/** Output format for the text routes (advise, agent); the live voice session talks instead. */
+export const JSON_REPLY_FORMAT =
+  "Reply as JSON matching the schema. message: at most 2 short sentences, plain spoken English for text-to-speech, no markdown, no emoji.";
+
 export const ADVISOR_SYSTEM = [
-  "You are Grok, the flight engineer in a rocket configurator.",
-  "The verdict and every number are computed by the app's physics code and are correct. Never calculate, estimate or invent a number; only quote numbers given to you.",
-  "Reply as JSON matching the schema. message: at most 2 short sentences, plain spoken English for text-to-speech, no markdown.",
+  GROK_PERSONA,
+  JSON_REPLY_FORMAT,
+  "You are reacting to the rocket the user just finished building.",
   "suggestion: copy the object from FIX exactly, or null if FIX is none.",
-  "With a suggestion: sentence 1 names the problem and quotes the margin or TWR from VERDICT; sentence 2 says the change using the exact part names from FIX (engine and tank, or engine count) and quotes its resulting margin.",
-  "Without a suggestion: say whether the rocket works and quote its margin.",
-  "Describe warnings using their exact wording; never guess a cause.",
+  "With a suggestion: sentence 1 says in plain words why it won't make it, quoting the shortfall or TWR from VERDICT with a playful jab at the rocket, and explains the term in a few words (for delta-v: its speed budget); sentence 2 pitches the fix using the exact part names from FIX, quotes its resulting margin, and tells them to hit Apply fix.",
+  "Without a suggestion: if it works, celebrate big, quote its margin, and tell them to hit Render it to see it for real; if it cannot fly, say why using the warning and the matching RULE in simple words.",
+  "Quote warnings using their exact wording.",
 ].join(" ");
 
 const stageLine = (build: BuildState, verdict: Verdict, catalog: Catalog, i: number): string => {
@@ -124,13 +136,14 @@ export const advisorUserPrompt = (
   verdict: Verdict,
   catalog: Catalog,
   candidates: Candidate[],
+  context: string[] = [],
 ): string => {
   const mission = byId(catalog.missions, build.missionId);
   const payload = byId(catalog.payloads, build.payloadId);
   return [
     `MISSION: ${mission?.name ?? build.missionId} (${mission?.destination ?? "unknown"})`,
     `PAYLOAD: ${payload ? `${payload.name}, ${tonnes(payload.mass_kg)}` : "none"}`,
-    "BUILD (stage 1 is the bottom stage):",
+    "BUILD (Stage 1 = bottom stage, fires first; higher numbers sit on top):",
     ...build.stages.map((_, i) => stageLine(build, verdict, catalog, i)),
     "VERDICT:",
     ...verdictLines(verdict),
@@ -141,6 +154,7 @@ export const advisorUserPrompt = (
             `${JSON.stringify(c.suggestion)} -> ${describeSuggestion(c.suggestion, catalog)}; feasible ${c.verdict.feasible ? "yes" : "no"}, margin ${ms(c.verdict.marginDeltaV_ms)}, TWR ${twr(c.verdict.liftoffTWR)}`,
         )
       : ["none"]),
+    ...context,
   ].join("\n");
 };
 

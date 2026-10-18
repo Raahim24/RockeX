@@ -128,3 +128,83 @@ export const capSentences = (text: string, max = 2): string =>
     .split(/(?<=[.!?])\s+/)
     .slice(0, max)
     .join(" ");
+
+// Talk to Grok (/api/agent). Not part of the frozen contract: only this route and the Grok panel use it.
+export const AgentTurnSchema = z.object({
+  role: z.enum(["user", "grok"]),
+  text: z.string().max(300),
+});
+export type AgentTurn = z.infer<typeof AgentTurnSchema>;
+
+export const AgentRequestSchema = z
+  .object({
+    /** "welcome": the user just arrived; Grok greets and explains how to start. "question": they asked something. */
+    moment: z.enum(["welcome", "question"]).default("question"),
+    question: z.string().trim().max(300).default(""),
+    history: z.array(AgentTurnSchema).max(8),
+    /** What is actually built on screen, in words (from the assembly screen). */
+    screen: z.string().max(2000).default(""),
+    build: BuildStateSchema,
+    verdict: VerdictSchema,
+  })
+  .refine((r) => r.moment === "welcome" || r.question.length > 0, { message: "question is required" });
+export type AgentRequest = z.infer<typeof AgentRequestSchema>;
+
+export const AgentReplySchema = z.object({
+  message: z.string().min(1).max(300),
+  action: SuggestionSchema.nullable(),
+});
+export type AgentReply = z.infer<typeof AgentReplySchema>;
+
+export const AGENT_REPLY_JSON_SCHEMA: Record<string, unknown> = (() => {
+  const schema: Record<string, unknown> = { ...z.toJSONSchema(AgentReplySchema) };
+  delete schema.$schema;
+  return schema;
+})();
+
+// Claims Grok tends to make up: a rule problem the verdict does not have. Each pattern only counts as made up
+// when no warning contains the matching key. Used to reject a reply and ask again.
+const RULE_CLAIMS: { pattern: RegExp; warning: string }[] = [
+  {
+    pattern: /vacuum[- ]only|can'?t light|cannot light|won'?t light|on the pad anyway|(zero|no) sea[- ]level thrust|can'?t (sit|go|be|ride) on stage (1|one)/i,
+    warning: "vacuum-only",
+  },
+  { pattern: /propellants? (don'?t|do not) match|wrong (fuel|propellant)/i, warning: "propellant" },
+  { pattern: /(don'?t|do not|doesn'?t) fit|too many engines/i, warning: "don't fit" },
+  { pattern: /dry mass/i, warning: "dry mass" },
+];
+
+/** True when the message claims a rule problem that is not in the verdict's warnings. */
+export const claimsMissingRule = (message: string, warnings: string[]): boolean =>
+  RULE_CLAIMS.some(({ pattern, warning }) => pattern.test(message) && !warnings.some((w) => w.includes(warning)));
+
+/** True when the user asked for a change to the rocket (only then may Grok make one). */
+export const asksForChange = (question: string): boolean =>
+  /\b(add|swap|change|use|make|put|replace|remove|try|give|set|switch|upgrade|bolt|stick|slap|fix)\b/i.test(question);
+
+// Words that only fit one mission. Grok tends to upgrade "Moon transfer" to "lunar orbit" and the like.
+const MISSION_WORDS: Record<string, RegExp> = {
+  "lunar-orbit": /lunar orbit|orbit(ing)? (around )?the moon/i,
+  "mars-transfer": /\bmars\b/i,
+  gto: /geostationary|\bGTO\b/i,
+  "earth-escape": /escape velocity|escap(e|ing) earth/i,
+};
+
+/** True when the message names another mission's destination than the one being flown. */
+export const mentionsOtherMission = (message: string, missionId: string): boolean =>
+  Object.entries(MISSION_WORDS).some(([id, pattern]) => id !== missionId && pattern.test(message));
+
+/** Why a reply must be rewritten, in words Grok can act on; null when it passes the checks. */
+export const rejectionReason = (
+  message: string,
+  warnings: string[],
+  mission: { id: string; name: string; destination: string } | undefined,
+): string | null => {
+  if (claimsMissingRule(message, warnings)) {
+    return "it claimed a rule problem that is not in the verdict's Warnings";
+  }
+  if (mission && mentionsOtherMission(message, mission.id)) {
+    return `it named a destination this mission does not go to. The mission is ${mission.name}: ${mission.destination}. Say only that, in plain words`;
+  }
+  return null;
+};

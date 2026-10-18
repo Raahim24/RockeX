@@ -1,63 +1,87 @@
 "use client";
-// Owner: P3. Speaks Grok's text via /api/voice. Any failure is silent: the text is already on screen.
+// Owner: P3. Speaks Grok's text via /api/voice and measures how loud it is, so the orb can move with the voice.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-interface Props {
-  /** Resolves to the text to speak, or null for nothing. */
-  getText: () => Promise<string | null>;
+export interface Speaker {
+  /** Speaks the text; resolves to false if the voice could not be played (caller shows a caption instead). */
+  speak: (text: string | null) => Promise<boolean>;
+  speaking: boolean;
+  /** Current loudness of the voice, 0..1, updated every frame while speaking. */
+  level: React.RefObject<number>;
 }
 
-export function MicButton({ getText }: Props) {
-  const [busy, setBusy] = useState(false);
+export function useSpeaker(): Speaker {
+  const [speaking, setSpeaking] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ctxRef = useRef<AudioContext | null>(null);
+  const level = useRef(0);
+  const turn = useRef(0); // each speak() call gets a number; only the latest one may play
 
-  const stop = (): void => {
+  const stop = useCallback((): void => {
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
       URL.revokeObjectURL(audio.src);
       audioRef.current = null;
     }
-  };
+    level.current = 0;
+    setSpeaking(false);
+  }, []);
 
-  useEffect(() => stop, []);
+  useEffect(() => stop, [stop]);
 
-  const speak = async (): Promise<void> => {
-    stop();
-    setBusy(true);
+  const meter = useCallback((audio: HTMLAudioElement): void => {
     try {
-      const text = await getText();
-      if (!text) return;
-      const res = await fetch("/api/voice", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) return;
-      const audio = new Audio(URL.createObjectURL(await res.blob()));
-      audioRef.current = audio;
-      await audio.play();
+      const ctx = ctxRef.current ?? new AudioContext();
+      ctxRef.current = ctx;
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      ctx.createMediaElementSource(audio).connect(analyser);
+      analyser.connect(ctx.destination);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const tick = (): void => {
+        if (audioRef.current !== audio) return;
+        analyser.getByteFrequencyData(data);
+        const avg = data.reduce((s, v) => s + v, 0) / data.length / 255;
+        level.current = Math.min(1, avg * 2.5);
+        requestAnimationFrame(tick);
+      };
+      tick();
     } catch {
-      // Text-only fallback: nothing to show.
-    } finally {
-      setBusy(false);
+      // No Web Audio: the orb still pulses on its own while speaking.
     }
-  };
+  }, []);
 
-  return (
-    <button
-      type="button"
-      onClick={speak}
-      disabled={busy}
-      aria-label="Hear Grok"
-      title="Hear Grok"
-      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neutral-800 text-neutral-100 hover:bg-neutral-700 disabled:opacity-50"
-    >
-      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-        <rect x="9" y="3" width="6" height="11" rx="3" />
-        <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-      </svg>
-    </button>
+  const speak = useCallback(
+    async (text: string | null): Promise<boolean> => {
+      const mine = ++turn.current;
+      stop();
+      if (!text) return true;
+      try {
+        const res = await fetch("/api/voice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) return false;
+        const blob = await res.blob();
+        if (mine !== turn.current) return true; // a newer line started meanwhile: never talk over it
+        stop();
+        const audio = new Audio(URL.createObjectURL(blob));
+        audioRef.current = audio;
+        audio.onended = () => audioRef.current === audio && stop();
+        meter(audio);
+        setSpeaking(true);
+        await audio.play();
+        return true;
+      } catch {
+        stop();
+        return false;
+      }
+    },
+    [stop, meter],
   );
+
+  return { speak, speaking, level };
 }
