@@ -6,10 +6,13 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import * as catalogModule from "./data/catalog.js";
 import { catalog, presetIds, getPreset, presetToBuild, applyOption } from "./data/catalog.js";
 import { evaluateBuild, stageDetails, stackMass_kg } from "./physics.js";
 import { optionsWithCompat } from "./compat.js";
 import { simulateAscent } from "./ascent.js";
+import { createSilhouette } from "./silhouette.js";
+import { createAnchors } from "./anchors.js";
 import { SCALE, buildManifest, sceneBounds } from "./layout.js";
 import { createMaterials, createPart, createPad, createStars } from "./parts.js";
 import { createChoreographer } from "./choreo.js";
@@ -17,10 +20,13 @@ import { createSfx } from "./fx/sfx.js";
 import { createSelector } from "./ui/select.js";
 import { createCard } from "./ui/card.js";
 import { createScrub } from "./ui/scrub.js";
+import { ensureShell } from "./ui/shell.js";
 import * as f from "./ui/format.js";
 
 const query = new URLSearchParams(location.search);
 const lite = query.get("lite") === "1";
+// The host page (team app shell or index.html) may lack newer elements: create them, refresh the hint line.
+const shell = ensureShell();
 
 // ---------- preset → build → manifest + physics ----------
 // A build starts as a preset and changes through the card's Options (applyOption); `modified` says so.
@@ -42,7 +48,7 @@ let presetIndex = Math.max(0, presetIds.indexOf(query.get("build")));
 let current = loadPreset(presetIds[presetIndex]);
 
 // ---------- renderer / scene ----------
-const canvas = document.getElementById("scene");
+const canvas = shell.canvas;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: !lite, powerPreference: "high-performance" });
 renderer.setPixelRatio(lite ? 1 : Math.min(devicePixelRatio, 1.5)); // 1.5 caps the fill cost on retina screens
 renderer.setSize(innerWidth, innerHeight);
@@ -91,6 +97,7 @@ scene.add(new THREE.HemisphereLight(0x8fa6c8, 0x0f1118, 0.08));
 const root = new THREE.Group(); // shakes on lock
 scene.add(root);
 let pad = null;
+let anchors = null; // scale anchors (UI4): person, tower, trench, masts at true size, on the pad
 scene.add(createStars());
 
 function disposeTree(obj) {
@@ -114,13 +121,19 @@ function applyBounds(b) {
   sc.far = H * 3.2 + 45;
   sc.updateProjectionMatrix();
   controls.maxDistance = Math.max(70, H * 3.4);
-  if (pad?.baseRadius_u === b.baseRadius_u) return;
-  if (pad) {
-    root.remove(pad.group);
-    disposeTree(pad.group);
+  if (pad?.baseRadius_u !== b.baseRadius_u) {
+    if (pad) {
+      root.remove(pad.group);
+      disposeTree(pad.group);
+    }
+    pad = { ...createPad({ baseRadius_u: b.baseRadius_u }), baseRadius_u: b.baseRadius_u };
+    root.add(pad.group);
   }
-  pad = { ...createPad({ baseRadius_u: b.baseRadius_u }), baseRadius_u: b.baseRadius_u };
-  root.add(pad.group);
+  // Anchors are sized from the stack height too, so they follow every preset/option change. They hang on the
+  // pad group, so they drop away with the pad in flight.
+  anchors?.dispose();
+  anchors = createAnchors({ baseRadius_u: b.baseRadius_u, stackHeight_u: b.height_u });
+  pad.group.add(anchors.object3d);
 }
 applyBounds(current.bounds);
 
@@ -173,7 +186,7 @@ addEventListener("resize", () => {
 });
 
 // ---------- selection + card ----------
-const card = createCard(document.getElementById("detail"), { onOption: (part, id) => chooseOption(part, id) });
+const card = createCard(shell.detail, { onOption: (part, id) => chooseOption(part, id) });
 const isComplete = () => parts.length > 0 && parts.every((p) => p.built);
 // During a swap the open card still shows the old part, so it keeps the old build's numbers (shown).
 let shown = null;
@@ -207,14 +220,16 @@ const selector = createSelector({
     card.show(part, cardContext(part));
     sfx.play("ui", { gain: 0.5 });
   },
-  // The fairing is a derived wrapper: clicking it (assembled) selects the payload inside. Its own card is
-  // reachable in the exploded view, where the halves swing out.
+  // Nothing to inspect in flight. A fairing in the clear look shows its payload, so a click there selects the
+  // payload; an opaque fairing is what you see and click.
   resolve: (part) =>
     choreo.state.launch
-      ? null // nothing to inspect in flight
-      : part?.kind === "fairing" && !choreo.state.exploded
+      ? null
+      : part?.kind === "fairing" && part.look === "clear" && !choreo.state.exploded
         ? parts.find((p) => p.kind === "payload" && p.built) ?? part
         : part,
+  // Every click on a part flips its look (opaque ↔ clear); empty space only deselects.
+  onPick: (part) => choreo.toggleLook(part),
   onGhostClick(part) {
     if (choreo.canBuild(part)) choreo.build(part);
   },
@@ -241,13 +256,7 @@ createScrub({
 });
 
 // ---------- UI ----------
-const btnRockets = document.getElementById("btn-rockets");
-const rocketsEl = document.getElementById("rockets");
-const btnBuildAll = document.getElementById("btn-build-all");
-const btnExplode = document.getElementById("btn-explode");
-const btnReset = document.getElementById("btn-reset");
-const btnSound = document.getElementById("btn-sound");
-const hudText = document.getElementById("hud-text");
+const { btnRockets, rocketsEl, btnBuildAll, btnExplode, btnReset, btnSound, hudText } = shell;
 
 // Build all becomes Launch once the stack is complete.
 btnBuildAll.addEventListener("click", () => (isComplete() ? launch() : choreo.buildAll()));
@@ -341,9 +350,11 @@ function syncUi() {
   btnBuildAll.textContent = built === parts.length ? "Launch" : "Build all";
   btnBuildAll.disabled = busy > 0 || exploded || launched;
   btnExplode.disabled ||= launched;
+  if (twin && (twin.key !== buildKey(current.build) || launched || busy > 0)) hideTwin({ reframe: false });
   if (launched) {
     if (telemetry.final) hudText.innerHTML = telemetry.final;
-  } else if (!swapping) hudText.innerHTML = hudHtml();
+  } else if (twin) hudText.innerHTML = twin.line;
+  else if (!swapping) hudText.innerHTML = hudHtml();
   // A selected part that is being removed (or gone after reset) loses its card.
   const sel = selector.selected;
   if (sel && (!sel.built || (sel.busy && !swapping) || !parts.includes(sel))) selector.clear();
@@ -455,6 +466,280 @@ async function launch() {
   choreo.launch(sim, { pad: pad.group, onTelemetry });
 }
 
+// ---------- twin compare (design B8/C10) ----------
+// The closest real rocket from the GCAT pool (catalog.closestRockets, UI 2) as a peach outline at true scale
+// beside the stack (UI4's createSilhouette), with one HUD line: catalog.twinLine + "est." (the match uses our
+// build's estimated mass and thrust) + the GCAT attribution (CC BY 4.0). Key C toggles; a build change hides it.
+let twin = null;
+function twinRecord() {
+  const list = catalogModule.closestRockets?.(current.build, 1);
+  return Array.isArray(list) ? list[0]?.rocket ?? null : null;
+}
+const gcatCredit = () => String(catalogModule.gcatSource ?? "").split("; ").pop();
+function showTwin() {
+  if (twin || choreo.state.launch || choreo.state.busy || !isComplete()) return false;
+  const rec = twinRecord();
+  if (!rec) {
+    hudText.innerHTML = "Closest real rocket: data not loaded yet";
+    return false;
+  }
+  const text = catalogModule.twinLine ? catalogModule.twinLine(rec) : rec.name;
+  const credit = gcatCredit();
+  const line = `Closest real rocket: <strong>${f.esc(text)}</strong> · est.${credit ? ` · ${f.esc(credit)}` : ""}`;
+  let sil = null;
+  const stackR = current.bounds.radius_u;
+  if (rec.length_m > 0 && rec.diameter_m > 0) {
+    sil = createSilhouette({ name: rec.name, length_m: rec.length_m, diameter_m: rec.diameter_m, stages: rec.stages ?? 2 });
+    // To the camera's right, a gap of 0.6 stack radius from the stack's wall.
+    const right = new THREE.Vector3().crossVectors(camera.getWorldDirection(new THREE.Vector3()), camera.up).setY(0).normalize();
+    const off = stackR * 1.6 + sil.radius_u;
+    sil.object3d.position.copy(right).multiplyScalar(off);
+    root.add(sil.object3d);
+    const c = (off + sil.radius_u - stackR) / 2;
+    choreo.frameCompare(right.clone().multiplyScalar(c), Math.max(current.bounds.height_u, sil.height_u), (off + sil.radius_u + stackR) / 2);
+  }
+  twin = { rec, sil, line, key: buildKey(current.build) };
+  if (anchors?.tower) anchors.tower.visible = false; // the service tower would stand between camera and pair
+  hudText.innerHTML = line;
+  return true;
+}
+function hideTwin({ reframe = true } = {}) {
+  if (!twin) return;
+  if (twin.sil) {
+    root.remove(twin.sil.object3d);
+    twin.sil.dispose();
+  }
+  twin = null;
+  if (anchors?.tower) anchors.tower.visible = true;
+  if (reframe) choreo.frameStack();
+  hudText.innerHTML = hudHtml();
+}
+const toggleTwin = () => (twin ? hideTwin() : showTwin());
+
+// ---------- result card (design H32) ----------
+// Key S saves "rocket-card.png": the current view rendered once at 1600×900 through a private offscreen
+// composer (render → bloom → the same output pass, so tone mapping and colours match the page; read back from
+// a half-float target, no preserveDrawingBuffer), composed on a 2D canvas with the preset, the verdict line, the
+// stage list, payload and mission, the twin line if shown, and a line pointing to the sources.
+const CARD_W = 1600;
+const CARD_H = 900;
+const FONT = '"Inter", "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+const MONO = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace';
+function renderView(type) {
+  const rt = new THREE.WebGLRenderTarget(CARD_W, CARD_H, { type });
+  const comp = new EffectComposer(renderer, rt);
+  comp.renderToScreen = false;
+  comp.addPass(new RenderPass(scene, camera));
+  if (!lite) comp.addPass(new UnrealBloomPass(new THREE.Vector2(CARD_W, CARD_H), 0.36, 0.55, 0.8));
+  comp.addPass(new OutputPass());
+  const aspect = camera.aspect;
+  camera.aspect = CARD_W / CARD_H;
+  // Shift the view right so the rocket stands clear of the reading panel on the left.
+  camera.setViewOffset(CARD_W, CARD_H, -CARD_W * 0.22, 0, CARD_W, CARD_H);
+  camera.updateProjectionMatrix();
+  try {
+    comp.render();
+    const out = comp.readBuffer;
+    const half = type === THREE.HalfFloatType;
+    const raw = half ? new Uint16Array(CARD_W * CARD_H * 4) : new Uint8Array(CARD_W * CARD_H * 4);
+    renderer.readRenderTargetPixels(out, 0, 0, CARD_W, CARD_H, raw);
+    const img = new ImageData(CARD_W, CARD_H);
+    for (let y = 0; y < CARD_H; y++) {
+      const src = (CARD_H - 1 - y) * CARD_W * 4; // GL rows run bottom-up
+      const dst = y * CARD_W * 4;
+      for (let i = 0; i < CARD_W * 4; i++) {
+        const v = half ? THREE.DataUtils.fromHalfFloat(raw[src + i]) * 255 : raw[src + i];
+        img.data[dst + i] = (i & 3) === 3 ? 255 : Math.max(0, Math.min(255, v + 0.5));
+      }
+    }
+    return img;
+  } finally {
+    camera.clearViewOffset();
+    camera.aspect = aspect;
+    camera.updateProjectionMatrix();
+    comp.dispose();
+    rt.dispose();
+  }
+}
+const plain = (html) => {
+  const d = document.createElement("div");
+  d.innerHTML = html;
+  return d.textContent;
+};
+async function makeCardCanvas() {
+  let img;
+  try {
+    img = renderView(THREE.HalfFloatType);
+  } catch {
+    img = renderView(THREE.UnsignedByteType); // no half-float readback on this GPU
+  }
+  const cv = document.createElement("canvas");
+  cv.width = CARD_W;
+  cv.height = CARD_H;
+  const g = cv.getContext("2d");
+  g.putImageData(img, 0, 0);
+  // Reading panel on the left, same surface as the page's card.
+  const shade = g.createLinearGradient(0, 0, 820, 0);
+  shade.addColorStop(0, "rgba(11, 13, 18, 0.88)");
+  shade.addColorStop(0.75, "rgba(11, 13, 18, 0.55)");
+  shade.addColorStop(1, "rgba(11, 13, 18, 0)");
+  g.fillStyle = shade;
+  g.fillRect(0, 0, 820, CARD_H);
+  const { preset, build, verdict, bounds, modified } = current;
+  const text = (s, x, y, font, color) => {
+    g.font = font;
+    g.fillStyle = color;
+    g.fillText(s, x, y);
+    return g.measureText(s).width;
+  };
+  let y = 96;
+  g.textBaseline = "alphabetic";
+  text("ROCKET ASSEMBLY", 64, y - 38, `600 15px ${FONT}`, "#a9adb8");
+  const w = text(preset.name, 64, y, `650 40px ${FONT}`, "#f6f7fb");
+  if (modified) text("(modified)", 64 + w + 14, y, `450 24px ${FONT}`, "#ffb48a");
+  // Verdict line (or the build tally), coloured like the HUD.
+  y += 46;
+  if (isComplete()) {
+    const bits = [`${f.m(bounds.height_m)} est.`, f.t(verdict.totalMass_kg), `Δv ${f.num(verdict.totalDeltaV_ms, 0)} / ${f.ms(verdict.requiredDeltaV_ms)}`, `TWR ${f.twr(verdict.liftoffTWR)}`];
+    let x = 64;
+    x += text(bits.join(" · ") + " · ", x, y, `500 19px ${MONO}`, "#a9adb8");
+    const go = verdict.feasible;
+    x += text(go ? "GO" : "NO-GO", x, y, `700 19px ${MONO}`, go ? "#2ee6b6" : "#ff6a3d");
+    const n = verdict.warnings.length;
+    if (!go && n) text(` · ${n} warning${n === 1 ? "" : "s"}`, x, y, `500 19px ${MONO}`, "#a9adb8");
+  } else {
+    text(plain(hudText.innerHTML), 64, y, `500 19px ${MONO}`, "#a9adb8");
+  }
+  if (telemetry.final) {
+    y += 32;
+    text(plain(telemetry.final), 64, y, `600 19px ${MONO}`, "#ffb48a");
+  }
+  // Stages, payload, mission: straight from the records.
+  y += 64;
+  g.fillStyle = "rgba(255, 180, 138, 0.6)";
+  g.fillRect(64, y - 30, 48, 2);
+  build.stages.forEach((st, i) => {
+    const e = catalog.engines.find((x) => x.id === st.engineId);
+    const k = catalog.tanks.find((x) => x.id === st.tankId);
+    text(`Stage ${i + 1}`, 64, y, `600 20px ${FONT}`, "#a9adb8");
+    text(`${st.engineCount} × ${e?.name ?? st.engineId}`, 184, y, `600 20px ${FONT}`, "#f6f7fb");
+    text(k?.name ?? st.tankId, 184, y + 26, `450 17px ${FONT}`, "#a9adb8");
+    y += 66;
+  });
+  const payload = catalog.payloads.find((x) => x.id === build.payloadId);
+  const mission = catalog.missions.find((x) => x.id === build.missionId);
+  text("Payload", 64, y, `600 20px ${FONT}`, "#a9adb8");
+  text(payload?.name ?? build.payloadId, 184, y, `600 20px ${FONT}`, "#f6f7fb");
+  y += 40;
+  text("Mission", 64, y, `600 20px ${FONT}`, "#a9adb8");
+  text(`${mission?.name ?? build.missionId} · ${f.ms(mission?.requiredDeltaV_ms ?? 0)} required`, 184, y, `600 20px ${FONT}`, "#f6f7fb");
+  if (twin) {
+    y += 52;
+    text(plain(twin.line).split(" · GCAT")[0], 64, y, `500 17px ${MONO}`, "#ffb48a");
+  }
+  // Footer: where the numbers come from.
+  const credit = twin ? ` · ${gcatCredit()}` : "";
+  text(`numbers: see source links in the demo${credit}`, 64, CARD_H - 40, `450 14px ${FONT}`, "#a9adb8");
+  return cv;
+}
+async function saveCard() {
+  if (choreo.state.busy && !choreo.state.launch) return; // mid-animation frames make a poor card
+  const cv = await makeCardCanvas();
+  const blob = await new Promise((r) => cv.toBlob(r, "image/png"));
+  if (!blob) return;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "rocket-card.png";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+// ---------- story mode (design H31) ----------
+// P or ?story=1: the whole pitch hands-free. Falcon 9 → Build all → verdict → the stage-2 tank's card and
+// Options → the first "unusual" option (the verdict changes) → back to the original → Launch → orbit →
+// back on the pad beside its real twin → a slow orbit around both. Any key or click hands control back.
+const story = { active: false, cancel: null };
+const CANCELLED = Symbol("story cancelled");
+async function runStory() {
+  if (story.active) return;
+  story.active = true;
+  const cancelled = new Promise((_, reject) => (story.cancel = () => reject(CANCELLED)));
+  cancelled.catch(() => {});
+  const timers = new Set();
+  const step = (p) => Promise.race([p, cancelled]);
+  const hold = (ms) => step(new Promise((r) => timers.add(setTimeout(r, ms))));
+  const until = (test, every = 120) =>
+    step(
+      new Promise((r) => {
+        const t = setInterval(() => {
+          if (!test()) return;
+          clearInterval(t);
+          r();
+        }, every);
+        timers.add(t);
+      }),
+    );
+  try {
+    hideTwin({ reframe: false });
+    setRocketsOpen(false);
+    if (current.preset.id !== "falcon-9" || current.modified) switchPreset(presetIds.indexOf("falcon-9") - presetIndex);
+    else if (parts.some((p) => p.built) || choreo.state.launch) choreo.reset();
+    await hold(500);
+    await step(choreo.buildAll());
+    await until(() => isComplete() && !choreo.state.busy && !choreo.state.auto);
+    await hold(1500);
+
+    // The stage-2 tank: card, Options, the first unusual alternative, then back.
+    const slot = () => parts.find((p) => p.kind === "tank" && p.stageIndex === 1) ?? parts.find((p) => p.kind === "tank");
+    const original = slot().record.id;
+    selector.select(slot());
+    await hold(1000);
+    card.el.querySelector(".opt-toggle")?.click();
+    await hold(1000);
+    const alts = optionsWithCompat(current.build, catalog, "tank", slot().stageIndex);
+    const pick = alts.find((o) => o.level === "unusual" && o.record.id !== original) ?? alts.find((o) => o.level === "ok" && o.record.id !== original);
+    if (pick) {
+      await step(chooseOption(slot(), pick.record.id));
+      await hold(1500);
+      card.el.querySelector(".opt-toggle")?.click();
+      await hold(800);
+      await step(chooseOption(slot(), original));
+      await hold(500);
+    }
+    selector.clear();
+    await hold(300);
+
+    // Launch, watch it to the outcome, hold.
+    launch();
+    await until(() => choreo.state.launch === "done");
+    await until(() => !choreo.state.deploying); // the payload unfolds in orbit first
+    await hold(2000);
+
+    // Back on the pad beside its closest real twin, then a slow orbit around both.
+    choreo.returnToPad();
+    await hold(1000);
+    showTwin();
+    await hold(1200);
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.5;
+  } catch (e) {
+    if (e !== CANCELLED) throw e;
+  } finally {
+    for (const t of timers) clearTimeout(t), clearInterval(t);
+    story.active = false;
+    story.cancel = null;
+  }
+}
+// A real key press or click (not the story's own actions) hands control back.
+const cancelStory = (e) => {
+  if (story.active && e.isTrusted) story.cancel?.();
+};
+addEventListener("keydown", cancelStory, true);
+addEventListener("pointerdown", cancelStory, true);
+
 function onPartKey(part) {
   if (part.built) {
     if (choreo.isTopBuilt(part)) choreo.remove(part);
@@ -478,6 +763,10 @@ addEventListener("keydown", (e) => {
   else if (k === "r") reset();
   else if (k === "m") btnSound.click();
   else if (k === "l") launch();
+  else if (k === "c") toggleTwin();
+  else if (k === "s") saveCard();
+  else if (k === "x") choreo.toggleLookAll();
+  else if (k === "p") runStory();
   else if (k === "[") switchPreset(-1);
   else if (k === "]") switchPreset(1);
 });
@@ -530,6 +819,8 @@ function frame() {
   scene.fog.near = Math.max(0.1, dist - 0.6 * R);
   scene.fog.far = dist + (mode === "focus" || mode === "exploded" ? 3 : 6) * R;
   if (pad?.ringMat) pad.ringMat.opacity = 0.55 + 0.3 * (0.5 + 0.5 * Math.sin(t * 1.6));
+  twin?.sil?.update(camera);
+  anchors?.update(t);
   if (composer) composer.render();
   else renderer.render(scene, camera);
   requestAnimationFrame(frame);
@@ -537,3 +828,4 @@ function frame() {
 frame();
 
 if (query.get("demo") === "1") setTimeout(() => choreo.buildAll(), 700);
+if (query.get("story") === "1") setTimeout(() => runStory(), 900);
