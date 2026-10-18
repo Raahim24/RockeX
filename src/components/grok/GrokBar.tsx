@@ -72,21 +72,18 @@ const transcribe = async (audio: Blob): Promise<string | null> => {
   }
 };
 
-// Grok's face: a glossy ball with two slanted pill eyes. --lvl (0..1, the live voice level) drives the talking
-// bounce; data-mode sets the expression. The button, handlers and modes are unchanged.
+// Grok's face: a glossy ball with two slanted pill eyes. The ball itself never moves; only the eyes do: they blink,
+// squint on loud syllables (--lvl, 0..1, the live voice level) and glance around while thinking. data-mode sets the
+// expression and a steady glow ring.
 const ORB_CSS = `
-@keyframes grok-float { 0%,100% { translate: 0 0 } 50% { translate: 0 -4px } }
 @keyframes grok-blink { 0%,90%,100% { scale: 1 1 } 94% { scale: 1 0.08 } }
 @keyframes grok-look { 0%,100% { translate: -7% 0 } 50% { translate: 7% -3% } }
-@keyframes grok-ring { from { transform: scale(1); opacity: .55 } to { transform: scale(1.7); opacity: 0 } }
 .grok-orb { position: relative; width: 84px; height: 84px; border-radius: 9999px; cursor: pointer; border: 0; padding: 0;
   touch-action: none; user-select: none; -webkit-user-select: none;
   background: radial-gradient(circle at 34% 28%, #ffffff 0%, #f4f4f4 30%, #d6d6d6 62%, #9a9a9a 88%, #7d7d7d 100%);
   box-shadow: inset -7px -9px 16px rgba(0,0,0,.22), inset 4px 5px 10px rgba(255,255,255,.7), 0 10px 22px rgba(0,0,0,.5);
-  transition: transform 80ms linear, box-shadow 200ms, filter 300ms;
-  /* talking: a little hop and a squash-and-stretch that follows the voice */
-  transform: translateY(calc(var(--lvl, 0) * -7px)) scale(calc(1 + var(--lvl, 0) * 0.06), calc(1 + var(--lvl, 0) * 0.14)); }
-.grok-orb .grok-face { position: absolute; inset: 0; border-radius: 9999px; transition: transform 250ms ease; }
+  transition: box-shadow 200ms, filter 300ms; }
+.grok-orb .grok-face { position: absolute; inset: 0; border-radius: 9999px; }
 .grok-orb .grok-eye { position: absolute; width: 15%; height: 36%; border-radius: 9999px; background: #111;
   rotate: -32deg; transform-origin: center; transition: height 160ms ease, width 160ms ease;
   animation: grok-blink 4.6s ease-in-out infinite; }
@@ -94,36 +91,25 @@ const ORB_CSS = `
 .grok-orb .grok-eye.r { left: 61%; top: 18%; animation-delay: 40ms; }
 /* the eyes squint a little on loud syllables */
 .grok-orb .grok-eyes { position: absolute; inset: 0; transform: scaleY(calc(1 - var(--lvl, 0) * 0.3)); transition: transform 80ms linear; }
-.grok-orb::before, .grok-orb::after { content: ""; position: absolute; inset: 0; border-radius: 9999px; pointer-events: none;
-  border: 2px solid rgba(255,255,255,.5); opacity: 0; }
-.grok-orb[data-mode="idle"] { animation: grok-float 4s ease-in-out infinite; }
 .grok-orb[data-mode="live"] { box-shadow: inset -7px -9px 16px rgba(0,0,0,.22), inset 4px 5px 10px rgba(255,255,255,.7),
   0 0 0 3px rgba(46,230,182,.6), 0 0 26px rgba(46,230,182,.35); }
 .grok-orb[data-mode="listening"] { box-shadow: inset -7px -9px 16px rgba(0,0,0,.22), inset 4px 5px 10px rgba(255,255,255,.7),
   0 0 0 3px rgba(255,255,255,.65), 0 0 30px rgba(92,200,255,.55); }
-.grok-orb[data-mode="listening"] .grok-face { transform: translate(3%, -4%) scale(1.08); }
 .grok-orb[data-mode="listening"] .grok-eye { height: 40%; }
 .grok-orb[data-mode="thinking"] .grok-face { animation: grok-look 1.6s ease-in-out infinite; }
-.grok-orb[data-mode="speaking"]::before { animation: grok-ring 1.4s ease-out infinite; }
-.grok-orb[data-mode="speaking"]::after { animation: grok-ring 1.4s ease-out .7s infinite; }
 .grok-orb[data-mode="paused"] { filter: grayscale(1) brightness(.6); }
 .grok-orb[data-mode="paused"] .grok-eye { height: 5%; animation: none; }
 @media (prefers-reduced-motion: reduce) {
-  .grok-orb, .grok-orb .grok-face, .grok-orb .grok-eye, .grok-orb::before, .grok-orb::after { animation: none !important; }
+  .grok-orb .grok-face, .grok-orb .grok-eye { animation: none !important; }
 }
-@keyframes grok-pop { from { opacity: 0; scale: .8 } to { opacity: 1; scale: 1 } }
-@keyframes grok-drift { 0%,100% { translate: -50% 0 } 50% { translate: -50% -3px } }
-/* A cartoon cloud centred over Grok's head: a soft body, puffs along its edges, and a trail of puffs down to the head.
-   drop-shadow (not box-shadow) so the puffs share one shadow with the body. */
-.grok-cloud { position: absolute; bottom: calc(100% + 40px); left: 50%; translate: -50% 0; width: max-content;
-  min-width: 120px; max-width: min(320px, calc(100vw - 40px)); padding: 40px 58px 34px; color: #11131a;
-  font-size: 14px; line-height: 1.4; font-weight: 500; text-align: center; transform-origin: 50% 130%;
-  filter: drop-shadow(0 10px 16px rgba(0,0,0,.45)); animation: grok-pop 260ms cubic-bezier(.2,1.4,.4,1) both, grok-drift 3.2s ease-in-out .3s infinite; }
-/* One smooth cloud outline, stretched to fit behind the text. */
+/* A still thought cloud over Grok's head. The text box is measured and the outline drawn around it (ThoughtCloud),
+   so the words always sit inside the cloud whatever their length. drop-shadow so the outline casts one shadow. */
+.grok-cloud { position: absolute; bottom: calc(100% + 34px); left: 50%; translate: -50% 0; color: #11131a;
+  font-size: 14px; line-height: 1.4; font-weight: 500; text-align: center; filter: drop-shadow(0 10px 16px rgba(0,0,0,.45)); }
 .grok-cloud-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .grok-cloud-shape path, .grok-cloud-trail::before, .grok-cloud-trail::after { fill: #f6f7fb; stroke: #b9bdc9; stroke-width: 1.5; }
-.grok-cloud-text { position: relative; display: block; }
-.grok-cloud-trail { position: absolute; left: 50%; top: calc(100% + 4px); width: 0; height: 0; pointer-events: none; }
+.grok-cloud-text { position: relative; display: block; max-width: 200px; padding: 4px 2px; text-wrap: balance; }
+.grok-cloud-trail { position: absolute; left: 50%; top: calc(100% + 2px); width: 0; height: 0; pointer-events: none; }
 .grok-cloud-trail::before, .grok-cloud-trail::after { content: ""; position: absolute; border-radius: 50%; background: #f6f7fb; border: 1.5px solid #b9bdc9; }
 .grok-cloud-trail::before { width: 15px; height: 15px; left: -7px; top: 0; }
 .grok-cloud-trail::after { width: 9px; height: 9px; left: -4px; top: 20px; }
@@ -133,7 +119,6 @@ const ORB_CSS = `
 .grok-dock { transform-origin: 50% 100%; animation: grok-enter 900ms cubic-bezier(.3,.7,.4,1) 250ms both; }
 body.landing .grok-dock { animation: none; opacity: 0; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .grok-dock { animation: none; } }
-@media (prefers-reduced-motion: reduce) { .grok-cloud { animation: none; } }
 /* The screen's controls: one slim glass pill at the bottom right, like the landing page's button. Quiet text buttons,
    one solid white pill for the main action (Build all, then Launch), last in the row. */
 body .bar { left: auto; right: 24px; bottom: 24px; transform: none; gap: 2px; padding: 5px; border-radius: 999px; }
@@ -149,6 +134,45 @@ body .bar .rockets { left: auto; right: 0; bottom: calc(100% + 10px); }
 .grok-panel-button:hover { background: var(--surface-2); }
 .grok-panel-button.quiet { color: var(--text-2); }
 `;
+
+// Where the text box sits inside the cloud outline (viewBox 0 0 200 120): x 36..166, y 42..96 is always inside it.
+const CLOUD_PATH =
+  "M40 100C20 102 6 90 12 76C0 66 8 46 28 48C28 28 48 18 66 26C76 6 114 2 126 22C142 10 170 16 172 40C194 42 202 66 188 80C196 98 176 110 160 102C150 116 124 116 114 104C102 118 72 118 64 104C56 110 44 108 40 100Z";
+const SAFE = { left: 36 / 130, right: 34 / 130, top: 42 / 54, bottom: 24 / 54 };
+const CLOUD_CHARS = 150; // the newest words only, so the cloud never towers over the screen
+
+function ThoughtCloud({ text }: { text: string }) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = textRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setBox({ w: el.offsetWidth, h: el.offsetHeight }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const shown = text.length > CLOUD_CHARS ? `…${text.slice(-CLOUD_CHARS).replace(/^\S*\s/, "")}` : text;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="grok-cloud"
+      style={{
+        visibility: box.w ? "visible" : "hidden",
+        padding: `${box.h * SAFE.top}px ${box.w * SAFE.right}px ${box.h * SAFE.bottom}px ${box.w * SAFE.left}px`,
+      }}
+    >
+      <svg className="grok-cloud-shape" viewBox="0 0 200 120" preserveAspectRatio="none" aria-hidden>
+        <path vectorEffect="non-scaling-stroke" d={CLOUD_PATH} />
+      </svg>
+      {/* A steady width once it's more than a few words, so the cloud doesn't jump around as words stream in. */}
+      <span ref={textRef} className="grok-cloud-text" style={{ width: shown.length > 28 ? 200 : "max-content" }}>
+        {shown}
+      </span>
+      <span className="grok-cloud-trail" aria-hidden />
+    </div>
+  );
+}
 
 interface Props {
   /** The whole rocket is on screen. Grok reacts and Apply/Render appear only then. Defaults to true. */
@@ -571,16 +595,9 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
       {placedCount === 0 && <style>{"body .bar #btn-explode, body .bar #btn-reset { display: none; }"}</style>}
 
       {/* Grok at the bottom left: a cloud with what it says over its head, what to do written under it. */}
-      <div className="grok-dock fixed bottom-5 left-20 z-10 flex flex-col items-center gap-1.5">
-        {bubble && (
-          <div key={bubble.slice(0, 24)} role="status" aria-live="polite" className="grok-cloud">
-            <svg className="grok-cloud-shape" viewBox="0 0 200 120" preserveAspectRatio="none" aria-hidden>
-              <path vectorEffect="non-scaling-stroke" d="M40 100C20 102 6 90 12 76C0 66 8 46 28 48C28 28 48 18 66 26C76 6 114 2 126 22C142 10 170 16 172 40C194 42 202 66 188 80C196 98 176 110 160 102C150 116 124 116 114 104C102 118 72 118 64 104C56 110 44 108 40 100Z" />
-            </svg>
-            <span className="grok-cloud-text">{bubble.length > 220 ? `…${bubble.slice(-220)}` : bubble}</span>
-            <span className="grok-cloud-trail" aria-hidden />
-          </div>
-        )}
+      {/* Grok's spot is fixed (84 px wide): the hint under it and the cloud over it can change without moving it. */}
+      <div className="grok-dock fixed bottom-[52px] left-[88px] z-10 w-[84px]">
+        {bubble && <ThoughtCloud text={bubble} />}
         <button
           ref={orbRef}
           type="button"
@@ -601,21 +618,23 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
             </span>
           </span>
         </button>
-        {live.live && !live.paused && (
-          <p
-            className={`${chip} ${
-              live.hearing ? "bg-pink-500/80 text-white" : tapHint ? "bg-white/25 text-white" : "bg-white/10 text-neutral-200"
-            }`}
-          >
-            {live.hearing ? "🎙️ Listening… let go to send" : live.speaking ? "Hold Space to jump in" : "Hold Space to talk"}
-          </p>
-        )}
-        {live.live && live.paused && <p className={`${chip} bg-white/10 text-neutral-300`}>Paused · mic off</p>}
-        {!live.live && (
-          <p className={`${chip} bg-white/10 text-neutral-200`}>
-            {live.connecting ? "Connecting to Grok…" : everLive ? "Press Space to talk again" : "Press Space to talk to Grok"}
-          </p>
-        )}
+        <div className="absolute left-1/2 top-full mt-2 -translate-x-1/2 whitespace-nowrap">
+          {live.live && !live.paused && (
+            <p
+              className={`${chip} ${
+                live.hearing ? "bg-pink-500/80 text-white" : tapHint ? "bg-white/25 text-white" : "bg-white/10 text-neutral-200"
+              }`}
+            >
+              {live.hearing ? "🎙️ Listening… let go to send" : live.speaking ? "Hold Space to jump in" : "Hold Space to talk"}
+            </p>
+          )}
+          {live.live && live.paused && <p className={`${chip} bg-white/10 text-neutral-300`}>Paused · mic off</p>}
+          {!live.live && (
+            <p className={`${chip} bg-white/10 text-neutral-200`}>
+              {live.connecting ? "Connecting to Grok…" : everLive ? "Press Space to talk again" : "Press Space to talk to Grok"}
+            </p>
+          )}
+        </div>
       </div>
       {optionsHint && live.live ? (
         <div className="fixed bottom-40 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
