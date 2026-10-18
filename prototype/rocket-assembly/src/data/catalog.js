@@ -10,7 +10,7 @@ import missions from "./missions.json";
 import referenceRockets from "./reference-rockets.json";
 import visuals from "./visuals.json";
 import presets from "./presets.json";
-import { clampEngineCount, isVacuumOnly } from "../physics.js";
+import { isVacuumOnly, maxEngineCount, sanitizeEngineCount } from "../physics.js";
 
 export const catalog = {
   engines,
@@ -70,10 +70,12 @@ export function optionsFor(kind, build, stageIndex) {
   }
 }
 
-// A NEW BuildState with recordId swapped into the slot. The stage's engineCount is kept, clamped with
-// physics.clampEngineCount for the new engine/tank pair (the app's fit rule). Picking the record that is
-// already there returns an unchanged copy, so re-selecting never clamps a real vehicle (e.g. 5 F-1 on the
-// S-IC, where the fit rule allows 4). Unknown record ids or stage indices also return an unchanged copy.
+// A NEW BuildState with recordId swapped into the slot. The stage's engineCount is kept, cut to what the new
+// engine/tank pair fits (physics.maxEngineCount, the app's fit rule). Note the app's own applySuggestion (#20)
+// no longer cuts: it keeps the count and lets the verdict block it with a reason. This UI keeps cutting because
+// compat.js labels the cut ("count reduced to n to fit"). Picking the record that is already there returns an
+// unchanged copy, so re-selecting never cuts a real vehicle. Unknown record ids or stage indices also return an
+// unchanged copy.
 export function applyOption(build, kind, stageIndex, recordId) {
   const next = {
     ...build,
@@ -90,10 +92,9 @@ export function applyOption(build, kind, stageIndex, recordId) {
   const field = k === "engines" ? "engineId" : "tankId";
   if (stage[field] === recordId || !byId(k === "engines" ? catalog.engines : catalog.tanks, recordId)) return next;
   stage[field] = recordId;
-  stage.engineCount = clampEngineCount(
-    stage.engineCount,
-    byId(catalog.tanks, stage.tankId),
-    byId(catalog.engines, stage.engineId),
-  );
+  const tank = byId(catalog.tanks, stage.tankId);
+  const engine = byId(catalog.engines, stage.engineId);
+  const fit = tank && engine ? maxEngineCount(tank.diameter_m, engine.diameter_m) : Infinity;
+  stage.engineCount = Math.min(sanitizeEngineCount(stage.engineCount), fit);
   return next;
 }
