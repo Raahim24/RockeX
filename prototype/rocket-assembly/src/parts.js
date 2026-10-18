@@ -497,7 +497,9 @@ export function setBellGlow(part, throttle = 0, engine = null) {
 // polygonOffset on all, so the faint edge lines sit cleanly on them. Colours are visual.
 function paintedMaterials(t, classic) {
   const po = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 };
-  const phys = (o) => new THREE.MeshPhysicalMaterial({ metalness: 0, roughness: 0.42, clearcoat: 0.4, clearcoatRoughness: 0.22, fog: true, ...po, ...o });
+  // matte and readable (user feedback 8): little clear coat, rough paint, a low environment reflection, so white
+  // paint never throws bloom-bright highlights and parts separate against a dark scene
+  const phys = (o) => new THREE.MeshPhysicalMaterial({ metalness: 0, roughness: 0.58, clearcoat: 0.05, clearcoatRoughness: 0.5, envMapIntensity: 0.35, fog: true, ...po, ...o });
   const sooty = (m) => {
     m.onBeforeCompile = sootHook;
     m.customProgramCacheKey = sootKey;
@@ -505,35 +507,36 @@ function paintedMaterials(t, classic) {
     return m;
   };
   const paint = (color, extra = {}) => phys({ color, roughnessMap: t.paint, bumpMap: t.paint, bumpScale: 1.0, ...extra });
-  const composite = () => phys({ color: 0x15161a, metalness: 0.2, roughness: 0.38, roughnessMap: t.weave, normalMap: t.weaveN, normalScale: new THREE.Vector2(0.7, 0.7), clearcoat: 0.5, clearcoatRoughness: 0.18 });
+  const composite = () => phys({ color: 0x15161a, metalness: 0.1, roughness: 0.55, roughnessMap: t.weave, normalMap: t.weaveN, normalScale: new THREE.Vector2(0.7, 0.7), clearcoat: 0.05, clearcoatRoughness: 0.5 });
   const keep = (m) => {
     const c = cloneMat(m);
     Object.assign(c, po);
+    c.envMapIntensity = Math.min(c.envMapIntensity ?? 1, 0.35);
     return c;
   };
-  const white = sooty(paint(0xc4c6c2)); // light grey, so the shading reads in the sun (round 22: no flat white)
+  const white = sooty(paint(0xb8bab6)); // light grey, so the shading reads (rounds 22–23: no flat white)
   return {
     body: white,
-    roll: sooty(paint(0xc4c4c0, { map: t.roll })),
+    roll: sooty(paint(0xb8b8b4, { map: t.roll })),
     foam: sooty(phys({ color: 0xffffff, map: t.foam, bumpMap: t.foam, bumpScale: 1.6, roughness: 0.82, clearcoat: 0.05 })),
-    bronze: sooty(paint(0xa65f35, { metalness: 0.15, roughness: 0.45 })),
-    silver: sooty(paint(0xb9bdc2, { metalness: 0.7, roughness: 0.35 })),
+    bronze: sooty(paint(0x8f4d28, { metalness: 0.15, roughness: 0.55 })),
+    silver: sooty(paint(0xa9adb2, { metalness: 0.5, roughness: 0.5 })),
     composite: sooty(composite()),
     // Octaweb heat shield: dark plates with grooves and bolts (the "dance floor").
     heatShield: phys({ color: 0x3a3b3e, metalness: 0.35, roughness: 0.72, map: t.plates, bumpMap: t.plates, bumpScale: 1.2, clearcoat: 0 }),
-    raceway: paint(0xc4c6c1),
+    raceway: paint(0xb0b2ad),
     skirt: keep(classic.skirt),
     metal: keep(classic.metal),
     darkMetal: keep(classic.darkMetal),
     interior: keep(classic.interior),
     steelDark: keep(classic.darkMetal),
-    trim: paint(0xe9eae6),
+    trim: paint(0xb8bab6),
     leg: composite(),
     copv: composite(),
     machined: keep(classic.machined),
     // Bare-metal bell: vertex colours (heat tint, flanges) lifted to read as metal, brushed streaks, tube ridges.
     // (vertex colours × 1.25: dark brushed metal; brighter read as chrome and blew out under bloom)
-    engine: phys({ color: new THREE.Color(1.25, 1.25, 1.25), vertexColors: true, metalness: 1, roughness: 0.42, roughnessMap: t.brushed, bumpMap: t.ridges, bumpScale: 0.25, anisotropy: 0.55, anisotropyRotation: Math.PI / 2, clearcoat: 0, envMapIntensity: 0.9 }),
+    engine: phys({ color: new THREE.Color(1.25, 1.25, 1.25), vertexColors: true, metalness: 1, roughness: 0.5, roughnessMap: t.brushed, bumpMap: t.ridges, bumpScale: 0.25, anisotropy: 0.55, anisotropyRotation: Math.PI / 2, clearcoat: 0, envMapIntensity: 0.6 }),
     chamber: keep(classic.chamber),
     powerhead: keep(classic.powerhead),
     valve: keep(classic.valve),
@@ -542,11 +545,11 @@ function paintedMaterials(t, classic) {
     actuator: keep(classic.actuator),
     gimbal: keep(classic.gimbal),
     // Cast titanium grid fins: grey metal, rough, a faint warm heat tint.
-    gridFin: phys({ color: 0x8a8580, metalness: 0.85, roughness: 0.52, roughnessMap: t.paint, clearcoat: 0 }),
+    gridFin: phys({ color: 0x8a8580, metalness: 0.85, roughness: 0.6, roughnessMap: t.paint, clearcoat: 0, envMapIntensity: 0.5 }),
     gold: keep(classic.gold),
     mliSilver: keep(classic.mliSilver),
     foil: keep(classic.foil),
-    mirror: phys({ color: 0xe0b45a, metalness: 1, roughness: 0.08, clearcoat: 0 }),
+    mirror: phys({ color: 0xc89c48, metalness: 1, roughness: 0.25, clearcoat: 0, envMapIntensity: 0.5 }),
     ablative: phys({ color: 0xcdb99b, metalness: 0, roughness: 0.88, roughnessMap: t.paint, clearcoat: 0 }),
     panel: keep(classic.panel),
     accent: keep(classic.accent),

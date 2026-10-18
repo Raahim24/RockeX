@@ -146,6 +146,11 @@ const RAMP_EASE_S = 0.25;
 const GENTLE = { k: 1.65, E: 1 };
 const FIRST_GENTLE_S = 10; // s on screen from T0
 const LIFTOFF_REAL_S = 1.5; // s of real time from T0 before the climb's ramp starts
+// Round 27c (user: "why is the Saturn thing flipping the whole time"): outside the climb nothing on screen turns
+// faster than ~20 deg per 5 s. Arcs that turn more are cuts (the lunar quarter orbit before the descent), and a
+// landing's drawn attitude slews toward the modelled one at most SLEW_DEG_S per screen second (in the frame of
+// the local vertical and the ground track): a rate limit (est.), not a modelled attitude control system.
+const SLEW_DEG_S = 3.4;
 // Beats in space ramp faster (sim speed e^14 per screen second, about 26 % per frame), so the coasts stay short on
 // screen (Earth missions: everything after the ascent within 20 s; a transfer within 4 s) and nothing is seen
 // going round; the ascent and the descents keep the gentle ramp. Screen time only: the sim is unchanged.
@@ -163,7 +168,8 @@ const SHARE = {
   // round 22: every coast is a skip (a cut) of at most 0.5 s; what is shown is the story's beats
   earth: { ascent: 16, orbit: 2.6, "orbit-coast": 0.3, "deorbit-burn": 1, "deorbit-coast": 0.3, reentry: 6, landing: 4.5 }, // ~37 (LEO, then home)
   gto: { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 0.05, "deorbit-burn": 0.5, "deorbit-coast": 0.3, reentry: 5.5, landing: 4 }, // ~34
-  moon: { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 2.6, "lunar-orbit": 4, braking: 10, approach: 7, vertical: 11.1 }, // ~55 (Saturn V's two stagings hold its ascent at ~18.7 s)
+  // (round 27c: the lunar orbit before the descent is a cut: the insertion burn in real time, then straight to PDI)
+  moon: { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 2.6, "lunar-orbit": 0.8, braking: 10, approach: 7, vertical: 11.1 }, // ~52-56
   "moon-orbit": { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 2.6, "lunar-orbit": 5 }, // ~31
   mars: { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 2.6, entry: 12, parachute: 8.5, approach: 8.5, vertical: 10.1 }, // ~65
   "mars-orbit": { ascent: 16, "parking-orbit": 0.3, "departure-burn": 1.2, transfer: 2.6, "mars-orbit": 5 }, // ~31.6
@@ -1138,7 +1144,9 @@ export function flightTimeline(build, catalog, opts = {}) {
             const b = Math.abs(t - tArr) <= BURN_CUE_S ? "insertion" : null;
             return { body: "moon", pos: rel, posEci: add(moonPos(t), rel), vel: relV, velEci: add(relV, moonVel(t)), axis: mul(unit(relV), -1), throttle: b ? 1 : 0, burn: b, stageIndex: landerStage, mass_kg: landerMass, phase: "lunar-orbit" };
           };
-          pieces.push({ name: "lunar-orbit", body: "moon", t0: tArr, t1: tPdi, fn: loState, coast: true });
+          // a lander's quarter orbit to PDI is a cut (its retrograde attitude turns 90 deg with it, round 27c); an
+          // orbiter's ending stays a shot of it in orbit (steady in the local frame)
+          pieces.push({ name: "lunar-orbit", body: "moon", t0: tArr, t1: tPdi, fn: loState, coast: true, ...(arrival.lands ? { skip: true } : {}) });
           if (arrival.lands) {
             const tEnd = addDescent(descentTimeline(payload, { body: "moon" }), "moon", tPdi, Math.PI / 2, u1, u2, moonPos, moonVel);
             endState = end("landed", `Upper stage landed on the Moon with ${payloadName} on top · est.`, { body: "moon", landing: landerRecord() });
@@ -1282,7 +1290,8 @@ export function flightTimeline(build, catalog, opts = {}) {
       const vel = x2 > x1 ? mul(sub(posAt(x2).pos, posAt(x1).pos), 1 / (x2 - x1)) : [0, 0, 0];
       const f = surfaceFrame(body, pos);
       const hz = sub(vel, mul(f.up, dot(vel, f.up)));
-      const hdir = len(hz) > 1e-6 ? unit(hz) : add(mul(u1, -Math.sin(beta)), mul(u2, Math.cos(beta)));
+      const along = add(mul(u1, -Math.sin(beta)), mul(u2, Math.cos(beta))); // the ground track, downrange
+      const hdir = len(hz) > 1e-6 ? unit(hz) : along;
       const pitch = lerp(a.pitch_deg, b.pitch_deg, u) * rad;
       const unpowered = a.phase === "entry" || a.phase === "parachute";
       // powered: thrust axis tilted back against the motion by the descent pitch; entry and chute: against the flow
@@ -1301,11 +1310,12 @@ export function flightTimeline(build, catalog, opts = {}) {
         chute: lerp(a.chute ?? 0, b.chute ?? 0, u),
         dust: lerp(a.dust, b.dust, u),
         phase: x >= T ? "touchdown" : a.phase,
+        frame: { up: f.up, along }, // for the attitude slew (round 27c)
       };
     };
     names.forEach((nm, i) => {
       const t1 = i + 1 < names.length ? starts[i + 1] : t0 + T;
-      pieces.push({ name: nm, body, t0: starts[i], t1, fn: descentState });
+      pieces.push({ name: nm, body, t0: starts[i], t1, fn: descentState, descent: true });
     });
     for (const m of d.moments) ev(m.type, t0 + m.t_s, { body, alt_m: m.alt_m, vel_ms: m.vel_ms });
     // the parachute and the final powered descent, by name (round 22): Mars' chute; the landing burn starts with
@@ -1387,6 +1397,50 @@ export function flightTimeline(build, catalog, opts = {}) {
   events.sort((a, b) => a.t_sim - b.t_sim);
 
   const pieceAt = (t) => pieces.find((x) => t >= x.t0 && t <= x.t1) ?? (t < pieces[0].t0 ? pieces[0] : pieces.at(-1));
+  // round 27c: a landing's drawn attitude slews at most SLEW_DEG_S per screen second toward the modelled one, in
+  // the frame (along the ground track, across it, up), from the descent's first frame (after the cut into it)
+  const landing = pieces.filter((p) => p.descent);
+  if (landing.length) {
+    const tau0 = clock.simToScreen(landing[0].t0);
+    const tau1 = clock.simToScreen(landing.at(-1).t1);
+    const H = 1 / 120;
+    const n = Math.max(1, Math.ceil((tau1 - tau0) / H));
+    const raw = landing.map((p) => p.fn);
+    const rawAt = (t) => {
+      const i = Math.max(0, landing.findIndex((p) => t <= p.t1 + 1e-9));
+      return raw[i](Math.max(landing[i].t0, Math.min(landing[i].t1, t)));
+    };
+    const toLocal = (st) => {
+      const { up, along } = st.frame;
+      const across = unit(cross(up, along));
+      return [dot(st.axis, along), dot(st.axis, across), dot(st.axis, up)];
+    };
+    const maxStep = SLEW_DEG_S * rad * H;
+    const drawn = [toLocal(rawAt(landing[0].t0))];
+    for (let i = 1; i <= n; i++) {
+      const want = toLocal(rawAt(clock.screenToSim(Math.min(tau1, tau0 + i * H))));
+      const a = drawn[i - 1];
+      const th = Math.atan2(len(cross(a, want)), dot(a, want));
+      if (th <= maxStep) drawn.push(want);
+      else {
+        const k = maxStep / th;
+        drawn.push(unit(add(mul(a, Math.sin((1 - k) * th) / Math.sin(th)), mul(want, Math.sin(k * th) / Math.sin(th)))));
+      }
+    }
+    const drawnAt = (t) => {
+      const x = Math.max(0, Math.min(n, (clock.simToScreen(t) - tau0) / H));
+      const i = Math.min(n - 1, Math.floor(x));
+      return unit(add(mul(drawn[i], 1 - (x - i)), mul(drawn[i + 1] ?? drawn[i], x - i)));
+    };
+    landing.forEach((p, j) => {
+      p.fn = (t) => {
+        const st = raw[j](t);
+        const c = drawnAt(t);
+        const { up, along } = st.frame;
+        return { ...st, axis: unit(add(add(mul(along, c[0]), mul(unit(cross(up, along)), c[1])), mul(up, c[2]))) };
+      };
+    });
+  }
   const dest = kind !== "earth" && bodies[kind] ? kind : null;
   const describe = (st, t, ts, segment, destPos) => {
     const frameBody = st.body === "space" ? "earth" : st.body;

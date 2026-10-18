@@ -450,6 +450,9 @@ const DEST_ROW = DESTINATIONS.length ? DESTINATIONS : [
   { id: "mars", label: "Mars", missionId: "mars-transfer" },
 ];
 const PANEL_ON = new URLSearchParams(location.search).get("panel") === "1";
+// The booster's catch as a picture-in-picture beside the release (user, round 25); ?pip=0 gives the sequential
+// story (the release, then a cut to the booster's descent).
+const PIP_ON = new URLSearchParams(location.search).get("pip") !== "0";
 const readyUi = mountReadiness({ hud: shell.hud, destinations: DESTINATIONS, onDestination: (missionId) => setMission(missionId) });
 const panelPhase = (phase) => document.body.classList.toggle("rdy-off", !PANEL_ON && phase !== "result");
 panelPhase("pad");
@@ -1008,7 +1011,7 @@ function twinSoon() {
         () => {
           if (!isComplete() || choreo.state.launch || buildKey(current.build) !== key) return;
           const sim = simFor(current.build);
-          const fl = sim?.samples?.length && sim.summary.outcome !== "blocked" ? flightTimeline(current.build, catalog, { ascent: sim }) : null;
+          const fl = sim?.samples?.length && sim.summary.outcome !== "blocked" ? flightTimeline(current.build, catalog, { ascent: sim, boosterInset: PIP_ON }) : null;
           flightPrep.key = fl && !fl.blocked ? key : null;
           flightPrep.flight = flightPrep.key ? fl : null;
           if (flightPrep.flight) idle(() => flightPrep.flight && !choreo.state.launch && choreo.prepareGround?.(flightPrep.flight), { timeout: 1200 });
@@ -1101,7 +1104,7 @@ async function launch({ countdown, brief = false } = {}) {
   // the timeline made at idle for this build (its landing ground is warm), else now; the story keeps its short ascent
   const prepped = flightPrep.key === buildKey(current.build) ? flightPrep.flight : null;
   flightPrep.key = flightPrep.flight = null; // (a flight marks its timeline's events: one use)
-  const flight = brief ? null : prepped ?? flightTimeline(current.build, catalog, { ascent: sim });
+  const flight = brief ? null : prepped ?? flightTimeline(current.build, catalog, { ascent: sim, boosterInset: PIP_ON });
   lastFlight = flight && !flight.blocked ? flight : null;
   rangeFlight = false;
   telemetry.sentences = [];
@@ -1825,6 +1828,56 @@ function frame() {
     renderer.render(scene, camera);
     renderer.autoClear = true;
   }
+  renderInset();
+}
+// ---------- picture-in-picture (user, round 25): the first stage's catch, top-right, beside the release ----------
+// choreo.insetView() gives its camera and caption while it plays; it is drawn straight to the canvas into the
+// frame's rect (no post chain: a small view), the shadow maps left as the main frame made them.
+const pipEl = document.createElement("div");
+pipEl.className = "pip";
+pipEl.hidden = true;
+pipEl.setAttribute("aria-hidden", "true");
+const pipCap = document.createElement("span");
+pipCap.className = "pip-cap";
+pipEl.append(pipCap);
+document.body.append(pipEl);
+const pipPrevClear = new THREE.Color();
+function renderInset() {
+  const v = choreo.insetView?.();
+  if (!v) {
+    if (!pipEl.hidden) pipEl.hidden = true;
+    return;
+  }
+  if (pipEl.hidden) pipEl.hidden = false;
+  if (pipCap.textContent !== v.caption) pipCap.textContent = v.caption;
+  const r = pipEl.getBoundingClientRect();
+  if (r.width < 8 || r.height < 8) return;
+  const x = r.left + 1;
+  const y = innerHeight - r.bottom + 1;
+  const w = r.width - 2;
+  const h = r.height - 2;
+  if (Math.abs(v.camera.aspect - w / h) > 1e-3) {
+    v.camera.aspect = w / h;
+    v.camera.updateProjectionMatrix();
+  }
+  const shadows = renderer.shadowMap.autoUpdate;
+  const ac = renderer.autoClear;
+  const alpha = renderer.getClearAlpha();
+  renderer.getClearColor(pipPrevClear);
+  renderer.shadowMap.autoUpdate = false;
+  renderer.setRenderTarget(null);
+  renderer.setViewport(x, y, w, h);
+  renderer.setScissor(x, y, w, h);
+  renderer.setScissorTest(true);
+  renderer.setClearColor(BG, 1); // the sky colour of the recipe behind the coast
+  renderer.clear(true, true, false);
+  renderer.autoClear = false;
+  renderer.render(scene, v.camera);
+  renderer.autoClear = ac;
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, innerWidth, innerHeight);
+  renderer.setClearColor(pipPrevClear, alpha);
+  renderer.shadowMap.autoUpdate = shadows;
 }
 frame();
 
