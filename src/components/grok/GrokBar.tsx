@@ -129,6 +129,11 @@ body .bar > button:hover:not(:disabled) { background: rgba(255,255,255,.08); col
 body .bar > #btn-build-all { order: 9; margin-left: 4px; background: #f6f7fb; color: #07080c; font-weight: 600; }
 body .bar > #btn-build-all:hover:not(:disabled) { background: #fff; color: #07080c; }
 body .bar .rockets { left: auto; right: 0; bottom: calc(100% + 10px); }
+body .bar > button:focus { outline: none; }
+body .bar > button:focus-visible { outline: 2px solid rgba(255,255,255,.55); outline-offset: 2px; }
+/* The Rockets list opens upward over Grok's buttons: they step aside while it's open. */
+.grok-actions { transition: opacity 150ms; }
+body:has(#btn-rockets[aria-expanded="true"]) .grok-actions { opacity: 0; pointer-events: none; }
 .grok-panel-button { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--text);
   background: var(--surface); border: 1px solid var(--hairline); border-radius: 999px; padding: 8px 15px; cursor: pointer;
   backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); transition: background 160ms; }
@@ -707,7 +712,7 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
 
       {/* All the buttons together on the right: Grok's group, sitting right on top of the screen's control bar. */}
       <div
-        className="fixed right-6 z-10 flex flex-col items-end gap-2"
+        className="grok-actions fixed right-6 z-10 flex flex-col items-end gap-2"
         style={{ bottom: 24 + barHeight + 8 }}
       >
         {(live.live || suggestion) && (
