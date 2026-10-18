@@ -26,9 +26,11 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { SCALE } from "./layout.js";
 
-// Round-10 x-ray look (docs/v2-design.md §5): dark see-through graphite shells with a peach fresnel rim,
-// opaque steel internals, peach edge lines on every piece. It is the default; ?look=classic shows the
-// earlier painted look for comparison.
+// Two looks per piece (round 15), switched by setShellOpacity: painted PBR (default, shell value ≥ 0.9: clear-
+// coated paint with micro-roughness, soot near the base, brushed bare-metal bells, black composite with a weave
+// normal, edge lines at 0.15) and the round-10 x-ray look (docs/v2-design.md §5, below 0.9: dark see-through
+// graphite shells with a peach fresnel rim, opaque steel internals, peach edge lines). ?look=classic shows the
+// round-9 painted look with no switching.
 const XRAY = !(typeof location !== "undefined" && /[?&]look=classic(&|$)/.test(location.search ?? ""));
 export const LOOK = XRAY ? "xray" : "classic";
 const PEACH = 0xffb48a;
@@ -36,6 +38,8 @@ const SHELL_OPACITY = 0.55; // built; choreo sets 0.30 exploded, 0.15 selected t
 const LINE_STRUCT = 0.55; // rings, flanges, bell lips, fins, legs, shell rims and seams
 const LINE_FINE = 0.2; // weld lands, raceway clamps, shell panel seams
 const LINE_INTERIOR = 0.3; // internals seen through the shells (domes, baffles, bottles)
+const PAINT_AT = 0.9; // setShellOpacity at or above this shows the painted look
+const LINE_PAINT = 0.15; // structural edge lines over paint (others scale by the same factor)
 
 export const COLORS = {
   body: 0xd6d8d4,
@@ -205,6 +209,51 @@ function textures() {
       },
       { srgb: true, channel: 1, tile_m: 3 },
     ),
+    // Paint skin, 4 m tile on uv1: the seams map's welds and panel seam (R bump) plus micro-roughness noise in G
+    // so highlights break up across the clear coat.
+    paint: dataTexture(
+      W,
+      W,
+      (u, v) => {
+        const n = fbm(u, v, 4, 11);
+        const micro = fbm(u, v, 24, 5, 3);
+        const weld = Math.exp(-(((v - 0.5) / (1.6 * px)) ** 2));
+        const seam = Math.exp(-(((u - 0.5) / (1.0 * px)) ** 2));
+        return [0.5 + 0.22 * weld - 0.25 * seam, 0.9 + (micro - 0.5) * 0.22 + (n - 0.5) * 0.12 - 0.12 * weld, 1];
+      },
+      { channel: 1, tile_m: 4 },
+    ),
+    // Brushed metal: fine streaks along v (roughness in G), for the bare-metal bells; uv.x counts cooling tubes.
+    brushed: (() => {
+      const tex = dataTexture(256, 8, (u) => {
+        const n = 0.6 * vnoise(u, 0, 128, 61) + 0.4 * vnoise(u, 0, 32, 62);
+        return [0.5, 0.7 + 0.5 * (n - 0.5), 1];
+      });
+      tex.repeat.set(1 / 12, 1);
+      return tex;
+    })(),
+    // Carbon composite twill as a normal map (from the weave height below), 0.5 m tile on uv1.
+    weaveN: (() => {
+      const h = (u, v) => {
+        const cu = Math.floor(u * 16);
+        const cv = Math.floor(v * 16);
+        const alongU = (((cu + cv) % 4) + 4) % 4 < 2;
+        const f = alongU ? (((v * 16) % 1) + 1) % 1 : (((u * 16) % 1) + 1) % 1;
+        return 0.5 + 0.3 * Math.sin(f * Math.PI);
+      };
+      const e = 1 / 128;
+      return dataTexture(
+        128,
+        128,
+        (u, v) => {
+          const dx = (h(u + e, v) - h(u - e, v)) * 1.6;
+          const dy = (h(u, v + e) - h(u, v - e)) * 1.6;
+          const l = Math.hypot(dx, dy, 1);
+          return [(-dx / l) * 0.5 + 0.5, (-dy / l) * 0.5 + 0.5, (1 / l) * 0.5 + 0.5];
+        },
+        { channel: 1, tile_m: 0.5 },
+      );
+    })(),
     // Carbon composite twill, 0.5 m tile on uv1.
     weave: dataTexture(
       64,
@@ -273,7 +322,109 @@ export function createMaterials() {
   classic.copv = classic.composite;
   classic.steelDark = classic.darkMetal;
   if (!XRAY) return classic;
-  return xrayMaterials(t, classic);
+  const x = xrayMaterials(t, classic);
+  const paint = paintedMaterials(t, classic);
+  // Each role gets its own x-ray object (the x-ray set shares a few) carrying its painted twin; piece() reads
+  // material.painted and keeps both on the mesh (setShellOpacity switches).
+  const seen = new Set();
+  for (const k of Object.keys(x)) {
+    let m = x[k];
+    if (seen.has(m)) {
+      const c = cloneMat(m);
+      if (m.asShell) Object.defineProperty(c, "asShell", { value: m.asShell });
+      m = x[k] = c;
+    }
+    seen.add(m);
+    if (paint[k]) Object.defineProperty(m, "painted", { value: paint[k], configurable: true });
+  }
+  return x;
+}
+
+// Soot: darkens paint toward the part's base in uneven vertical streaks, and dulls its roughness and clear
+// coat. Per material: material.soot = { value: Vector4(y0, height, strength, 0) } in mesh-local units: full
+// strength at y0, gone by y0 + height
+// (set by createPart; strength 0 = clean). The streak pattern runs on the mesh-local azimuth.
+function sootHook(shader) {
+  shader.uniforms.uSoot = this.soot ?? (this.soot = { value: new THREE.Vector4(0, 1, 0, 0) });
+  shader.vertexShader = shader.vertexShader
+    .replace("#include <common>", "#include <common>\nvarying vec2 vSoot;")
+    .replace("#include <begin_vertex>", "#include <begin_vertex>\nvSoot = vec2(position.y, atan(position.x, position.z));");
+  shader.fragmentShader = shader.fragmentShader
+    .replace("#include <common>", "#include <common>\nvarying vec2 vSoot;\nuniform vec4 uSoot;")
+    .replace(
+      "#include <map_fragment>",
+      `#include <map_fragment>
+      float sootStreak = 0.5 + 0.25 * sin(vSoot.y * 23.0 + 1.7 * sin(vSoot.y * 7.0)) + 0.25 * sin(vSoot.y * 61.0 + 0.4);
+      float sootG = 1.0 - smoothstep(uSoot.x, uSoot.x + uSoot.y * (0.55 + 0.9 * sootStreak), vSoot.x);
+      float soot = uSoot.z * sootG * (2.0 - sootG);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.035, 0.032, 0.03), soot);`,
+    )
+    .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, 0.85, soot);")
+    .replace(
+      "#include <lights_physical_fragment>",
+      `#include <lights_physical_fragment>
+      #ifdef USE_CLEARCOAT
+        material.clearcoat *= 1.0 - 0.8 * soot;
+      #endif`,
+    );
+}
+const sootKey = () => "paint-soot-v1";
+
+// Painted PBR twins of every role (round 15). Paint: MeshPhysicalMaterial, clear coat 0.4, roughness 0.35-0.5
+// broken up by the paint map's micro-roughness, soot near the base (sootHook). Bells: brushed bare metal with an
+// anisotropic highlight. Composite: black with a weave normal. Metals and blankets keep their classic look.
+// polygonOffset on all, so the faint edge lines sit cleanly on them. Colours are visual.
+function paintedMaterials(t, classic) {
+  const po = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 };
+  const phys = (o) => new THREE.MeshPhysicalMaterial({ metalness: 0, roughness: 0.42, clearcoat: 0.4, clearcoatRoughness: 0.22, fog: true, ...po, ...o });
+  const sooty = (m) => {
+    m.onBeforeCompile = sootHook;
+    m.customProgramCacheKey = sootKey;
+    m.userData.soot = true;
+    return m;
+  };
+  const paint = (color, extra = {}) => phys({ color, roughnessMap: t.paint, bumpMap: t.paint, bumpScale: 1.0, ...extra });
+  const composite = () => phys({ color: 0x15161a, metalness: 0.2, roughness: 0.38, roughnessMap: t.weave, normalMap: t.weaveN, normalScale: new THREE.Vector2(0.7, 0.7), clearcoat: 0.5, clearcoatRoughness: 0.18 });
+  const keep = (m) => {
+    const c = cloneMat(m);
+    Object.assign(c, po);
+    return c;
+  };
+  const white = sooty(paint(0xe9eae6));
+  return {
+    body: white,
+    roll: sooty(paint(0xe9e9e5, { map: t.roll })),
+    foam: sooty(phys({ color: 0xffffff, map: t.foam, bumpMap: t.foam, bumpScale: 1.6, roughness: 0.82, clearcoat: 0.05 })),
+    bronze: sooty(paint(0xa65f35, { metalness: 0.15, roughness: 0.45 })),
+    silver: sooty(paint(0xb9bdc2, { metalness: 0.7, roughness: 0.35 })),
+    composite: sooty(composite()),
+    heatShield: keep(classic.heatShield),
+    raceway: paint(0xc4c6c1),
+    skirt: keep(classic.skirt),
+    metal: keep(classic.metal),
+    darkMetal: keep(classic.darkMetal),
+    interior: keep(classic.interior),
+    steelDark: keep(classic.darkMetal),
+    trim: paint(0xe9eae6),
+    leg: composite(),
+    copv: composite(),
+    machined: keep(classic.machined),
+    // Bare-metal bell: vertex colours (heat tint, flanges) lifted to read as metal, brushed streaks, tube ridges.
+    engine: phys({ color: new THREE.Color(2.6, 2.6, 2.6), vertexColors: true, metalness: 1, roughness: 0.34, roughnessMap: t.brushed, bumpMap: t.ridges, bumpScale: 0.25, anisotropy: 0.55, anisotropyRotation: Math.PI / 2, clearcoat: 0, envMapIntensity: 0.9 }),
+    chamber: keep(classic.chamber),
+    powerhead: keep(classic.powerhead),
+    valve: keep(classic.valve),
+    pump: keep(classic.pump),
+    pipe: keep(classic.pipe),
+    actuator: keep(classic.actuator),
+    gimbal: keep(classic.gimbal),
+    gridFin: keep(classic.gridFin),
+    gold: keep(classic.gold),
+    mliSilver: keep(classic.mliSilver),
+    panel: keep(classic.panel),
+    accent: keep(classic.accent),
+    dark: keep(classic.dark),
+  };
 }
 
 // Fresnel rim in peach, added to the emissive term; the rim also lifts alpha so silhouettes read through.
@@ -585,7 +736,14 @@ function piece(geo, material, { x = 0, y = 0, z = 0, ry = 0, order = 0, dir = UP
   const src = xrayShell && material.asShell ? material.asShell : material;
   const mat = cloneMat(src);
   if (side !== undefined && !xrayShell) mat.side = side; // x-ray shells stay front-side
-  const mesh = new THREE.Mesh(g, mat);
+  // Painted twin (default look); both live on the mesh and setShellOpacity switches between them.
+  const painted = XRAY && material.painted ? cloneMat(material.painted) : null;
+  if (painted && side !== undefined) painted.side = side;
+  const mesh = new THREE.Mesh(g, painted ?? mat);
+  if (painted) {
+    mesh.userData.looks = { xray: mat, painted };
+    for (const m of [mat, painted]) if (m.emissive) m.userData.emissive0 = [m.emissive.getHex(), m.emissiveIntensity];
+  }
   mesh.position.set(x * S, y * S, z * S);
   mesh.rotation.y = ry;
   // Performance: only shells cast and receive shadows (internals sit inside them anyway).
@@ -1510,6 +1668,15 @@ export function createPart(spec, mats) {
       spin: 0,
     };
   });
+  // Soot near the vehicle's base, from each piece's own bottom edge up: engine-section skins over their whole
+  // height, the first-stage tank over its lowest share (visual strengths and shares).
+  const soot = spec.kind === "engines" ? [0.95, null] : spec.kind === "tank" && spec.stageIndex === 0 ? [0.7, 0.12 * spec.height] : null;
+  for (const p of pieces) {
+    const m = p.mesh.userData.looks?.painted;
+    if (!m?.userData.soot) continue;
+    const bb = p.mesh.geometry.boundingBox;
+    m.soot = { value: new THREE.Vector4(bb.min.y, soot ? (soot[1] ?? bb.max.y - bb.min.y) : 1, soot ? soot[0] : 0, 0) };
+  }
   axisOffsets(pieces, clamp(0.035 * spec.height, 0.04, 0.3));
   pieces.sort((a, b) => a.order - b.order || a.bottomY - b.bottomY);
   assignSpins(pieces, spec.id);
@@ -1523,9 +1690,32 @@ export function createPart(spec, mats) {
 // Pieces with an articulated deploy (see the header for the hinge formula), in deploy order.
 export const deployables = (part) => part.pieces.filter((p) => p.deploy).sort((a, b) => a.deploy.order - b.deploy.order);
 
-// Shell pieces of a part, and their opacity (mesh + edge lines together; lines scale with the shell).
+// Shell pieces of a part, and their look: value ≥ PAINT_AT shows the painted materials (opaque, every edge line
+// at LINE_PAINT / LINE_STRUCT of its built opacity); below it the x-ray materials, shells at opacity value and
+// their lines scaled with them. Lines keep userData.base current for the look, so a caller that resets lines to
+// base × dim (choreo) follows. A material switched out gets its own emissive back (no stuck highlight).
 export const shellPieces = (part) => part.pieces.filter((p) => p.mesh.userData.kind === "shell");
+const lineK = LINE_PAINT / LINE_STRUCT;
 export function setShellOpacity(part, value) {
+  const paint = value >= PAINT_AT;
+  for (const p of part.pieces) {
+    const looks = p.mesh.userData.looks;
+    if (!looks) continue;
+    const want = paint ? looks.painted : looks.xray;
+    if (p.mesh.material !== want) {
+      const old = p.mesh.material;
+      const e0 = old.userData.emissive0;
+      if (e0) old.emissive.setHex(e0[0]), (old.emissiveIntensity = e0[1]);
+      p.mesh.material = want;
+    }
+    for (const e of [p.mesh.userData.edges, p.mesh.userData.edgesFine]) {
+      if (!e) continue;
+      e.userData.base0 ??= e.userData.base;
+      e.userData.base = paint ? e.userData.base0 * lineK : e.userData.base0;
+      e.material.opacity = e.userData.base;
+    }
+  }
+  if (paint) return;
   for (const p of shellPieces(part)) {
     const m = p.mesh.material;
     if (!m.transparent) (m.transparent = true), (m.needsUpdate = true);
@@ -1570,7 +1760,164 @@ export function addLines(mesh, opacity = LINE_PROP, geo = mesh.geometry) {
   return XRAY ? lineChild(mesh, geo, opacity, "edges") : null;
 }
 
-// Launch pad as a structure (x-ray style: dark see-through deck and plinth, opaque steel inside, peach edges):
+// Painted props (round 16), matching the painted rocket: concrete deck and plinth (scorched toward the trench
+// opening), scorched concrete trench and deflector, dark steel mount and clamps, galvanized dark-grey steel for
+// the tower, arms, masts, rails and tray (per-member shade from vertex colours where the geometry has them),
+// the person as a dark silhouette. Colours and tiles are visual.
+const PROP_LINE_K = LINE_PAINT / LINE_PROP; // prop lines over paint: the props' 0.35 level becomes 0.15
+let propTex = null;
+function propTextures() {
+  if (propTex) return propTex;
+  // Concrete: large stains, form-panel blotches and fine aggregate speckle (colour, sRGB; R doubles as bump).
+  const concrete = dataTexture(
+    256,
+    256,
+    (u, v) => {
+      const stain = fbm(u, v, 3, 71, 4);
+      const agg = vnoise(u, v, 128, 72);
+      const fleck = hash2(Math.floor(u * 256), Math.floor(v * 256), 73);
+      const k = 0.86 + 0.16 * (stain - 0.5) + 0.07 * (agg - 0.5) + (fleck > 0.97 ? -0.12 : fleck < 0.02 ? 0.08 : 0);
+      return [k, k * 0.985, k * 0.96];
+    },
+    { srgb: true },
+  );
+  // Grain: roughness variation for steel (G), streaky along v like weathered galvanizing.
+  const grain = dataTexture(128, 128, (u, v) => {
+    const n = 0.6 * vnoise(u, v * 0.25, 32, 81) + 0.4 * vnoise(u, v, 8, 82);
+    return [0.5, 0.82 + 0.36 * (n - 0.5), 1];
+  });
+  // Pad paint wear: off-white with dirt (colour) and chips where the deck shows through (alpha in G).
+  const wear = dataTexture(
+    256,
+    256,
+    (u, v) => {
+      const k = 0.92 - 0.16 * Math.max(0, fbm(u, v, 6, 91, 4) - 0.45) - 0.05 * vnoise(u, v, 64, 92);
+      return [k, k * 0.99, k * 0.96];
+    },
+    { srgb: true },
+  );
+  const wearAlpha = dataTexture(256, 256, (u, v) => {
+    const chip = fbm(u, v, 16, 93, 3) * 0.7 + vnoise(u, v, 96, 94) * 0.3;
+    const a = chip > 0.66 ? 0 : 1;
+    return [a, a, a];
+  });
+  // Apron: dark asphalt / concrete, large soft stains over a fine grain (colour, sRGB).
+  const apron = dataTexture(
+    512,
+    512,
+    (u, v) => {
+      const k = 0.8 + 0.28 * (fbm(u, v, 4, 101, 4) - 0.5) + 0.1 * (vnoise(u, v, 256, 102) - 0.5);
+      return [k, k, k * 1.02];
+    },
+    { srgb: true },
+  );
+  propTex = { concrete, grain, wear, wearAlpha, apron };
+  return propTex;
+}
+// A texture clone with its own repeat (shares the pixels).
+function tiled(tex, rx, ry = rx) {
+  const t = tex.clone();
+  t.repeat.set(rx, ry);
+  t.needsUpdate = true;
+  return t;
+}
+// Scorch: darkens a prop toward its origin's axis (the pad centre) in uneven radial streaks.
+// material.scorch = { value: Vector4(r0, r1, strength, 0) }: full strength inside r0, gone past r1.
+function scorchHook(shader) {
+  shader.uniforms.uScorch = this.scorch ?? (this.scorch = { value: new THREE.Vector4(0, 1, 0, 0) });
+  shader.vertexShader = shader.vertexShader
+    .replace("#include <common>", "#include <common>\nvarying vec3 vScorchP;")
+    .replace("#include <begin_vertex>", "#include <begin_vertex>\nvScorchP = position;");
+  shader.fragmentShader = shader.fragmentShader
+    .replace("#include <common>", "#include <common>\nvarying vec3 vScorchP;\nuniform vec4 uScorch;")
+    .replace(
+      "#include <map_fragment>",
+      `#include <map_fragment>
+      float scA = atan(vScorchP.z, vScorchP.x);
+      float scS = 0.5 + 0.3 * sin(scA * 17.0 + 2.0 * sin(scA * 5.0)) + 0.2 * sin(scA * 43.0);
+      float scG = 1.0 - smoothstep(uScorch.x, uScorch.x + (uScorch.y - uScorch.x) * (0.5 + 0.7 * scS), length(vScorchP.xz));
+      float scorch = uScorch.z * scG * (2.0 - scG);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.05, 0.045, 0.04), scorch);`,
+    )
+    .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, 1.0, scorch);");
+}
+const scorchKey = () => "prop-scorch-v1";
+let propPaint = null;
+function propPaintMaterials() {
+  if (propPaint) return propPaint;
+  const t = propTextures();
+  const po = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 };
+  const std = (o) => new THREE.MeshStandardMaterial({ fog: true, metalness: 0, ...po, ...o });
+  const scorchable = (m) => {
+    m.onBeforeCompile = scorchHook;
+    m.customProgramCacheKey = scorchKey;
+    return m;
+  };
+  propPaint = {
+    concrete: scorchable(std({ color: 0xb3b0aa, roughness: 0.92, map: t.concrete, bumpMap: t.concrete, bumpScale: 0.6 })),
+    trench: scorchable(std({ color: 0x5a5550, roughness: 0.96, map: t.concrete, bumpMap: t.concrete, bumpScale: 0.8 })),
+    steel: std({ color: 0x34373c, metalness: 0.75, roughness: 0.42, roughnessMap: t.grain }),
+    galv: std({ color: 0x5b5f64, metalness: 0.65, roughness: 0.5, roughnessMap: t.grain }),
+    galvShaded: std({ color: 0x5b5f64, vertexColors: true, metalness: 0.65, roughness: 0.5, roughnessMap: t.grain }),
+    person: std({ color: 0x16181c, roughness: 0.85 }),
+    // Pad markings: matte white paint, worn (chips cut out by alpha test), drawn over the deck.
+    marking: std({ color: 0xe9e7e1, roughness: 0.88, map: t.wear, alphaMap: t.wearAlpha, alphaTest: 0.5, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
+    apron: std({ color: 0x2c2d30, roughness: 0.96, map: t.apron }),
+  };
+  return propPaint;
+}
+// Gives a prop mesh its painted twin (default) next to its x-ray material; key names propPaintMaterials().
+// Returns the painted clone so callers can set its textures or scorch. No-op in the classic look.
+// lineK: painted line opacity / x-ray line opacity (default PROP_LINE_K; thin lattices go lower so their lines
+// do not tint the steel).
+export function paintProp(mesh, key, { repeat = null, scorch = null, lineK = PROP_LINE_K } = {}) {
+  if (!XRAY) return null;
+  mesh.userData.paintLineK = lineK;
+  const painted = cloneMat(propPaintMaterials()[key]);
+  if (repeat && painted.map) painted.map = tiled(painted.map, ...repeat);
+  if (repeat && painted.bumpMap) painted.bumpMap = painted.map ?? tiled(painted.bumpMap, ...repeat);
+  if (scorch) painted.scorch = { value: new THREE.Vector4(...scorch, 0) };
+  mesh.userData.looks = { xray: mesh.material, painted };
+  mesh.material = painted;
+  for (const e of [mesh.userData.edges, ...mesh.children.filter((c) => c.isLineSegments)]) {
+    if (!e?.userData || e.userData.base === undefined) continue;
+    e.userData.base0 ??= e.userData.base;
+    e.userData.base = e.userData.base0 * lineK;
+    e.material.opacity = e.userData.base;
+  }
+  return painted;
+}
+// Switches every prop under root (pad, anchors) between "painted" (default) and "xray": material twins,
+// edge lines (0.15 vs 0.35 level), objects that exist only in one look (userData.lookOnly: the holo rings vs
+// the pad markings, the person's line figure) and per-look opacities (userData.lookOpacity: the polar grid).
+// Props follow the builder: x-ray only while the whole build is in the clear look.
+export function setPropLook(root, look = "painted") {
+  const paint = look !== "xray";
+  root.traverse((o) => {
+    const looks = o.userData.looks;
+    if (looks && !o.userData.partId) {
+      o.material = paint ? looks.painted : looks.xray;
+      for (const e of o.children) {
+        if (!e.isLineSegments || e.userData.base0 === undefined) continue;
+        e.userData.base = paint ? e.userData.base0 * (o.userData.paintLineK ?? PROP_LINE_K) : e.userData.base0;
+        e.material.opacity = e.userData.base;
+      }
+    }
+    if (o.userData.lookOnly) o.visible = o.userData.lookOnly === (paint ? "painted" : "xray");
+    const op = o.userData.lookOpacity;
+    if (op && o.material) o.material.opacity = paint ? op.painted : op.xray;
+  });
+}
+// Disposes both looks of every mesh under root (geometry and the material in use are the caller's).
+export function disposeLooks(root) {
+  root.traverse((o) => {
+    for (const m of Object.values(o.userData.looks ?? {})) if (m !== o.material) m.dispose();
+  });
+}
+
+// Launch pad as a structure, painted by default (concrete deck and plinth, scorched trench, dark steel mount,
+// clamps and rails; see paintProp / setPropLook), x-ray in the clear look (dark see-through deck and plinth,
+// opaque steel inside, peach edges, the blue holo rings):
 // a raised hardstand with a deck of 8 plates (expansion joints between them) around an opening over the flame
 // trench; the trench as a recessed channel with side and back walls and a deflector wedge under the engines,
 // exiting through the plinth wall; the launch-mount ring with struts; four hold-down clamps with bolt rings;
@@ -1582,7 +1929,7 @@ export function createPad({ baseRadius_u = 1, cameraAzimuth = 0.58 } = {}) {
   const mats = propMaterials();
   const g = new THREE.Group();
   g.name = "pad";
-  const add = (geo, mat, { shadows = false, lineGeo = null, ry = 0, name, opacity = null } = {}) => {
+  const add = (geo, mat, { shadows = false, lineGeo = null, ry = 0, name, opacity = null, paint = null } = {}) => {
     const m = new THREE.Mesh(geo, cloneMat(mat));
     if (opacity !== null && m.material.transparent) m.material.opacity = opacity;
     m.rotation.y = ry;
@@ -1590,9 +1937,11 @@ export function createPad({ baseRadius_u = 1, cameraAzimuth = 0.58 } = {}) {
     m.name = name;
     m.raycast = () => {};
     addLines(m, LINE_PROP, lineGeo ?? geo);
+    if (paint) paintProp(m, paint.key, paint);
     g.add(m);
     return m;
   };
+  const tile_u = 8 * S; // concrete texture tile (8 m)
 
   // Deck: 8 plates around the trench opening, separated by expansion joints.
   const joint = 0.012 * padR;
@@ -1605,11 +1954,12 @@ export function createPad({ baseRadius_u = 1, cameraAzimuth = 0.58 } = {}) {
     shape.absarc(0, 0, holeR, a1 - joint / (2 * holeR), a0 + joint / (2 * holeR), true);
     plates.push(new THREE.ExtrudeGeometry(shape, { depth: deckT, bevelEnabled: false, curveSegments: 12 }));
   }
-  add(merge(plates).rotateX(-Math.PI / 2).translate(0, -deckT, 0), mats.body, { shadows: true, name: "pad-deck", opacity: 0.75 });
+  // Painted: light concrete (extrude UVs are in units), scorched around the opening; the joints read as dark seams.
+  add(merge(plates).rotateX(-Math.PI / 2).translate(0, -deckT, 0), mats.body, { shadows: true, name: "pad-deck", opacity: 0.75, paint: { key: "concrete", repeat: [1 / tile_u], scorch: [holeR * 1.05, holeR * 2.8, 0.75] } });
 
   // Plinth wall: open ring under the deck with a gap where the trench comes out.
   const gapHalf = Math.asin(Math.min(0.95, (holeR + 0.1 * b) / padR));
-  add(lathe([[padR, -P], [padR, -deckT]], 96, trenchPhi + gapHalf, TAU - 2 * gapHalf), mats.body, { name: "pad-plinth" });
+  add(lathe([[padR, -P], [padR, -deckT]], 96, trenchPhi + gapHalf, TAU - 2 * gapHalf), mats.body, { name: "pad-plinth", paint: { key: "concrete", repeat: [(TAU * padR) / tile_u, (P - deckT) / tile_u] } });
 
   // Flame trench (local +X runs out along trenchPhi): floor, side and back walls, deflector wedge.
   const hw = holeR;
@@ -1630,7 +1980,7 @@ export function createPad({ baseRadius_u = 1, cameraAzimuth = 0.58 } = {}) {
     box(wt, depth, 2 * hw + 2 * wt, x0 - wt / 2, -P + depth / 2, 0),
     new THREE.ExtrudeGeometry(wedge, { depth: 1.92 * hw, bevelEnabled: false }).translate(0, 0, -0.96 * hw),
   ]);
-  add(trench, mats.steelDark, { ry: trenchPhi - Math.PI / 2, name: "pad-trench" });
+  add(trench, mats.steelDark, { ry: trenchPhi - Math.PI / 2, name: "pad-trench", paint: { key: "trench", repeat: [1], scorch: [holeR * 0.6, holeR * 3.5, 0.85] } });
 
   // Launch-mount ring around the opening, braced by 8 struts down to the deck.
   const mh = 0.05 * b + 0.03;
@@ -1642,7 +1992,7 @@ export function createPad({ baseRadius_u = 1, cameraAzimuth = 0.58 } = {}) {
     const t = new THREE.Vector3(Math.cos(phi), 0, -Math.sin(phi));
     struts.push(strut(o.clone().multiplyScalar(mountR * 0.96).setY(mh), o.clone().multiplyScalar(mountR * 1.55).setY(0), 0.05 * b, 0.04 * b, t));
   }
-  add(merge([mountRing.clone(), ...struts]), mats.machined, { name: "pad-mount" });
+  add(merge([mountRing.clone(), ...struts]), mats.machined, { name: "pad-mount", paint: { key: "steel" } });
 
   // Hold-down clamps at 0/90/180/270° (layout azimuths, clear of S-IC style fins at 45°): base plate with a
   // bolt ring on the mount ring, an upright arm and a jaw against the vehicle's base.
@@ -1658,7 +2008,7 @@ export function createPad({ baseRadius_u = 1, cameraAzimuth = 0.58 } = {}) {
     clamps.push(merge([body.clone(), bolts]).rotateY(-a));
     clampLines.push(body.rotateY(-a));
   }
-  add(merge(clamps), mats.steelDark, { name: "pad-clamps", lineGeo: merge(clampLines) });
+  add(merge(clamps), mats.steelDark, { name: "pad-clamps", lineGeo: merge(clampLines), paint: { key: "steel" } });
 
   // Transporter-erector rails (local +X runs out along railPhi): a ramp from the deck down to the ground,
   // rails on the ramp and on the ground, sleepers on the flat part.
@@ -1678,29 +2028,64 @@ export function createPad({ baseRadius_u = 1, cameraAzimuth = 0.58 } = {}) {
     box(r2 - r1, 0.03, 0.03, (r1 + r2) / 2, -P + 0.015, -gauge / 2),
   ];
   for (let x = r1 + 0.15; x < r2; x += 0.3) rails.push(box(0.05, 0.012, gauge + 0.15, x, -P + 0.006, 0));
-  add(merge(rails), mats.steelDark, { ry: railPhi - Math.PI / 2, name: "pad-rails" });
+  add(merge(rails), mats.steelDark, { ry: railPhi - Math.PI / 2, name: "pad-rails", paint: { key: "galv" } });
 
-  // Holo rings on the deck (main pulses ringMat), ground and grid at the foot of the hardstand.
+  // Holo rings on the deck (main pulses ringMat), x-ray look; one mesh for both rings.
   const ringMat = new THREE.MeshBasicMaterial({ color: COLORS.holo, transparent: true, opacity: 0.85 });
-  const ring1 = new THREE.Mesh(new THREE.TorusGeometry(padR * 0.8, 0.022, 8, 160), ringMat);
-  ring1.rotation.x = Math.PI / 2;
-  ring1.position.y = 0.012;
-  const ring2 = new THREE.Mesh(new THREE.TorusGeometry(b * 1.45 + 0.1 * b, 0.014, 8, 120), ringMat);
-  ring2.rotation.x = Math.PI / 2;
-  ring2.position.y = 0.012;
-  g.add(ring1, ring2);
+  const ringO = padR * 0.8;
+  const ringI = b * 1.45 + 0.1 * b;
+  const rings = new THREE.Mesh(merge([new THREE.TorusGeometry(ringO, 0.022, 8, 160), new THREE.TorusGeometry(ringI, 0.014, 8, 120)]).rotateX(Math.PI / 2).translate(0, 0.012, 0), ringMat);
+  rings.name = "pad-holo-rings";
+  rings.raycast = () => {};
+  g.add(rings);
+  // Painted look: the same circles as worn white deck paint (a wide outer circle, a thin inner ring) and a
+  // T-shaped position mark outboard of each hold-down clamp; flat on the deck, receiving shadows.
+  if (XRAY) {
+    rings.userData.lookOnly = "xray";
+    rings.visible = false;
+    const wO = 0.3 * S;
+    const wI = 0.1 * S;
+    const marks = [new THREE.RingGeometry(ringO - wO / 2, ringO + wO / 2, 160), new THREE.RingGeometry(ringI - wI / 2, ringI + wI / 2, 120)];
+    for (let k = 0; k < 4; k++) {
+      const a = (k * TAU) / 4; // the clamps' layout azimuths
+      const ra = mountR * 1.7;
+      const rb = Math.min(mountR * 2.3, ringO - wO);
+      const stem = new THREE.PlaneGeometry(rb - ra, wO * 0.8).translate((ra + rb) / 2, 0, 0);
+      const bar = new THREE.PlaneGeometry(wO * 0.8, (rb - ra) * 0.6).translate(rb, 0, 0);
+      marks.push(stem.rotateZ(a), bar.rotateZ(a));
+    }
+    const mg = merge(marks.map((m) => (m.deleteAttribute("uv"), m))).rotateX(-Math.PI / 2);
+    // Planar UVs in units, so the wear texture is continuous across circles and marks (one tile per 4 m).
+    const mp = mg.attributes.position;
+    const muv = new Float32Array(mp.count * 2);
+    for (let i = 0; i < mp.count; i++) muv.set([mp.getX(i) / (4 * S), mp.getZ(i) / (4 * S)], i * 2);
+    mg.setAttribute("uv", new THREE.BufferAttribute(muv, 2));
+    const markings = new THREE.Mesh(mg.translate(0, 0.004, 0), cloneMat(propPaintMaterials().marking));
+    markings.name = "pad-markings";
+    markings.userData.lookOnly = "painted";
+    markings.receiveShadow = true;
+    markings.raycast = () => {};
+    g.add(markings);
+  }
 
-  const ground = new THREE.Mesh(new THREE.CircleGeometry(40, 64), new THREE.MeshStandardMaterial({ color: 0x0c0e14, metalness: 0.2, roughness: 0.95 }));
+  // Ground at the foot of the hardstand: dark in x-ray; painted, an asphalt / concrete apron (stains on an
+  // 80 m tile) so the pad stands on something; fog still fades it out.
+  const groundR = 40;
+  const ground = new THREE.Mesh(new THREE.CircleGeometry(groundR, 64), new THREE.MeshStandardMaterial({ color: 0x0c0e14, metalness: 0.2, roughness: 0.95 }));
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -P;
   ground.receiveShadow = true;
   ground.raycast = () => {};
+  ground.name = "pad-ground";
+  paintProp(ground, "apron", { repeat: [(2 * groundR) / (80 * S)] }); // disc UVs span its diameter
   g.add(ground);
 
+  // Polar grid: 0.55 in x-ray, a faint 0.08 over the painted apron.
   const grid = new THREE.PolarGridHelper(Math.max(14, padR * 3), 16, 8, 96, 0x2a3140, 0x1a1f2a);
   grid.position.y = -P + 0.01;
   grid.material.transparent = true;
-  grid.material.opacity = 0.55;
+  grid.userData.lookOpacity = { painted: 0.08, xray: 0.55 };
+  grid.material.opacity = XRAY ? 0.08 : 0.55;
   g.add(grid);
 
   return { group: g, ringMat, layout: L };

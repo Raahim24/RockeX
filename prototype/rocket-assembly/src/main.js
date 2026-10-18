@@ -5,6 +5,7 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { BokehPass } from "three/addons/postprocessing/BokehPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import * as catalogModule from "./data/catalog.js";
 import { catalog, presetIds, getPreset, presetToBuild, applyOption } from "./data/catalog.js";
@@ -14,16 +15,17 @@ import { simulateAscent } from "./ascent.js";
 import { arrivalTimeline } from "./arrival.js";
 import { createSilhouette } from "./silhouette.js";
 import { createAnchors } from "./anchors.js";
-import { createPlanet } from "./planet.js";
-import { animate } from "animejs";
+import { animate, spring } from "animejs";
 import { SCALE, buildManifest, sceneBounds } from "./layout.js";
-import { createMaterials, createPart, createPad, createStars } from "./parts.js";
+import { createMaterials, createPart, createPad, createStars, setShellOpacity, setPropLook, LOOK } from "./parts.js";
 import { createChoreographer } from "./choreo.js";
 import { createSfx } from "./fx/sfx.js";
 import { createSelector } from "./ui/select.js";
 import { createCard } from "./ui/card.js";
 import { createScrub } from "./ui/scrub.js";
 import { ensureShell } from "./ui/shell.js";
+import { createLanding } from "./ui/landing.js";
+import { createGroundMap } from "./fx/launchfx.js";
 import * as f from "./ui/format.js";
 
 const query = new URLSearchParams(location.search);
@@ -66,7 +68,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b0d12);
 scene.fog = new THREE.Fog(0x0b0d12, 45, 130);
 
-const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 400);
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 6000); // far: the star shell
 camera.position.set(9.5, 6.8, 14.5);
 
 const controls = new OrbitControls(camera, canvas);
@@ -101,28 +103,93 @@ const root = new THREE.Group(); // shakes on lock
 scene.add(root);
 let pad = null;
 let anchors = null; // scale anchors (UI4): person, tower, trench, masts at true size, on the pad
-scene.add(createStars());
+// UI4's star field is a 90–130 u shell; pushed out ×30 (as in UI4's world harness) so no star sits in front of a
+// globe, with the points scaled to keep their size on screen.
+const stars = createStars();
+stars.scale.setScalar(30);
+stars.material.size *= 30;
+scene.add(stars);
 
 function disposeTree(obj) {
   obj.traverse((o) => {
     o.geometry?.dispose();
-    for (const m of [].concat(o.material ?? [])) m.dispose();
+    for (const m of new Set([].concat(o.material ?? [], Object.values(o.userData.looks ?? {})))) m.dispose(); // both looks of a piece
   });
 }
 
-// Everything tuned to the stack size: fog, key-light shadow box (with room for the exploded view), orbit
-// range, pad. The light keeps its direction; only its box follows the preset.
+// Key-light shadow box: sized and centred on the stack (room for the exploded view); in flight it follows the
+// orbit target (the rocket, the booster, the craft). Changes ease over ~0.5 s (placeShadow, every frame) and the
+// centre snaps to whole shadow-map texels, so shadows neither jump nor swim.
+const shadowBox = { home: new THREE.Vector3(), half: 0, dist: 0, far: 0, goal: { half: 8, dist: 20, far: 45 }, c: new THREE.Vector3(), init: false };
+const SHADOW_AXES = (() => {
+  const x = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), KEY_DIR).normalize();
+  return { x, y: new THREE.Vector3().crossVectors(KEY_DIR, x) };
+})();
+function placeShadow(dt, snap) {
+  const s = shadowBox;
+  const k = snap || !s.init ? 1 : 1 - Math.exp(-dt / 0.15);
+  s.init = true;
+  s.c.lerp(choreo.state.launch ? controls.target : s.home, k);
+  const sc = key.shadow.camera;
+  if (Math.abs(s.goal.half - s.half) > 1e-4 || Math.abs(s.goal.far - s.far) > 1e-4) {
+    s.half += (s.goal.half - s.half) * k;
+    s.far += (s.goal.far - s.far) * k;
+    sc.left = sc.bottom = -s.half;
+    sc.right = sc.top = s.half;
+    sc.near = 1;
+    sc.far = s.far;
+    sc.updateProjectionMatrix();
+  }
+  s.dist += (s.goal.dist - s.dist) * k;
+  const texel = (2 * s.half) / key.shadow.mapSize.x;
+  const ax = s.c.dot(SHADOW_AXES.x);
+  const ay = s.c.dot(SHADOW_AXES.y);
+  key.target.position.copy(s.c).addScaledVector(SHADOW_AXES.x, Math.round(ax / texel) * texel - ax).addScaledVector(SHADOW_AXES.y, Math.round(ay / texel) * texel - ay);
+  key.position.copy(key.target.position).addScaledVector(KEY_DIR, s.dist);
+}
+
+// Contact shadow: a soft dark blob on the deck under the stack, where the key light's shadow map is too coarse to
+// ground the base. Shown while the bottom part is built; in flight it stays on the pad and fades as the rocket
+// climbs off it (updateContact). Writes no depth, so GTAO and the DoF depth skip it.
+function createContactShadow(radius) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const g = c.getContext("2d");
+  const grd = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grd.addColorStop(0, "rgba(0,0,0,0.9)");
+  grd.addColorStop(0.4, "rgba(0,0,0,0.5)");
+  grd.addColorStop(1, "rgba(0,0,0,0)");
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 128, 128);
+  const mat = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false, opacity: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2 * radius, 2 * radius).rotateX(-Math.PI / 2), mat);
+  mesh.name = "contact-shadow";
+  mesh.position.y = 0.002;
+  mesh.renderOrder = 1;
+  mesh.raycast = () => {};
+  return mesh;
+}
+const tmpA = new THREE.Vector3();
+const tmpB = new THREE.Vector3();
+function updateContact(dt) {
+  const c = pad?.contact;
+  if (!c) return;
+  const base = parts[0];
+  let goal = base?.built ? 0.6 : 0;
+  if (goal && choreo.state.launch) {
+    const rise = base.group.getWorldPosition(tmpA).y - pad.group.getWorldPosition(tmpB).y - base.slotY;
+    goal *= 1 - THREE.MathUtils.smoothstep(rise, 0, 2.5 * pad.baseRadius_u);
+  }
+  c.material.opacity += (goal - c.material.opacity) * (1 - Math.exp(-dt / 0.12));
+  c.visible = c.material.opacity > 0.003;
+}
+
+// Everything tuned to the stack size: fog, key-light shadow box, orbit range, pad. The light keeps its
+// direction; only its box follows the preset.
 function applyBounds(b) {
   const H = b.height_u;
-  key.target.position.set(0, H * 0.45, 0);
-  key.position.copy(key.target.position).addScaledVector(KEY_DIR, H * 1.5 + 20);
-  const half = Math.max(8, H * 0.85, b.radius_u * 6);
-  const sc = key.shadow.camera;
-  sc.left = sc.bottom = -half;
-  sc.right = sc.top = half;
-  sc.near = 1;
-  sc.far = H * 3.2 + 45;
-  sc.updateProjectionMatrix();
+  shadowBox.home.set(0, H * 0.45, 0);
+  shadowBox.goal = { half: Math.max(8, H * 0.85, b.radius_u * 6), dist: H * 1.5 + 20, far: H * 3.2 + 45 };
   controls.maxDistance = Math.max(70, H * 3.4);
   if (pad?.baseRadius_u !== b.baseRadius_u) {
     if (pad) {
@@ -130,6 +197,12 @@ function applyBounds(b) {
       disposeTree(pad.group);
     }
     pad = { ...createPad({ baseRadius_u: b.baseRadius_u }), baseRadius_u: b.baseRadius_u };
+    // UI4's line-art ground (coastline, 1 km grid, the pad mark) just under the hardstand; it hangs on the pad,
+    // so it drops away with it in flight.
+    pad.ground = createGroundMap({ y_u: -pad.layout.plinthH - 0.01 });
+    pad.group.add(pad.ground.object3d);
+    pad.contact = createContactShadow(b.baseRadius_u * 2.4);
+    pad.group.add(pad.contact);
     root.add(pad.group);
   }
   // Anchors are sized from the stack height too, so they follow every preset/option change. They hang on the
@@ -149,8 +222,9 @@ const choreo = createChoreographer({ parts, scene, root, camera, controls, sfx, 
 
 // ---------- post ----------
 // GTAO skips what writes no depth (holograms, flashes, the pad ring, x-ray shells), so they never darken the
-// stack. It runs at half resolution (the AO is soft anyway) and is a luxury: off while anything animates,
-// off on stacks over 230 pieces, and off for the session if frames average over 22 ms (see frame()).
+// stack. It runs at half resolution (the AO is soft anyway) and is on whenever the scene is at rest: off only
+// while something animates (build, swap, explode, scrub, the landing dive) and for the whole launch (countdown to
+// the held final frame: no AO popping on mid-flight). The frame-time guard (see luxuryBudget) can drop it.
 class SolidGTAOPass extends GTAOPass {
   setSize(width, height) {
     super.setSize(Math.max(1, Math.round(width / 2)), Math.max(1, Math.round(height / 2)));
@@ -166,8 +240,31 @@ class SolidGTAOPass extends GTAOPass {
     });
   }
 }
+// Depth of field (design rounds 13 (7), 15 (3)): mild, only where it reads, on a focused part at rest and on the
+// vehicle in flight. three's BokehPass with its depth at half resolution, skipping what writes no depth (glows,
+// holograms, x-ray shells) and the background (the sky stays "far"). The pass is off whenever its aperture has
+// eased to 0 (updateDof); the frame-time guard drops it before GTAO.
+class SoftBokehPass extends BokehPass {
+  setSize(width, height) {
+    super.setSize(width, height);
+    this._renderTargetDepth.setSize(Math.max(1, Math.round(width / 2)), Math.max(1, Math.round(height / 2)));
+  }
+  render(renderer, writeBuffer, readBuffer, deltaTime, maskActive) {
+    const hidden = [];
+    this.scene.traverseVisible((o) => {
+      if (o.material && !Array.isArray(o.material) && o.material.depthWrite === false) hidden.push(o);
+    });
+    for (const o of hidden) o.visible = false;
+    const background = this.scene.background;
+    this.scene.background = null;
+    super.render(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
+    this.scene.background = background;
+    for (const o of hidden) o.visible = true;
+  }
+}
 let composer = null;
 let gtao = null;
+let dof = null;
 if (!lite) {
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
@@ -177,6 +274,9 @@ if (!lite) {
   gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
   gtao.blendIntensity = 0.55; // dark shells need little AO
   composer.addPass(gtao);
+  dof = new SoftBokehPass(scene, camera, { focus: 10, aperture: 0, maxblur: 0.004 });
+  dof.enabled = false;
+  composer.addPass(dof);
   composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.36, 0.55, 0.8)); // peach edges glow a touch
   composer.addPass(new OutputPass());
 }
@@ -226,7 +326,7 @@ const selector = createSelector({
   // Nothing to inspect in flight. A fairing in the clear look shows its payload, so a click there selects the
   // payload; an opaque fairing is what you see and click.
   resolve: (part) =>
-    choreo.state.launch || landing
+    choreo.state.launch || landingOn()
       ? null
       : part?.kind === "fairing" && part.look === "clear" && !choreo.state.exploded
         ? parts.find((p) => p.kind === "payload" && p.built) ?? part
@@ -234,7 +334,7 @@ const selector = createSelector({
   // Every click on a part flips its look (opaque ↔ clear); empty space only deselects.
   onPick: (part) => choreo.toggleLook(part),
   onGhostClick(part) {
-    if (landing) return;
+    if (landingOn()) return;
     if (choreo.canBuild(part)) choreo.build(part);
   },
   onHover(hit) {
@@ -266,9 +366,20 @@ const { btnRockets, rocketsEl, btnBuildAll, btnExplode, btnReset, hudText } = sh
 btnBuildAll.addEventListener("click", () => (isComplete() ? launch() : choreo.buildAll()));
 
 // Rockets: the presets as an in-place list above the bar. One line each: name, stages, height est.,
-// payload → mission (all from the records and the layout). Choosing one loads it and builds it.
-function rocketsHtml() {
-  const rows = presetIds.map((id, i) => {
+// payload → mission (all from the records and the layout). Choosing one loads it (it appears built).
+// Compare mode (key C): the closest real rocket (GCAT twin) first, then the other presets; choosing one shows
+// it beside the current rocket at true scale.
+let rocketsMode = "switch";
+function rocketsHtml(mode = "switch") {
+  const rows = [];
+  const rec = mode === "compare" ? twinRecord() : null;
+  if (rec) {
+    const name = rec.variant ? `${rec.name} (${rec.variant})` : rec.name;
+    const meta = catalogModule.twinLine ? catalogModule.twinLine(rec) : name;
+    rows.push(`<li><button type="button" class="opt" data-twin="1"><span class="opt-name">Closest real rocket: ${f.esc(name)}</span><span class="opt-meta" title="${f.esc(meta)}">${f.esc(meta)}</span></button></li>`);
+  }
+  presetIds.forEach((id, i) => {
+    if (mode === "compare" && i === presetIndex && !current.modified) return; // not itself
     const p = getPreset(id);
     const b = presetToBuild(p);
     const height = sceneBounds(buildManifest(b, catalog)).height_m;
@@ -276,16 +387,18 @@ function rocketsHtml() {
     const mission = catalog.missions.find((x) => x.id === b.missionId);
     const n = b.stages.length;
     const meta = `${n} stage${n === 1 ? "" : "s"} · ${f.m(height)} est. · ${payload?.name ?? b.payloadId} → ${mission?.name ?? b.missionId}`;
-    const cur = i === presetIndex && !current.modified;
-    return `<li><button type="button" class="opt" data-i="${i}"${cur ? ' aria-current="true"' : ""}><span class="opt-name">${f.esc(p.name)}</span><span class="opt-meta" title="${f.esc(meta)}">${f.esc(meta)}</span></button></li>`;
+    const cur = mode === "switch" && i === presetIndex && !current.modified;
+    rows.push(`<li><button type="button" class="opt" data-i="${i}"${cur ? ' aria-current="true"' : ""}><span class="opt-name">${f.esc(p.name)}</span><span class="opt-meta" title="${f.esc(meta)}">${f.esc(meta)}</span></button></li>`);
   });
   return `<ul>${rows.join("")}</ul>`;
 }
-function setRocketsOpen(open) {
-  if (open === !rocketsEl.hidden) return;
+function setRocketsOpen(open, mode = "switch") {
+  if (open === !rocketsEl.hidden && (!open || mode === rocketsMode)) return;
   if (open) {
     selector.clear(); // one panel at a time (the card is a bottom sheet on phones)
-    rocketsEl.innerHTML = rocketsHtml();
+    rocketsMode = mode;
+    rocketsEl.innerHTML = rocketsHtml(mode);
+    rocketsEl.setAttribute("aria-label", mode === "compare" ? "Compare with" : "Pre-made rockets");
   }
   rocketsEl.hidden = !open;
   btnRockets.setAttribute("aria-expanded", String(open));
@@ -297,8 +410,12 @@ btnRockets.addEventListener("click", () => setRocketsOpen(rocketsEl.hidden));
 rocketsEl.addEventListener("click", (e) => {
   const opt = e.target.closest(".opt");
   if (!opt) return;
+  const mode = rocketsMode;
   setRocketsOpen(false);
-  switchPreset(Number(opt.dataset.i) - presetIndex);
+  if (mode !== "compare") return switchPreset(Number(opt.dataset.i) - presetIndex);
+  clearCompare({ reframe: false });
+  if (opt.dataset.twin) showTwin();
+  else showRival(Number(opt.dataset.i));
 });
 addEventListener("pointerdown", (e) => {
   if (!rocketsEl.hidden && !e.target.closest("#rockets, #btn-rockets")) setRocketsOpen(false);
@@ -346,13 +463,15 @@ function syncUi() {
   btnExplode.textContent = exploded ? "Assemble" : "Explode";
   btnExplode.classList.toggle("on", exploded);
   const launched = Boolean(choreo.state.launch);
+  if (built === parts.length && !launched) presimulate();
   btnBuildAll.textContent = built === parts.length ? "Launch" : "Build all";
   btnBuildAll.disabled = busy > 0 || exploded || launched;
   btnExplode.disabled ||= launched;
-  if (twin && (twin.key !== buildKey(current.build) || launched || busy > 0)) hideTwin({ reframe: false });
+  const cmp = twin ?? rival;
+  if (cmp && (cmp.key !== buildKey(current.build) || launched || busy > 0 || built < parts.length)) clearCompare({ reframe: false });
   if (launched) {
     if (telemetry.final) hudText.innerHTML = telemetry.final;
-  } else if (twin) hudText.innerHTML = twin.line;
+  } else if (twin ?? rival) hudText.innerHTML = (twin ?? rival).line;
   else if (!swapping) hudText.innerHTML = hudHtml();
   announceProgress();
   announceComplete();
@@ -446,10 +565,11 @@ function switchPreset(step, { built = true } = {}) {
   parts = current.manifest.map(makePart);
   applyBounds(current.bounds);
   choreo.setBounds(current.bounds);
+  setPropLook(pad.group, "painted");
   selector.setParts(parts);
   choreo.rebuild(parts);
   if (built) choreo.appearBuilt();
-  if (!rocketsEl.hidden) rocketsEl.innerHTML = rocketsHtml();
+  if (!rocketsEl.hidden) rocketsEl.innerHTML = rocketsHtml(rocketsMode);
   announce();
   const q = new URLSearchParams(location.search);
   q.set("build", current.preset.id);
@@ -460,6 +580,7 @@ function switchPreset(step, { built = true } = {}) {
 function reset() {
   if (current.modified) switchPreset(0, { built: false });
   else choreo.reset();
+  setPropLook(pad.group, "painted"); // new parts arrive painted; the pad and anchors match them
 }
 
 // ---------- launch ----------
@@ -561,11 +682,28 @@ function onTelemetry(tel) {
   telemetry.last = now;
   hudText.innerHTML = telemetryHtml(tel);
 }
+// The ascent is simulated ahead, at idle, once a stack is complete (it takes ~45 ms, which otherwise lands on
+// the first frame of the countdown as a stutter); launch() reuses it for the same build.
+const simCache = { key: null, sim: null, pending: false };
+function simFor(build) {
+  const k = buildKey(build);
+  if (simCache.key !== k) Object.assign(simCache, { key: k, sim: simulateAscent(build, catalog) });
+  return simCache.sim;
+}
+const idle = window.requestIdleCallback ?? ((fn) => setTimeout(fn, 250));
+function presimulate() {
+  if (simCache.pending || simCache.key === buildKey(current.build)) return;
+  simCache.pending = true;
+  idle(() => {
+    simCache.pending = false;
+    if (isComplete() && !choreo.state.launch) simFor(current.build);
+  });
+}
 async function launch({ countdown } = {}) {
   if (!isComplete() || choreo.state.busy || choreo.state.launch) return;
   setRocketsOpen(false);
   if (choreo.state.exploded && !(await choreo.assemble())) return;
-  const sim = simulateAscent(current.build, catalog);
+  const sim = simFor(current.build);
   // A verdict with a blocking warning never flies (ascent.js says "blocked"): a pad abort line for 3 s, no sim.
   if (sim.summary.outcome === "blocked" || !sim.samples.length) {
     const why = sim.summary.reason ?? sim.summary.blockedBy ?? sim.summary.error ?? "no trajectory";
@@ -592,7 +730,7 @@ function twinRecord() {
 }
 const gcatCredit = () => String(catalogModule.gcatSource ?? "").split("; ").pop();
 function showTwin() {
-  if (twin || choreo.state.launch || choreo.state.busy || !isComplete()) return false;
+  if (twin || rival || choreo.state.launch || choreo.state.busy || !isComplete()) return false;
   const rec = twinRecord();
   if (!rec) {
     hudText.innerHTML = "Closest real rocket: data not loaded yet";
@@ -600,7 +738,8 @@ function showTwin() {
   }
   const text = catalogModule.twinLine ? catalogModule.twinLine(rec) : rec.name;
   const credit = gcatCredit();
-  const line = `Closest real rocket: <strong>${f.esc(text)}</strong> · est.${credit ? ` · ${f.esc(credit)}` : ""}`;
+  const line = `${compareLead()} vs <strong>${f.esc(text)}</strong>${credit ? ` · ${f.esc(credit)}` : ""}`;
+  const cardLine = `Closest real rocket: ${text} · est.`;
   let sil = null;
   const stackR = current.bounds.radius_u;
   if (rec.length_m > 0 && rec.diameter_m > 0) {
@@ -613,7 +752,7 @@ function showTwin() {
     const c = (off + sil.radius_u - stackR) / 2;
     choreo.frameCompare(right.clone().multiplyScalar(c), Math.max(current.bounds.height_u, sil.height_u), (off + sil.radius_u + stackR) / 2);
   }
-  twin = { rec, sil, line, key: buildKey(current.build) };
+  twin = { rec, sil, line, cardLine, key: buildKey(current.build) };
   if (anchors?.tower) anchors.tower.visible = false; // the service tower would stand between camera and pair
   hudText.innerHTML = line;
   return true;
@@ -629,7 +768,66 @@ function hideTwin({ reframe = true } = {}) {
   if (reframe) choreo.frameStack();
   hudText.innerHTML = hudHtml();
 }
-const toggleTwin = () => (twin ? hideTwin() : showTwin());
+// The compare line's own side: "<A> · 67.9 m est.".
+const compareLead = () => `<strong>${f.esc(current.preset.name)}</strong>${current.modified ? " (modified)" : ""} · ${f.m(current.bounds.height_m)} est.`;
+
+// A preset beside the current rocket (compare chooser): its parts from its own manifest, to the camera's right
+// with the twin's spacing, appearing built with the same snap. Not selectable (not in `parts`), shells opaque.
+let rival = null;
+function showRival(i) {
+  if (twin || rival || choreo.state.launch || choreo.state.busy || !isComplete()) return false;
+  const other = loadPreset(presetIds[i]);
+  const group = new THREE.Group();
+  const rparts = other.manifest.map(makePart);
+  for (const p of rparts) {
+    p.group.traverse((o) => {
+      if (o.isLine) o.castShadow = o.receiveShadow = false;
+    });
+    if (LOOK === "xray") setShellOpacity(p, 0.92);
+    group.add(p.group);
+  }
+  const right = new THREE.Vector3().crossVectors(camera.getWorldDirection(new THREE.Vector3()), camera.up).setY(0).normalize();
+  const stackR = current.bounds.radius_u;
+  const otherR = other.bounds.radius_u;
+  const off = stackR * 1.6 + otherR;
+  group.position.copy(right).multiplyScalar(off);
+  root.add(group);
+  // The snap (choreo.appearBuilt): each part drops from 1.2 m × its index into its slot on a spring.
+  const gap = 1.2 * SCALE;
+  const k = { v: 1 };
+  const place = () => rparts.forEach((p, j) => (p.group.position.y = p.slotY + (j + 1) * gap * k.v));
+  place();
+  const anim = animate(k, { v: 0, ease: spring({ stiffness: 130, damping: 12 }), onUpdate: place });
+  const c = (off + otherR - stackR) / 2;
+  choreo.frameCompare(right.clone().multiplyScalar(c), Math.max(current.bounds.height_u, other.bounds.height_u), (off + otherR + stackR) / 2);
+  const line = `${compareLead()} vs <strong>${f.esc(other.preset.name)}</strong> · ${f.m(other.bounds.height_m)} est.`;
+  const cardLine = `vs ${other.preset.name} · ${f.m(other.bounds.height_m)} est.`;
+  rival = { group, anim, line, cardLine, key: buildKey(current.build) };
+  if (anchors?.tower) anchors.tower.visible = false;
+  hudText.innerHTML = line;
+  return true;
+}
+function hideRival({ reframe = true } = {}) {
+  if (!rival) return;
+  rival.anim.cancel();
+  root.remove(rival.group);
+  disposeTree(rival.group);
+  rival = null;
+  if (anchors?.tower) anchors.tower.visible = true;
+  if (reframe) choreo.frameStack();
+  hudText.innerHTML = hudHtml();
+}
+function clearCompare(opts) {
+  hideTwin(opts);
+  hideRival(opts);
+}
+// C: the compare chooser, or clear what is being compared.
+function toggleCompare() {
+  if (twin || rival) return clearCompare();
+  if (!rocketsEl.hidden && rocketsMode === "compare") return setRocketsOpen(false);
+  if (choreo.state.launch || choreo.state.busy || !isComplete()) return;
+  setRocketsOpen(true, "compare");
+}
 
 // ---------- result card (design H32) ----------
 // Key S saves "rocket-card.png": the current view rendered once at 1600×900 through a private offscreen
@@ -748,9 +946,9 @@ async function makeCardCanvas() {
   y += 40;
   text("Mission", 64, y, `600 20px ${FONT}`, "#a9adb8");
   text(`${mission?.name ?? build.missionId} · ${f.ms(mission?.requiredDeltaV_ms ?? 0)} required`, 184, y, `600 20px ${FONT}`, "#f6f7fb");
-  if (twin) {
+  if (twin ?? rival) {
     y += 52;
-    text(plain(twin.line).split(" · GCAT")[0], 64, y, `500 17px ${MONO}`, "#ffb48a");
+    text((twin ?? rival).cardLine, 64, y, `500 17px ${MONO}`, "#ffb48a");
   }
   // Footer: where the numbers come from.
   const credit = twin ? ` · ${gcatCredit()}` : "";
@@ -798,7 +996,7 @@ async function runStory() {
       }),
     );
   try {
-    hideTwin({ reframe: false });
+    clearCompare({ reframe: false });
     setRocketsOpen(false);
     if (current.preset.id !== "falcon-9" || current.modified) switchPreset(presetIds.indexOf("falcon-9") - presetIndex, { built: false });
     else if (parts.some((p) => p.built) || choreo.state.launch) choreo.reset();
@@ -881,13 +1079,13 @@ function skipNow() {
   if (what) syncUi();
 }
 canvas.addEventListener("dblclick", (e) => {
-  if (landing) return;
+  if (landingOn()) return;
   e.preventDefault();
   skipNow();
 });
 let lastTap = null; // double-tap: two touch taps within 320 ms and 30 px
 canvas.addEventListener("pointerup", (e) => {
-  if (e.pointerType !== "touch" || landing) return;
+  if (e.pointerType !== "touch" || landingOn()) return;
   const now = performance.now();
   if (lastTap && now - lastTap.t < 320 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
     lastTap = null;
@@ -907,15 +1105,16 @@ function onPartKey(part) {
 
 addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (landing) {
-    if (e.key === "Enter" || e.key === " ") {
+  if (landingOn()) {
+    if (!e.repeat && !["Shift", "Control", "Alt", "Meta", "Tab"].includes(e.key)) {
       e.preventDefault();
-      enterFromLanding();
+      landing.enter(); // any key flies the rest of the way down
     }
-    return; // nothing else until the user has entered
+    return; // nothing else until the builder has taken over
   }
   if (e.target.closest?.("input, textarea, select")) return;
   if (e.key === "Escape" && !rocketsEl.hidden) return setRocketsOpen(false);
+  if (e.key === "Escape" && (twin || rival)) return clearCompare();
   // After a launch the final frame holds (HUD outcome line) until R, Esc or a double-click.
   if (e.key === "Escape" && choreo.state.launch === "done" && !choreo.state.ending) {
     choreo.skip();
@@ -931,82 +1130,54 @@ addEventListener("keydown", (e) => {
   } else if (k === "b") choreo.buildAll();
   else if (k === "r") reset();
   else if (k === "l") launch();
-  else if (k === "c") toggleTwin();
+  else if (k === "c") toggleCompare();
   else if (k === "s") saveCard();
-  else if (k === "x") choreo.toggleLookAll();
+  else if (k === "x") setPropLook(pad.group, choreo.toggleLookAll() === "clear" ? "xray" : "painted"); // pad and anchors follow the build
   else if (k === "p") runStory();
   else if (k === "[") switchPreset(-1);
   else if (k === "]") switchPreset(1);
 });
 
 // ---------- landing page (first load without ?build / ?story / ?skip / ?demo) ----------
-// The Earth (UI4's planet.js) large in the lower half, a big title and one button; bar, HUD and hint hidden.
-// The globe sits right under the pad, so "Build a rocket" is one continuous descent from orbit to the home
-// shot: the pad group appears once the camera is above the deck, the planet sinks away under the ground, and
-// the UI fades in. The landing DOM is created here and removed after entering.
-const LANDING_R = 40;
-const LANDING_AZ = 0.58; // the home view's azimuth
+// The scroll-driven dive from orbit to the pad (ui/landing.js): scroll or drag to descend, click or any key to
+// fly the whole way. Once it hands over, the builder runs as usual; scrolling up with nothing built (at rest)
+// takes it back up. `landing` stays null when the page opens straight into the builder.
 let landing = null;
+const landingOn = () => Boolean(landing?.on);
 function startLanding() {
-  document.body.classList.add("landing");
-  const planet = createPlanet({ kind: "earth", radius_u: LANDING_R });
-  planet.object3d.position.set(0, -LANDING_R - 0.2, 0); // the pad stands on its north pole
-  planet.setSunDir?.(new THREE.Vector3(-0.85, 0.35, -0.2).normalize());
-  scene.add(planet.object3d);
-  root.visible = false;
-  controls.enabled = false;
-  const c = planet.object3d.position;
-  const off = new THREE.Vector3(0, 0.62 * LANDING_R, 2.05 * LANDING_R).applyAxisAngle(new THREE.Vector3(0, 1, 0), LANDING_AZ);
-  camera.position.copy(c).add(off);
-  controls.target.set(c.x, c.y + 1.02 * LANDING_R, c.z);
-  camera.lookAt(controls.target);
-  const el = document.createElement("div");
-  el.className = "landing";
-  el.innerHTML = `<h1>Rocket Assembly</h1><button type="button" class="landing-go">Build a rocket</button>`;
-  document.body.appendChild(el);
-  el.querySelector(".landing-go").addEventListener("click", enterFromLanding);
-  landing = { planet, el, entering: false, y0: planet.object3d.position.y };
-}
-function enterFromLanding() {
-  if (!landing || landing.entering) return;
-  landing.entering = true;
-  sfx.unlock();
-  sfx.play("whoosh", { rate: 0.6, gain: 0.8 });
-  const { planet, el, y0 } = landing;
-  el.style.transition = "none"; // the title and button fade with the move itself (first 40 %)
-  el.querySelector(".landing-go").disabled = true;
-  const p0 = camera.position.clone();
-  const t0 = controls.target.clone();
-  const { position: p1, target: t1 } = choreo.homePose(LANDING_AZ);
-  const smooth = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
-  const prog = { v: 0 };
-  animate(prog, {
-    v: 1,
-    duration: 3200,
-    ease: "inOutCubic",
-    onUpdate: () => {
-      const e = prog.v;
-      camera.position.lerpVectors(p0, p1, e);
-      controls.target.lerpVectors(t0, t1, e);
-      camera.lookAt(controls.target);
-      // The planet sinks away well before the deck shows (globe top and ground disc are almost coplanar).
-      planet.object3d.position.y = y0 - smooth((e - 0.2) / 0.4) * LANDING_R * 1.5;
-      if (!root.visible && camera.position.y > -0.5 && e > 0.45) root.visible = true; // the deck is one-sided
-      root.position.y = -2.5 * (1 - smooth((e - 0.55) / 0.35)); // the pad (and its ghost) rise into view
-      el.style.opacity = String(1 - smooth(e / 0.4));
-      if (e > 0.72 && document.body.classList.contains("landing")) document.body.classList.remove("landing"); // bar, HUD, hint fade in
-    },
-    onComplete: () => {
-      planet.dispose();
-      el.remove();
-      root.visible = true;
-      root.position.y = 0;
-      controls.enabled = true;
-      landing = null;
-      syncUi();
+  landing = createLanding({
+    scene,
+    camera,
+    controls,
+    root,
+    stars,
+    canvas,
+    groundY: () => -pad.layout.plinthH,
+    groundMap: () => pad.ground,
+    endPose: () => choreo.homePose(choreo.landingView.az),
+    view: choreo.landingView,
+    onState: (on) => {
+      if (on) {
+        selector.clear();
+        setRocketsOpen(false);
+      } else syncUi();
     },
   });
 }
+// Back up to the landing: a scroll up over the canvas while the builder is at rest with nothing built.
+const canLeaveBuilder = () =>
+  landing && !landing.on && !story.active && rocketsEl.hidden && !choreo.state.busy && !choreo.state.auto && !choreo.state.launch && !choreo.state.exploded && parts.every((p) => !p.built);
+addEventListener(
+  "wheel",
+  (e) => {
+    if (e.ctrlKey || e.deltaY >= 0 || e.target !== canvas || !canLeaveBuilder()) return;
+    e.preventDefault();
+    e.stopPropagation(); // OrbitControls would zoom in
+    landing.resume();
+    landing.feed(landing.wheelPx(e));
+  },
+  { capture: true, passive: false },
+);
 
 const unlock = () => {
   sfx.unlock();
@@ -1018,49 +1189,101 @@ addEventListener("keydown", unlock);
 
 // ---------- loop ----------
 choreo.prewarm(renderer);
+// The planets' maps load after the warm-up: upload them as soon as they arrive, not on the frame they first show.
+const loaded = THREE.DefaultLoadingManager.onLoad;
+THREE.DefaultLoadingManager.onLoad = () => {
+  loaded?.();
+  choreo.uploadWarmTextures();
+};
 const landingMode = !["build", "story", "skip", "demo"].some((k) => query.has(k));
 if (landingMode) startLanding();
 else choreo.home();
 syncUi();
 announce();
 
-// GTAO budget: frame times are averaged over 2 s windows while it is on; one slow window drops it for the
-// session. The first window after load is skipped (shader compiles and uploads land there).
-const GTAO_MAX_PIECES = 230;
-const perf = { gtaoOk: true, sum: 0, n: 0, windows: 0 };
-const pieceCount = () => parts.reduce((n, p) => n + p.pieces.length, 0);
-function gtaoBudget(rawDt) {
+// Luxury budget (GTAO, DoF): frame times are averaged over 2 s windows while either is on; a slow window drops
+// the DoF for the session if it was on, else GTAO. The first window after load is skipped (shader compiles and
+// uploads land there).
+const perf = { gtaoOk: true, dofOk: true, sum: 0, n: 0, windows: 0, dofSeen: false };
+const animating = () => {
+  const s = choreo.state;
+  return s.busy > 0 || s.auto || s.scrubbing || Boolean(s.launch) || landingOn();
+};
+function luxuryBudget(rawDt) {
   if (!gtao) return;
-  gtao.enabled = perf.gtaoOk && choreo.state.busy === 0 && pieceCount() <= GTAO_MAX_PIECES;
-  if (!gtao.enabled) {
+  gtao.enabled = perf.gtaoOk && !animating();
+  if (!gtao.enabled && !dof?.enabled) {
     perf.sum = perf.n = 0;
+    perf.dofSeen = false;
     return;
   }
   perf.sum += rawDt;
   perf.n++;
+  perf.dofSeen ||= Boolean(dof?.enabled);
   if (perf.sum < 2) return;
-  if (perf.windows++ > 0 && perf.sum / perf.n > 0.022) perf.gtaoOk = false;
+  if (perf.windows++ > 0 && perf.sum / perf.n > 0.022) {
+    if (perf.dofSeen) perf.dofOk = false;
+    else perf.gtaoOk = false;
+  }
   perf.sum = perf.n = 0;
+  perf.dofSeen = false;
 }
+// DoF: in on a part focus at rest (the card open) and in flight on the vehicle; out everywhere else. Focus at the
+// orbit target; the aperture puts the full (small) blur at twice the focus distance.
+let dofK = 0;
+function updateDof(dt) {
+  if (!dof) return;
+  const s = choreo.state;
+  const flying = s.launch === "flying" || Boolean(s.ending);
+  const focused = choreo.framing().mode === "focus" && !s.launch && !animating();
+  const want = perf.dofOk && !landingOn() && (flying || focused);
+  dofK += ((want ? 1 : 0) - dofK) * (1 - Math.exp(-dt / 0.15));
+  dof.enabled = dofK > 0.01;
+  if (!dof.enabled) return;
+  const d = camera.position.distanceTo(controls.target);
+  const maxblur = flying ? 0.0025 : 0.004;
+  dof.uniforms.focus.value = d;
+  dof.uniforms.maxblur.value = maxblur;
+  dof.uniforms.aperture.value = (dofK * 0.8 * maxblur) / Math.max(0.5, d);
+}
+
+const band = { near: null, far: null }; // fog band widths, eased
+// The fade through black between the ending's scenes (choreo.state.cut): over the canvas, under the page UI.
+const cutEl = document.createElement("div");
+cutEl.className = "cut";
+canvas.after(cutEl);
 
 const clock = new THREE.Clock();
 function frame() {
   const rawDt = clock.getDelta();
   const dt = Math.min(rawDt, 0.05);
   const t = clock.elapsedTime;
-  gtaoBudget(rawDt);
+  luxuryBudget(rawDt);
   choreo.update(dt, t);
-  controls.update();
+  landing?.update(dt, t);
+  if (!landingOn()) controls.update(); // its polar/distance clamps would bend the dive's path
+  choreo.postUpdate();
   // Depth cue: fog (background colour) in a band around the orbit target, sized by what is framed, so the far
   // side of the rocket and its far lines fade toward black while the near silhouette stays bright.
   // The band is wide at home and while building (the pad stays visible) and tight on a focus or exploded view.
+  // Its widths ease over ~0.5 s when the framing changes (no fog jump); on a black cut frame they snap.
+  const black = choreo.state.cut >= 1;
   const { r: R, mode } = choreo.framing();
+  const goalNear = 0.6 * R;
+  const goalFar = (mode === "focus" || mode === "exploded" ? 3 : 6) * R;
+  const kb = band.near == null || black ? 1 : 1 - Math.exp(-dt / 0.15);
+  band.near = band.near == null ? goalNear : band.near + (goalNear - band.near) * kb;
+  band.far = band.far == null ? goalFar : band.far + (goalFar - band.far) * kb;
   const dist = camera.position.distanceTo(controls.target);
-  scene.fog.near = Math.max(0.1, dist - 0.6 * R);
-  scene.fog.far = dist + (mode === "focus" || mode === "exploded" ? 3 : 6) * R;
+  const open = landing?.fogOpen ?? 0; // the landing's dive opens the band wide (ground map, cloud deck)
+  scene.fog.near = Math.max(0.1, THREE.MathUtils.lerp(dist - band.near, dist * 0.5, open));
+  scene.fog.far = THREE.MathUtils.lerp(dist + band.far, dist * 8, open);
+  placeShadow(dt, black);
+  updateContact(dt);
+  updateDof(dt);
+  if (cutEl.style.opacity !== String(choreo.state.cut)) cutEl.style.opacity = String(choreo.state.cut);
   if (pad?.ringMat) pad.ringMat.opacity = 0.55 + 0.3 * (0.5 + 0.5 * Math.sin(t * 1.6));
   twin?.sil?.update(camera);
-  landing?.planet.update(t, camera);
   anchors?.update(t);
   if (composer) composer.render();
   else renderer.render(scene, camera);
