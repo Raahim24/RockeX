@@ -74,6 +74,8 @@ export interface LiveGrok {
   speaking: boolean;
   /** The user is talking (server voice detection). */
   hearing: boolean;
+  /** What Grok is saying in its current reply, as it says it (the live transcript); "" between replies. */
+  subtitle: string;
   level: React.RefObject<number>;
   start: (verdict: Verdict, screen: string) => Promise<boolean>;
   stop: () => void;
@@ -104,6 +106,7 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
   const [connecting, setConnecting] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [hearing, setHearing] = useState(false);
+  const [subtitle, setSubtitle] = useState("");
   const [paused, setPaused] = useState(false);
   const level = useRef(0);
   const toolChangeRef = useRef(onToolChange);
@@ -174,6 +177,7 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
     setLive(false);
     setSpeaking(false);
     setHearing(false);
+    setSubtitle("");
     setPaused(false);
   }, []);
 
@@ -235,6 +239,10 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
         st.responding = true;
         st.awaitingReply = false;
         st.lastActivity = Date.now();
+        setSubtitle("");
+        break;
+      case "response.output_audio_transcript.delta":
+        setSubtitle((prev) => prev + String(ev.delta ?? ""));
         break;
       case "conversation.item.input_audio_transcription.completed": {
         const text = String(ev.transcript ?? "").trim();
@@ -243,7 +251,10 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
       }
       case "response.output_audio_transcript.done": {
         const text = String(ev.transcript ?? "").trim();
-        if (text) turnRef.current({ role: "grok", text: text.slice(0, 300) });
+        if (text) {
+          setSubtitle(text);
+          turnRef.current({ role: "grok", text: text.slice(0, 300) });
+        }
         break;
       }
       case "response.function_call_arguments.done": {
@@ -489,5 +500,5 @@ export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): Live
       .catch(() => {});
   }, [memory]);
 
-  return { live, connecting, speaking, hearing, level, start, stop, notify, refresh, paused, pause, resume, talkStart, talkEnd };
+  return { live, connecting, speaking, hearing, subtitle, level, start, stop, notify, refresh, paused, pause, resume, talkStart, talkEnd };
 }

@@ -93,7 +93,7 @@ export function createLanding({ scene, camera, controls, root, stars, canvas, gr
 
   const el = document.createElement("div");
   el.className = "landing landing-page"; // styled as .landing-page only: body.landing is the page state
-  el.innerHTML = `<h1>Rocket Assembly</h1><button type="button" class="landing-go">Build a rocket</button>`;
+  el.innerHTML = `<h1><img class="landing-logo" src="/rockex-logo.png" alt="Rockex" width="926" height="127" /></h1><button type="button" class="landing-go">Build a rocket</button>`;
   document.body.appendChild(el);
   el.querySelector(".landing-go").addEventListener("click", () => enter());
 
