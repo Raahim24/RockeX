@@ -4,7 +4,7 @@
 //   createOptionShelf({ camera, scene, root, canvas, catalog, onPick }) ->
 //     { show({ build, partId, options, built }), clear(), flyIn(part) -> Promise, has(partId, recordId), update(dt), busy,
 //       partId, forBuilt }   (built: the options are swaps for a part already on the rocket)
-//   options: [{ recordId, engineCount?, title, effect, go }]
+//   options: [{ recordId, engineCount?, title, effect }]   (all of them; shown PAGE at a time with ‹ ›)
 import * as THREE from "three";
 import { buildManifest } from "./layout.js";
 import { createMaterials, createPart } from "./parts.js";
@@ -12,6 +12,7 @@ import { createMaterials, createPart } from "./parts.js";
 const DIST = 3; // view-space distance of the shelf
 const FIT = 0.4; // each preview fits in this share of the visible half-height
 const FLY_S = 0.9;
+const PAGE = 4; // parts on the shelf at once
 
 // The build with one option swapped into the slot, so the manifest gives that option's exact part spec.
 function withOption(build, partId, o) {
@@ -42,18 +43,63 @@ export function createOptionShelf({ camera, scene, root, canvas, catalog, onPick
     item.label.remove();
   }
 
-  function clear() {
+  // All options are kept; the shelf shows one page of PAGE at a time, with ‹ › to flip through the rest.
+  let all = [];
+  let page = 0;
+  let shownBuild = null;
+  const nav = document.createElement("div");
+  nav.style.cssText =
+    "position:absolute;display:none;gap:6px;align-items:center;pointer-events:auto;transform:translate(-50%,0);" +
+    "font:600 12px/1 Inter,system-ui,sans-serif;color:#a9adb8";
+  const navButton = (text, step) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.style.cssText =
+      "cursor:pointer;border:1px solid rgba(255,255,255,.18);background:rgba(11,13,18,.82);color:#f6f7fb;border-radius:999px;" +
+      "width:28px;height:28px;font:700 14px/1 Inter,system-ui,sans-serif;backdrop-filter:blur(6px)";
+    b.addEventListener("click", () => flip(step));
+    return b;
+  };
+  const pageText = document.createElement("span");
+  nav.append(navButton("‹", -1), pageText, navButton("›", 1));
+  labels.append(nav);
+  const pages = () => Math.max(1, Math.ceil(all.length / PAGE));
+
+  function clearItems() {
     items.forEach(dispose);
     items = [];
+  }
+
+  function clear() {
+    clearItems();
+    all = [];
     partId = null;
+    nav.style.display = "none";
   }
 
   function show({ build, partId: id, options, built = false }) {
     clear();
     partId = id;
     forBuilt = built;
-    items = options.map((o, i) => {
-      const spec = buildManifest(withOption(build, id, o), catalog).find((s) => s.id === id);
+    shownBuild = build;
+    all = options;
+    page = 0;
+    renderPage();
+  }
+
+  function flip(step) {
+    if (flying || pages() < 2) return;
+    page = (page + step + pages()) % pages();
+    renderPage();
+  }
+
+  function renderPage() {
+    clearItems();
+    const start = page * PAGE;
+    items = all.slice(start, start + PAGE).map((o, k) => {
+      const i = start + k;
+      const spec = buildManifest(withOption(shownBuild, partId, o), catalog).find((s) => s.id === partId);
       const part = createPart({ ...spec, slotY: 0 }, mats);
       part.group.traverse((obj) => {
         if (obj.material) [].concat(obj.material).forEach((m) => (m.fog = false));
@@ -63,7 +109,7 @@ export function createOptionShelf({ camera, scene, root, canvas, catalog, onPick
       part.group.position.y = -(box.min.y + size.y / 2); // centre it on the holder
       const holder = new THREE.Group();
       holder.add(part.group);
-      holder.userData = { size: Math.max(size.x, size.y, size.z) || 1, index: i, spin: i * 1.3 };
+      holder.userData = { size: Math.max(size.x, size.y, size.z) || 1, index: k, spin: k * 1.3 };
       scene.add(holder);
       const label = document.createElement("button");
       label.type = "button";
@@ -71,12 +117,14 @@ export function createOptionShelf({ camera, scene, root, canvas, catalog, onPick
         "position:absolute;transform:translate(-50%,0);pointer-events:auto;cursor:pointer;border:1px solid rgba(255,255,255,.14);" +
         "background:rgba(11,13,18,.82);color:#f6f7fb;border-radius:10px;padding:4px 10px;font:600 12px/1.3 Inter,system-ui,sans-serif;" +
         "text-align:center;white-space:nowrap;backdrop-filter:blur(6px)";
-      label.innerHTML = `<span style="opacity:.6">${i + 1}</span> ${o.title}<br><span style="font-weight:700;color:${o.go ? "#2ee6b6" : "#ff6a3d"}">${o.effect}</span>`;
+      label.innerHTML = `<span style="opacity:.6">${i + 1}</span> ${o.title}<br><span style="font-weight:500;color:#a9adb8">${o.effect}</span>`;
       const item = { option: o, part, holder, label };
       label.addEventListener("click", () => pick(item));
       labels.append(label);
       return item;
     });
+    pageText.textContent = `${page + 1} / ${pages()}`;
+    nav.style.display = pages() > 1 ? "flex" : "none";
   }
 
   function pick(item) {
@@ -124,7 +172,9 @@ export function createOptionShelf({ camera, scene, root, canvas, catalog, onPick
     items.filter((it) => it !== item).forEach(dispose);
     item.label.remove();
     items = [];
+    all = [];
     partId = null;
+    nav.style.display = "none";
     const from = item.holder.position.clone();
     const fromScale = item.holder.scale.x;
     const to = root.localToWorld(new THREE.Vector3(0, part.slotY + part.height / 2, 0));
@@ -149,6 +199,11 @@ export function createOptionShelf({ camera, scene, root, canvas, catalog, onPick
       it.label.style.left = `${((below.x + 1) / 2) * innerWidth}px`;
       it.label.style.top = `${((1 - below.y) / 2) * innerHeight}px`;
     });
+    if (items.length && nav.style.display !== "none") {
+      const last = items[items.length - 1].holder.position.clone().add(new THREE.Vector3(0, -(FIT * h) * 1.05, 0)).project(camera);
+      nav.style.left = `${((last.x + 1) / 2) * innerWidth}px`;
+      nav.style.top = `${((1 - last.y) / 2) * innerHeight}px`;
+    }
     if (flying) {
       flying.t = Math.min(1, flying.t + dt / FLY_S);
       const k = flying.t < 0.5 ? 2 * flying.t * flying.t : 1 - (-2 * flying.t + 2) ** 2 / 2; // ease in-out

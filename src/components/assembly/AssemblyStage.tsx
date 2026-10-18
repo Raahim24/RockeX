@@ -6,6 +6,7 @@
 // "assembly:build" (screen -> store), "assembly:apply" (store -> screen). The screen also reports which parts
 // are placed ("assembly:progress") and when the whole rocket is on the stack ("assembly:complete").
 import { GrokBar } from "@/components/grok/GrokBar";
+import { LaunchReadiness } from "@/components/specs/LaunchReadiness";
 import type { BuildProgress } from "@/components/grok/voiceTools";
 import { useBuildStore } from "@/store/buildStore";
 import type { BuildState } from "@/types";
@@ -61,9 +62,8 @@ export default function AssemblyStage({ markup }: { markup: string }) {
     <>
       {/* display: contents keeps the prototype's fixed-position layout exactly as in its own page. */}
       <div style={{ display: "contents" }} dangerouslySetInnerHTML={{ __html: markup }} />
-      <div className="fixed bottom-28 right-8 z-10 w-[min(360px,calc(100vw-2rem))]">
-        <GrokBar rocketReady={complete} progress={parts} />
-      </div>
+      <LaunchReadiness complete={complete} />
+      <GrokBar rocketReady={complete} progress={parts} />
     </>
   );
 }

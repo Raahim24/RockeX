@@ -56,18 +56,25 @@ export const VOICE_TOOLS = [
     type: "function",
     name: "show_options",
     description:
-      "Put choices for a part on screen as real 3D parts beside the rocket, and get their details (including ones that won't work, and why). Works for the next part, or for a part already on the rocket (to swap it). Call it whenever you start talking about choices. Without ids it shows a mix: current pick, the best working one, and one that won't work; with ids it shows those.",
+      "Put choices for a part on screen as real 3D parts beside the rocket (paged, with each part's type and size), and get their details including what each would do and why some won't work. Works for the next part, or for a part already on the rocket (to swap it). Call it whenever you start talking about choices. Without ids it shows all of them; with ids, just those.",
     parameters: {
       type: "object",
       properties: {
         partId: { type: "string", description: "which part (an id from SCREEN); default: the next part to place" },
-        ids: { type: "array", items: { type: "string" }, maxItems: 4, description: "record ids to show" },
+        ids: { type: "array", items: { type: "string" }, description: "record ids to show (default: all)" },
       },
       required: [],
       additionalProperties: false,
     },
   },
   fn("hide_options", "Take the choices off the screen."),
+  {
+    type: "function",
+    name: "peek_outcomes",
+    description:
+      "See how each option for a part would turn out (GO/NO-GO, margin) and the fix the code would suggest. Only when the user asks for help or the answer, or is stuck after trying; then give a hint before any answer.",
+    parameters: { type: "object", properties: { partId: { type: "string", description: "default: the next part" } }, required: [], additionalProperties: false },
+  },
   fn("build_next", "Place the next part on the rocket (one step of the guided build)."),
   fn("build_all", "Animate the whole rocket being stacked on the pad (only if they ask to build it all at once)."),
   fn("launch", "Launch the finished rocket: a countdown and a flight simulation. The result comes back as an event. A rocket that breaks a rule gets a pad abort."),
@@ -87,6 +94,7 @@ export const VOICE_TOOLS = [
   fn("play_story", "Play the guided story mode that builds and flies a rocket on its own."),
   fn("explode", "Toggle the exploded view that pulls the stages apart, and back."),
   fn("reset", "Clear the pad back to the start."),
+  fn("back_to_pad", "Bring the rocket back to the launch pad, still built: during a flight, from space, or after it lands."),
 ];
 
 const verdictSummary = (v: Verdict) => ({
@@ -173,18 +181,31 @@ export const runVoiceTool = (name: string, rawArgs: string): Record<string, unkn
       const all = slotOptions(build, next, Infinity);
       if (all.length === 0) return fail(`the ${slotName(next)} has no choice to make`);
       const wanted = Array.isArray(args.ids) ? args.ids.map(String) : [];
-      // Grok's picks for this slot (ids of other kinds are ignored), topped up so there is always a choice.
-      const chosen = all.filter((o) => wanted.includes(o.id)).slice(0, 4);
-      const picked = chosen.length >= 2 ? chosen : [...chosen, ...defaultShown(all).filter((o) => !chosen.includes(o))].slice(0, Math.max(chosen.length, OPTIONS_SHOWN));
+      // Every option for the slot (the screen pages them), or just the ones Grok names (ids of other kinds ignored).
+      const chosen = all.filter((o) => wanted.includes(o.id));
+      const picked = chosen.length >= 2 ? chosen : all;
       showOnScreen(next, picked);
-      const anyGo = all.some((o) => o.works && o.finishedRocket.feasible);
       return {
         ok: true,
         part: slotName(next),
         alreadyOnRocket: next.built,
-        shown: picked,
+        // What each part is, and whether it breaks a rule (something they can reason about). Outcomes are not
+        // included on purpose: they're for peek_outcomes, when the user asks for help.
+        shown: picked.map(({ id, name, about, current, works, problem }) => ({ id, name, about, current, works, problem })),
         otherIds: all.filter((o) => !picked.includes(o)).map((o) => o.id),
-        ...(anyGo ? {} : { noChoiceHereReachesGo: true, ...verdictReport() }),
+      };
+    }
+    case "peek_outcomes": {
+      const next = args.partId ? guideProgress.find((p) => p.id === String(args.partId)) : guideProgress.find((p) => !p.built);
+      if (!next) return fail("no part to choose");
+      const all = slotOptions(build, next, Infinity);
+      return {
+        ok: true,
+        part: slotName(next),
+        outcomes: all.map(({ id, name, works, problem, finishedRocket }) => ({ id, name, works, problem, finishedRocket })),
+        anyChoiceHereReachesGo: all.some((o) => o.works && o.finishedRocket.feasible),
+        ...verdictReport(),
+        reminder: "Hint first; the full answer only if they still want it.",
       };
     }
     case "remove_parts":
@@ -206,12 +227,13 @@ export const runVoiceTool = (name: string, rawArgs: string): Record<string, unkn
     case "build_all":
     case "explode":
     case "reset":
+    case "back_to_pad":
     case "hide_twin":
     case "see_through":
     case "save_card":
     case "play_story":
       screen(name);
-      return { ok: true, change: `screen: ${name.replace("_", " ")}` };
+      return { ok: true, change: `screen: ${name.replaceAll("_", " ")}` };
     case "launch":
     case "show_twin":
       screen(name);
@@ -267,6 +289,8 @@ export interface SlotOption {
   /** For engines: how many of them this option uses (as many as fit, up to the current count). */
   engineCount?: number;
   about: string;
+  /** A few words on what it is (shown on screen; never whether it wins). */
+  trait: string;
   current: boolean;
   /** False when it breaks a rule; `problem` says why in plain words. Still allowed: that's how you learn. */
   works: boolean;
@@ -283,7 +307,7 @@ const PLAIN_PROBLEM: [RegExp, string][] = [
   [/dry mass/, "tank too flimsy"],
   [/TWR below 1\.0/, "too heavy to lift off"],
 ];
-const plainProblem = (warning: string): string => PLAIN_PROBLEM.find(([re]) => re.test(warning))?.[1] ?? warning;
+export const plainProblem = (warning: string): string => PLAIN_PROBLEM.find(([re]) => re.test(warning))?.[1] ?? warning;
 
 /**
  * Every record that can go in one slot, with what each does to the finished rocket. Options that break a rule
@@ -293,9 +317,9 @@ export const slotOptions = (build: BuildState, part: BuildPart, limit = OPTIONS_
   const i = part.stageIndex ?? 0;
   const stage = build.stages[i];
   // Each candidate is evaluated first; problems are blamed on this slot only if this slot causes or can fix them.
-  const candidates: { next: BuildState; id: string; name: string; about: string; engineCount?: number }[] = [];
-  const consider = (next: BuildState, id: string, name: string, about: string, engineCount?: number): void => {
-    candidates.push({ next, id, name, about, engineCount });
+  const candidates: { next: BuildState; id: string; name: string; about: string; trait: string; sortKey: number; engineCount?: number }[] = [];
+  const consider = (next: BuildState, id: string, name: string, about: string, trait: string, sortKey: number, engineCount?: number): void => {
+    candidates.push({ next, id, name, about, trait, sortKey, engineCount });
   };
   if (part.kind === "engines" && stage) {
     const tank = byId(catalog.tanks, stage.tankId);
@@ -306,6 +330,8 @@ export const slotOptions = (build: BuildState, part: BuildPart, limit = OPTIONS_
         e.id,
         e.name,
         `${count} x ${e.name}: ${e.propellant}, ${i === 0 ? `${Math.round(e.thrustSL_kN)} kN at sea level` : `${Math.round(e.thrustVac_kN)} kN in vacuum`} each, efficiency (Isp) ${Math.round(i === 0 ? e.ispSL_s : e.ispVac_s)} s`,
+        `${e.propellant} · ${Math.round(i === 0 && e.thrustSL_kN > 0 ? e.thrustSL_kN : e.thrustVac_kN).toLocaleString("en-US")} kN${i === 0 && e.thrustSL_kN <= 0 ? " (vacuum)" : ""}`,
+        e.thrustSL_kN > 0 ? e.thrustSL_kN : e.thrustVac_kN,
         count,
       );
     });
@@ -316,10 +342,14 @@ export const slotOptions = (build: BuildState, part: BuildPart, limit = OPTIONS_
         t.id,
         t.name,
         `${t.propellant}, holds ${kg(t.propellantMass_kg)} of propellant, ${t.diameter_m} m wide`,
+        `${t.propellant} · ${Math.round(t.propellantMass_kg / 1000).toLocaleString("en-US")} t of fuel`,
+        t.propellantMass_kg,
       ),
     );
   } else if (part.kind === "payload") {
-    catalog.payloads.forEach((p) => consider({ ...build, payloadId: p.id }, p.id, p.name, `${kg(p.mass_kg)}`));
+    catalog.payloads.forEach((p) =>
+      consider({ ...build, payloadId: p.id }, p.id, p.name, `${kg(p.mass_kg)}`, `${(p.mass_kg / 1000).toFixed(1)} t`, p.mass_kg),
+    );
   }
   const before = new Set(blocking(evaluateBuild(build, catalog)));
   const verdicts = candidates.map((c) => evaluateBuild(c.next, catalog));
@@ -333,30 +363,18 @@ export const slotOptions = (build: BuildState, part: BuildPart, limit = OPTIONS_
       name: c.name,
       ...(c.engineCount === undefined ? {} : { engineCount: c.engineCount }),
       about: c.about,
+      trait: c.trait,
       current: c.id === part.recordId,
       works: !mine,
       ...(mine ? { problem: plainProblem(mine) } : {}),
       finishedRocket: { feasible: v.feasible, margin_ms: Math.round(v.marginDeltaV_ms), liftoffTWR: Number(v.liftoffTWR.toFixed(2)) },
     };
   });
-  const byMargin = (a: SlotOption, b: SlotOption): number =>
-    Number(b.finishedRocket.feasible) - Number(a.finishedRocket.feasible) || b.finishedRocket.margin_ms - a.finishedRocket.margin_ms;
-  const current = options.filter((o) => o.current);
-  const working = options.filter((o) => !o.current && o.works).sort(byMargin);
-  const broken = options.filter((o) => !o.current && !o.works).sort(byMargin);
-  return [...current, ...working, ...broken].slice(0, limit);
+  // Neutral order (by the slot's main property, like a parts catalog), never "best first": choosing is theirs.
+  const order = new Map(candidates.map((c) => [c.id, c.sortKey]));
+  return [...options].sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0)).slice(0, limit);
 };
 
-/** The default set to show: the current pick, the best ones that work, and one that won't, so there's a lesson. */
-export const defaultShown = (options: SlotOption[]): SlotOption[] => {
-  const current = options.filter((o) => o.current);
-  const working = options.filter((o) => !o.current && o.works);
-  const broken = options.filter((o) => !o.current && !o.works);
-  const pick = [...current, ...working.slice(0, broken.length ? 1 : 2), ...broken.slice(0, 1)];
-  return [...pick, ...options.filter((o) => !pick.includes(o))].slice(0, OPTIONS_SHOWN);
-};
-
-const signed = (m: number): string => `${m >= 0 ? "+" : "−"}${Math.abs(m).toLocaleString("en-US")} m/s`;
 
 /** Shows options on the assembly screen as the real parts (prototype optionShelf). */
 const showOnScreen = (part: BuildPart, options: SlotOption[]): void =>
@@ -370,8 +388,7 @@ const showOnScreen = (part: BuildPart, options: SlotOption[]): void =>
           recordId: o.id,
           engineCount: o.engineCount,
           title: o.engineCount && o.engineCount > 1 ? `${o.engineCount} × ${o.name}` : o.name,
-          effect: o.works ? `${o.finishedRocket.feasible ? "GO" : "NO-GO"} ${signed(o.finishedRocket.margin_ms)}` : `WON'T FLY · ${o.problem}`,
-          go: o.works && o.finishedRocket.feasible,
+          effect: `${o.trait}${o.current ? " · current" : ""}`,
         })),
       },
     }),
@@ -407,7 +424,7 @@ export const guideEvent = (progress: BuildProgress, justPlaced: BuildPart | null
   if (!hasChoice) {
     return `(Event: guided build. ${placed}NEXT, step ${step}: ${slotName(next)}, ${role}. There is no choice to make: say one short line about it, then call build_next.)`;
   }
-  return `(Event: guided build. ${placed}NEXT, step ${step}: ${slotName(next)}, ${role}. Keep it short: if something was just placed, a few words on what it does; then move on to choosing this part together, calling show_options as you bring up the choices. Do not build yet.)`;
+  return `(Event: guided build. ${placed}NEXT, step ${step}: ${slotName(next)}, ${role}. Keep it short: if something was just placed, a few words on what it does; then move on to choosing this part together, calling show_options as you bring up the choices. Let them reason and pick; do not say which is best. Do not build yet.)`;
 };
 
 const withId = (part: BuildPart): string => `${placedName(part)} [${part.id}]`;

@@ -1,4 +1,5 @@
 // Owner: P3. POST RenderRequest -> RenderResponse. On any Grok failure returns the cached image.
+import { guard } from "@/lib/ai/guard";
 import { grokImage } from "@/lib/ai/grokClient";
 import { renderPrompt } from "@/lib/ai/prompts";
 import { RenderRequestSchema } from "@/lib/ai/schemas";
@@ -11,6 +12,8 @@ const TIMEOUT_MS = 55000;
 const CACHED_IMAGE = "/fallback/render.jpg";
 
 export async function POST(req: Request): Promise<Response> {
+  const blocked = guard(req, { bucket: "render", perMinute: 6, maxBytes: 64_000 });
+  if (blocked) return blocked;
   const parsed = RenderRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return Response.json({ error: "invalid RenderRequest" }, { status: 400 });

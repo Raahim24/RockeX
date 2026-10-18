@@ -1,3 +1,4 @@
+import { resetGuard } from "@/lib/ai/guard";
 import { POST as realtime } from "@/app/api/realtime/route";
 import { loadCatalog } from "@/lib/physics/catalog";
 import { evaluateBuild } from "@/lib/physics/feasibility";
@@ -5,7 +6,11 @@ import { DEMO_BUILD, useBuildStore } from "@/store/buildStore";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { choosePicked, guideEvent, runVoiceTool, screenSummary, setGuideProgress, slotOptions, VOICE_TOOLS, type BuildProgress } from "./voiceTools";
 
+// Requests as the app's own page sends them (the AI routes refuse anything else).
+const SAME_SITE = { origin: "http://test", host: "test" };
+
 beforeEach(() => {
+  resetGuard();
   useBuildStore.setState({ build: DEMO_BUILD });
   vi.stubGlobal("dispatchEvent", vi.fn());
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -64,7 +69,7 @@ describe("/api/realtime", () => {
   const post = (token: boolean, origin = "http://test"): Request =>
     new Request("http://test/api/realtime", {
       method: "POST",
-      headers: { origin, host: "test" },
+      headers: { origin, host: "test", ...(token ? { "x-grok-token": "1" } : {}) },
       body: JSON.stringify({ build: DEMO_BUILD, verdict, token }),
     });
 
@@ -79,6 +84,7 @@ describe("/api/realtime", () => {
   it("carries the conversation so far, so a new session continues it", async () => {
     const req = new Request("http://test/api/realtime", {
       method: "POST",
+      headers: SAME_SITE,
       body: JSON.stringify({ build: DEMO_BUILD, verdict, history: [{ role: "user", text: "I want to go to Mars" }, { role: "grok", text: "Mars it is!" }] }),
     });
     const body = (await (await realtime(req)).json()) as { instructions: string };
@@ -109,22 +115,23 @@ describe("guided build", () => {
       { id: "fairing", kind: "fairing", stageIndex: null, recordId: null },
     ].map((p, i) => ({ ...p, built: i < builtCount }));
 
-  it("offers only engines that work on the bottom stage, current pick first, with their effect", () => {
-    const options = slotOptions(DEMO_BUILD, parts(0)[0]);
-    expect(options[0]).toMatchObject({ id: "merlin-1d", current: true });
-    expect(options.length).toBeGreaterThan(1);
+  it("offers every engine for the bottom stage in a neutral order, current marked, broken ones explained", () => {
+    const options = slotOptions(DEMO_BUILD, parts(0)[0], Infinity);
+    expect(options).toHaveLength(loadCatalog().engines.length);
+    expect(options.find((o) => o.current)).toMatchObject({ id: "merlin-1d", finishedRocket: { feasible: false, margin_ms: -905 } });
     const vacuumOnly = loadCatalog().engines.filter((e) => e.thrustSL_kN <= 0).map((e) => e.id);
     // vacuum-only engines are offered on stage 1 too, marked as not working there, so kids learn why
-    expect(options.filter((o) => vacuumOnly.includes(o.id)).every((o) => !o.works && o.problem === "can't work at sea level")).toBe(true);
-    expect(options[0].finishedRocket).toMatchObject({ feasible: false, margin_ms: -905 });
+    expect(options.filter((o) => vacuumOnly.includes(o.id)).every((o) => !o.works && Boolean(o.problem))).toBe(true);
+    expect(options.find((o) => o.id === "merlin-1d-vac")?.problem).toBe("can't work at sea level"); // same fuel, so that's the reason
   });
 
-  it("offers only tanks with the engine's propellant", () => {
-    const tanks = loadCatalog().tanks;
-    for (const o of slotOptions(DEMO_BUILD, parts(1)[1])) {
-      expect(tanks.find((t) => t.id === o.id)?.propellant).toBe("kerolox");
-    }
+  it("orders options like a parts catalog, never best first", () => {
+    const tanks = slotOptions(DEMO_BUILD, parts(1)[1], Infinity);
+    const fuel = tanks.map((o) => loadCatalog().tanks.find((t) => t.id === o.id)!.propellantMass_kg);
+    expect(fuel).toEqual([...fuel].sort((a, b) => a - b));
+    expect(tanks.every((o) => o.trait.includes("t of fuel"))).toBe(true);
   });
+
 
   it("walks to the next part, and has Grok just place parts with no choice", () => {
     expect(guideEvent(parts(0), null)).toContain("NEXT, step 1 of 7: stage 1 engines");
@@ -168,14 +175,16 @@ describe("show_options tool", () => {
     { id: "s0-tank", kind: "tank", stageIndex: 0, recordId: "falcon9-s1-tank", built: false },
   ];
 
-  it("shows the next part's options on screen as parts and gives Grok the same list", () => {
+  it("shows every option on screen with what the part is, not whether it wins", () => {
     setGuideProgress(progress);
     const out = runVoiceTool("show_options", "{}");
     expect(out).toMatchObject({ ok: true, part: "stage 1 tank" });
-    expect((out.shown as { id: string }[])[0].id).toBe("falcon9-s1-tank");
+    expect((out.shown as unknown[]).length).toBe(loadCatalog().tanks.length);
     const sent = (dispatchEvent as unknown as { mock: { calls: [CustomEvent][] } }).mock.calls.at(-1)![0];
     expect(sent.detail).toMatchObject({ cmd: "show_options", partId: "s0-tank" });
-    expect(sent.detail.options[0]).toMatchObject({ recordId: "falcon9-s1-tank", go: false });
+    const current = sent.detail.options.find((o: { recordId: string }) => o.recordId === "falcon9-s1-tank");
+    expect(current.effect).toBe("kerolox · 410 t of fuel · current");
+    expect(sent.detail.options.some((o: { effect: string }) => /GO|WON'T/.test(o.effect))).toBe(false);
   });
 
   it("lets Grok pick which options to show, including ones that won't work, with the reason", () => {
@@ -187,13 +196,6 @@ describe("show_options tool", () => {
     expect(shown.find((o) => o.id === "atlas-v-ccb-tank")).toMatchObject({ works: true });
   });
 
-  it("shows a teaching mix by default: current, one that works, one that won't", () => {
-    setGuideProgress(progress);
-    const shown = runVoiceTool("show_options", "{}").shown as { current: boolean; works: boolean }[];
-    expect(shown[0].current).toBe(true);
-    expect(shown.some((o) => !o.current && o.works)).toBe(true);
-    expect(shown.some((o) => !o.works)).toBe(true);
-  });
 
   it("says so when there is nothing to choose", () => {
     setGuideProgress(progress.map((p) => ({ ...p, built: true })));
@@ -261,15 +263,16 @@ describe("options blame only the part that causes a problem (Falcon 9 to the Moo
     expect(merlinVac).toMatchObject({ current: true, works: true });
   });
 
-  it("when no engine here reaches the Moon, tells Grok the change elsewhere that would", () => {
+  it("keeps outcomes out of show_options; peek_outcomes has them and the fix elsewhere", () => {
     useBuildStore.setState({ build: falcon9ToMoon });
     setGuideProgress([
       { id: "s0-engines", kind: "engines", stageIndex: 0, recordId: "merlin-1d", built: true },
       { id: "s0-tank", kind: "tank", stageIndex: 0, recordId: "falcon9-s1-tank", built: true },
       stage2Engines,
     ]);
-    const out = runVoiceTool("show_options", "{}");
-    expect(out.noChoiceHereReachesGo).toBe(true);
-    expect(out.fix).toMatchObject({ resultMargin_ms: expect.any(Number) });
+    expect(runVoiceTool("show_options", "{}").shown).not.toContainEqual(expect.objectContaining({ finishedRocket: expect.anything() }));
+    const peek = runVoiceTool("peek_outcomes", "{}");
+    expect(peek.anyChoiceHereReachesGo).toBe(false);
+    expect(peek.fix).toMatchObject({ resultMargin_ms: expect.any(Number) });
   });
 });

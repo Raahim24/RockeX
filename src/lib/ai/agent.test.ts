@@ -1,3 +1,4 @@
+import { resetGuard } from "@/lib/ai/guard";
 import { POST as agent } from "@/app/api/agent/route";
 import { POST as listen } from "@/app/api/listen/route";
 import { loadCatalog } from "@/lib/physics/catalog";
@@ -7,11 +8,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentUserPrompt } from "./agent";
 import { asksForChange, claimsMissingRule, mentionsOtherMission, type AgentReply } from "./schemas";
 
+// Requests as the app's own page sends them (the AI routes refuse anything else).
+const SAME_SITE = { origin: "http://test", host: "test" };
+
 const catalog = loadCatalog();
 const verdict = evaluateBuild(DEMO_BUILD, catalog);
 const ask = (question: string, history: unknown[] = []): Request =>
   new Request("http://test/api/agent", {
     method: "POST",
+    headers: SAME_SITE,
     body: JSON.stringify({ question, history, build: DEMO_BUILD, verdict }),
   });
 
@@ -25,6 +30,7 @@ const grokReplies = (json: unknown): void => {
 };
 
 beforeEach(() => {
+  resetGuard();
   vi.stubEnv("XAI_API_KEY", "test-key");
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -83,7 +89,7 @@ describe("/api/listen", () => {
   const withAudio = (blob: Blob): Request => {
     const form = new FormData();
     form.append("audio", blob);
-    return new Request("http://test/api/listen", { method: "POST", body: form });
+    return new Request("http://test/api/listen", { method: "POST", headers: SAME_SITE, body: form });
   };
 
   it("returns Grok's transcript and sends the audio as the last form field", async () => {
@@ -99,7 +105,7 @@ describe("/api/listen", () => {
   });
 
   it("rejects a request without audio", async () => {
-    expect((await listen(new Request("http://test/api/listen", { method: "POST", body: new FormData() }))).status).toBe(400);
+    expect((await listen(new Request("http://test/api/listen", { method: "POST", headers: SAME_SITE, body: new FormData() }))).status).toBe(400);
   });
 
   it("returns 502 when speech to text is unavailable", async () => {
@@ -145,6 +151,7 @@ describe("welcome", () => {
   const welcome = (): Request =>
     new Request("http://test/api/agent", {
       method: "POST",
+      headers: SAME_SITE,
       body: JSON.stringify({ moment: "welcome", history: [], build: DEMO_BUILD, verdict }),
     });
 

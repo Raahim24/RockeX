@@ -450,17 +450,15 @@ function hudHtml() {
     const height_m = choreo.topY() / SCALE;
     return `<strong>${built.length}/${parts.length}</strong> parts · <strong>${f.m(height_m)}</strong> est. · <strong>${f.t(mass)}</strong>${choreo.state.exploded ? " · exploded" : ""}`;
   }
-  const go = verdict.feasible;
-  const n = verdict.warnings.length;
-  const why = n ? ` · ${n} warning${n === 1 ? "" : "s"}` : !verdict.deltaVOk ? " · Δv short" : "";
-  return [
-    name,
-    `${f.m(bounds.height_m)} est.`,
-    f.t(verdict.totalMass_kg),
-    `Δv ${f.num(verdict.totalDeltaV_ms, 0)} / ${f.ms(verdict.requiredDeltaV_ms)}`,
-    `TWR ${f.twr(verdict.liftoffTWR)}`,
-    go ? `<strong class="go">GO</strong>` : `<strong class="nogo">NO-GO</strong>${why}`,
-  ].join(" · ");
+  // In the team app the launch-readiness panel right below shows Δv, TWR and GO / NO-GO; standalone, this line does.
+  const verdictBits = document.body.dataset.readinessPanel
+    ? []
+    : [
+        `Δv ${f.num(verdict.totalDeltaV_ms, 0)} / ${f.ms(verdict.requiredDeltaV_ms)}`,
+        `TWR ${f.twr(verdict.liftoffTWR)}`,
+        verdict.feasible ? `<strong class="go">GO</strong>` : `<strong class="nogo">NO-GO</strong>${verdict.warnings.length ? ` · ${verdict.warnings.length} warning${verdict.warnings.length === 1 ? "" : "s"}` : !verdict.deltaVOk ? " · Δv short" : ""}`,
+      ];
+  return [name, `${f.m(bounds.height_m)} est.`, f.t(verdict.totalMass_kg), ...verdictBits].join(" · ");
 }
 
 let swapping = false; // the HUD keeps the old verdict until the new part locks (design round 7, swap step 4)
@@ -612,6 +610,16 @@ addEventListener("assembly:command", (e) => {
   else if (cmd === "build_next") buildNextWhenIdle(40);
   else if (cmd === "explode") choreo.toggleExplode();
   else if (cmd === "reset") reset();
+  else if (cmd === "back_to_pad") {
+    if (!choreo.state.launch) report("pad", "Already on the pad");
+    else {
+      sfx.stopMusic?.(0.3);
+      choreo.returnToPad();
+      telemetry.final = null;
+      syncUi();
+      report("pad", "Back on the pad, rocket still built");
+    }
+  }
   else if (cmd === "show_options") shelf.show({ build: current.build, partId: e.detail.partId, options: e.detail.options, built: e.detail.built });
   else if (cmd === "remove_parts") void removeDownTo(e.detail.partId);
   else if (cmd === "place_parts") void placeUpTo(e.detail.partId);

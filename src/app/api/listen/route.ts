@@ -1,4 +1,5 @@
 // Owner: P3. POST multipart { audio } -> { text } via Grok speech to text. On failure 502; the UI asks again.
+import { guard } from "@/lib/ai/guard";
 import { grokTranscribe } from "@/lib/ai/grokClient";
 
 const TIMEOUT_MS = 8000;
@@ -9,6 +10,8 @@ const filenameFor = (type: string): string =>
   type.includes("ogg") ? "speech.ogg" : type.includes("mp4") ? "speech.mp4" : type.includes("wav") ? "speech.wav" : "speech.mkv";
 
 export async function POST(req: Request): Promise<Response> {
+  const blocked = guard(req, { bucket: "listen", perMinute: 30, maxBytes: 2_500_000 });
+  if (blocked) return blocked;
   const form = await req.formData().catch(() => null);
   const audio = form?.get("audio");
   if (!(audio instanceof Blob) || audio.size === 0 || audio.size > MAX_BYTES) {

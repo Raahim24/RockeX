@@ -91,6 +91,16 @@ const ORB_CSS = `
 .grok-orb[data-mode="paused"] { filter: grayscale(1) brightness(.55); --spin: 60s; --spin2: 60s; }
 .grok-orb[data-mode="speaking"] { --spin: 3s; --spin2: 2.2s; }
 @media (prefers-reduced-motion: reduce) { .grok-orb, .grok-orb::before, .grok-orb::after { animation: none !important; } }
+body .bar { left: auto; right: 24px; bottom: 24px; transform: none; flex-direction: column; width: 220px; }
+body .bar > button { width: 100%; }
+body .bar .rockets { left: auto; right: calc(100% + 8px); bottom: 0; }
+.grok-panel { border: 1px solid rgba(255,255,255,.09); border-radius: 16px; background: rgba(28,30,38,.72); padding: 8px;
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.grok-panel-button { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 13.5px;
+  font-weight: 600; color: #f6f7fb; background: rgba(92,200,255,.16); border: 1px solid rgba(92,200,255,.35);
+  border-radius: 10px; padding: 9px 16px; cursor: pointer; }
+.grok-panel-button:hover { background: rgba(92,200,255,.26); }
+.grok-panel-button.quiet { background: transparent; border-color: rgba(255,255,255,.12); color: #a9adb8; }
 `;
 
 interface Props {
@@ -311,6 +321,24 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
   };
 
   // Tap: start or end the live conversation. Hold (not live): ask one question.
+  // First-time help: a hint while options are on screen.
+  const [optionsHint, setOptionsHint] = useState(false);
+  useEffect(() => {
+    const command = (e: Event): void => {
+      const cmd = (e as CustomEvent<{ cmd: string }>).detail?.cmd;
+      if (cmd === "show_options") setOptionsHint(true);
+      if (cmd === "hide_options" || cmd === "reset") setOptionsHint(false);
+    };
+    addEventListener("assembly:command", command);
+    return () => removeEventListener("assembly:command", command);
+  }, []);
+  const placedNow = progress.filter((p) => p.built).length;
+  const [hintFor, setHintFor] = useState(placedNow);
+  if (hintFor !== placedNow) {
+    setHintFor(placedNow); // a part landed: its options (and the hint) are gone
+    setOptionsHint(false);
+  }
+
   const toggleLive = async (): Promise<void> => {
     if (live.live) {
       live.stop();
@@ -325,9 +353,14 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
       setCaption(NO_LIVE);
     }
   };
+  const [tapHint, setTapHint] = useState(false);
   const onPress = (): void => {
     pressedAt.current = Date.now();
-    if (live.live || live.connecting) return;
+    if (live.connecting) return;
+    if (live.live) {
+      live.talkStart(); // live: hold the orb to talk
+      return;
+    }
     speaker.speak(null); // stop Grok mid-sentence: the user wants the floor
     void recorder.start();
   };
@@ -335,7 +368,12 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
     if (!pressedAt.current) return;
     const held = Date.now() - pressedAt.current;
     pressedAt.current = 0;
-    if (live.live || held < HOLD_MS) {
+    if (live.live) {
+      live.talkEnd();
+      if (held < HOLD_MS) setTapHint(true); // a tap does nothing but remind them how to talk
+      return;
+    }
+    if (held < HOLD_MS) {
       recorder.cancel();
       void toggleLive();
       return;
@@ -343,6 +381,54 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
     welcomed.current = true;
     await converse(await recorder.stop());
   };
+
+  // Space belongs to Grok: the first press starts the conversation, then hold Space to talk.
+  const liveOn = live.live;
+  const { talkStart, talkEnd } = live;
+  const startRef = useRef(toggleLive);
+  useEffect(() => {
+    startRef.current = toggleLive;
+  });
+  useEffect(() => {
+    if (liveOn) return;
+    const start = (e: KeyboardEvent): void => {
+      if (e.code !== "Space" || e.repeat || (e.target instanceof Element && e.target.closest("input, textarea, select"))) return;
+      e.preventDefault();
+      e.stopImmediatePropagation(); // not the assembly screen's explode
+      void startRef.current();
+    };
+    addEventListener("keydown", start, true);
+    return () => removeEventListener("keydown", start, true);
+  }, [liveOn]);
+  useEffect(() => {
+    if (!liveOn) return;
+    const typing = (e: KeyboardEvent): boolean => e.target instanceof Element && Boolean(e.target.closest("input, textarea, select"));
+    const down = (e: KeyboardEvent): void => {
+      if (e.code !== "Space" || typing(e)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation(); // keep the assembly screen's Space (explode) out of it
+      if (!e.repeat) talkStart();
+    };
+    const up = (e: KeyboardEvent): void => {
+      if (e.code !== "Space" || typing(e)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      talkEnd();
+    };
+    addEventListener("keydown", down, true);
+    addEventListener("keyup", up, true);
+    addEventListener("blur", talkEnd); // switching windows mid-hold must not leave the mic on
+    return () => {
+      removeEventListener("keydown", down, true);
+      removeEventListener("keyup", up, true);
+      removeEventListener("blur", talkEnd);
+    };
+  }, [liveOn, talkStart, talkEnd]);
+  useEffect(() => {
+    if (!tapHint) return;
+    const id = window.setTimeout(() => setTapHint(false), 2500);
+    return () => clearTimeout(id);
+  }, [tapHint]);
 
   // Drive the orb's size from whichever voice is active.
   const levels = [speaker.level, recorder.level, live.level];
@@ -361,10 +447,10 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
 
   // Buttons only when they are useful: the code's fix for this failing rocket, a render of a finished working one.
   const suggestion = useMemo(() => {
-    if (!rocketReady || verdict.feasible) return null;
+    if (!rocketReady || verdict.feasible || live.live) return null; // live: Grok coaches with hints instead
     const best = advisorCandidates(build, verdict, catalog)[0];
     return best?.verdict.feasible ? best.suggestion : null;
-  }, [rocketReady, build, verdict]);
+  }, [rocketReady, build, verdict, live.live]);
   const canRender = rocketReady && verdict.feasible;
 
   // What a screen action ended in (launch outcome, twin found): Grok reacts to what actually happened.
@@ -392,42 +478,34 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
   }, []);
 
   const label = {
-    idle: "Tap to talk to Grok live, or hold to ask one question",
+    idle: "Press Space (or tap here) to talk to Grok",
     paused: "Grok is paused and not listening. Press Resume, or tap to end",
-    live: "Grok is listening. Just talk, or tap to end",
-    listening: "Grok is listening",
+    live: "Hold Space or this orb to talk to Grok",
+    listening: "Listening… let go to send",
     thinking: "Grok is thinking",
-    speaking: "Grok is speaking. Talk to interrupt",
+    speaking: "Grok is speaking. Hold Space to jump in",
   }[mode];
 
+  const [barHeight, setBarHeight] = useState(0);
+  useEffect(() => {
+    const bar = document.querySelector(".bar");
+    if (!bar) return;
+    const ro = new ResizeObserver(() => setBarHeight(bar.getBoundingClientRect().height));
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, []);
+
+
+  const chip = "rounded-full px-3 py-1 text-xs font-medium backdrop-blur";
+
   return (
-    <div className="flex flex-col items-end gap-3">
+    <>
       <style>{ORB_CSS}</style>
-      <div className="flex items-center gap-3">
-        {suggestion && (
-          <button
-            type="button"
-            onClick={() => applySuggestion(suggestion)}
-            title={describeSuggestion(suggestion, catalog)}
-            className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-black shadow-lg"
-          >
-            Apply fix
-          </button>
-        )}
-        {live.live && (
-          <button
-            type="button"
-            onClick={() => (live.paused ? live.resume() : live.pause())}
-            aria-pressed={live.paused}
-            title={live.paused ? "Resume: Grok listens and talks again" : "Pause: mic off, Grok stops listening"}
-            className="flex items-center gap-1.5 rounded-full border border-white/15 bg-neutral-950/85 px-3 py-2 text-sm font-semibold text-neutral-100 shadow-lg backdrop-blur hover:border-white/40"
-          >
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden>
-              {live.paused ? <path d="M8 5v14l11-7z" /> : <path d="M7 5h4v14H7zM13 5h4v14h-4z" />}
-            </svg>
-            {live.paused ? "Resume" : "Pause"}
-          </button>
-        )}
+      {/* Nothing on the pad yet: Explode and Reset would do nothing, so they stay out of sight until a part lands. */}
+      {placedCount === 0 && <style>{"body .bar #btn-explode, body .bar #btn-reset { display: none; }"}</style>}
+
+      {/* Grok in the middle at the bottom, with what to do written under it. */}
+      <div className="fixed bottom-5 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
         <button
           ref={orbRef}
           type="button"
@@ -436,28 +514,87 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
           onPointerDown={onPress}
           onPointerUp={() => void onRelease()}
           onPointerLeave={() => void onRelease()}
-          onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), void toggleLive())}
+          onKeyDown={(e) => !live.live && e.key === "Enter" && (e.preventDefault(), void toggleLive())}
           onContextMenu={(e) => e.preventDefault()}
           aria-label={label}
           title={label}
         >
           <span />
         </button>
+        {live.live && !live.paused && (
+          <p
+            className={`${chip} ${
+              live.hearing ? "bg-pink-500/80 text-white" : tapHint ? "bg-white/25 text-white" : "bg-white/10 text-neutral-200"
+            }`}
+          >
+            {live.hearing ? "🎙️ Listening… let go to send" : live.speaking ? "Hold Space to jump in" : "Hold Space to talk"}
+          </p>
+        )}
+        {live.live && live.paused && <p className={`${chip} bg-white/10 text-neutral-300`}>Paused · mic off</p>}
+        {!live.live && (
+          <p className={`${chip} bg-white/10 text-neutral-200`}>
+            {live.connecting ? "Connecting to Grok…" : everLive ? "Press Space to talk again" : "Press Space to talk to Grok"}
+          </p>
+        )}
       </div>
-      {live.live && live.paused && (
-        <p className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-neutral-300 backdrop-blur">Paused · mic off</p>
-      )}
-      {!live.live && !live.connecting && (
-        <p className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-neutral-200 backdrop-blur">
-          {everLive ? "Tap to talk again" : "Tap to talk to Grok"}
-        </p>
-      )}
-      {caption && (
-        <p role="status" className="max-w-xs rounded-lg bg-black/70 px-3 py-2 text-right text-xs text-neutral-200">
-          {caption}
-        </p>
-      )}
-      {rocketReady && <RenderButton showButton={canRender} />}
-    </div>
+      {(optionsHint && live.live) || caption ? (
+        <div className="fixed bottom-40 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
+          {optionsHint && live.live && (
+            <p className={`${chip} bg-white/10 text-neutral-200`}>👈 Tap a part on the left, or hold Space and say it</p>
+          )}
+          {caption && (
+            <p role="status" className="max-w-xs rounded-lg bg-black/70 px-3 py-2 text-center text-xs text-neutral-200">
+              {caption}
+            </p>
+          )}
+        </div>
+      ) : null}
+
+      {/* All the buttons together on the right: Grok's group, sitting right on top of the screen's control bar. */}
+      <div
+        className="fixed right-6 z-10 flex w-[220px] flex-col items-stretch gap-2"
+        style={{ bottom: 24 + barHeight + 8 }}
+      >
+        {(live.live || suggestion || rocketReady) && (
+          <div className="grok-panel flex flex-col gap-2">
+            {live.live && (
+              <button
+                type="button"
+                onClick={() => (live.paused ? live.resume() : live.pause())}
+                aria-pressed={live.paused}
+                title={live.paused ? "Resume: Grok listens and talks again" : "Pause: mic off, Grok stops listening"}
+                className="grok-panel-button"
+              >
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden>
+                  {live.paused ? <path d="M8 5v14l11-7z" /> : <path d="M7 5h4v14H7zM13 5h4v14h-4z" />}
+                </svg>
+                {live.paused ? "Resume Grok" : "Pause Grok"}
+              </button>
+            )}
+            {live.live && (
+              <button
+                type="button"
+                onClick={() => live.stop()}
+                title="End the conversation (Grok remembers it until you reload)"
+                className="grok-panel-button quiet"
+              >
+                End conversation
+              </button>
+            )}
+            {suggestion && (
+              <button
+                type="button"
+                onClick={() => applySuggestion(suggestion)}
+                title={describeSuggestion(suggestion, catalog)}
+                className="grok-panel-button"
+              >
+                Apply fix
+              </button>
+            )}
+            {rocketReady && <RenderButton showButton={canRender} />}
+          </div>
+        )}
+      </div>
+    </>
   );
 }
