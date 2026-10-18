@@ -203,6 +203,46 @@ describe("evaluateBuild", () => {
   });
 });
 
+describe("engine count rules", () => {
+  const fitCatalog = catalog({
+    missions: [moon],
+    engines: [engine({ id: "merlin", name: "Merlin", diameter_m: 0.92 })],
+    tanks: [tank({ id: "f9", name: "F9 tank", diameter_m: 3.66 })],
+  });
+  const oneStage = (engineCount: number): BuildState => ({
+    missionId: "moon-transfer",
+    payloadId: "",
+    livery,
+    stages: [{ engineId: "merlin", engineCount, tankId: "f9" }],
+  });
+
+  it("fits the real Saturn V S-IC's 5 F-1s (10.058 m tank, 3.531 m engine)", () => {
+    expect(maxEngineCount(10.058, 3.531)).toBe(5);
+  });
+
+  it("blocks too many engines for the tank with a reason", () => {
+    const verdict = evaluateBuild(oneStage(9), {
+      ...fitCatalog,
+      tanks: [tank({ id: "f9", name: "Small tank", diameter_m: 2 })],
+    });
+    expect(verdict.feasible).toBe(false);
+    expect(verdict.warnings).toContain("9 Merlin engines don't fit a 2 m wide Small tank: max 2");
+  });
+
+  it("allows 9 Merlins on a 3.66 m tank without a fit warning", () => {
+    const verdict = evaluateBuild(oneStage(9), fitCatalog);
+    expect(verdict.warnings.some((w) => w.includes("don't fit"))).toBe(false);
+  });
+
+  it.each([0, 50, Number.NaN, 2.5])("blocks engine count %s without throwing or NaN", (n) => {
+    const verdict = evaluateBuild(oneStage(n), fitCatalog);
+    expect(verdict.feasible).toBe(false);
+    expect(verdict.warnings).toContain("stage 1 engine count must be a whole number from 1 to 9");
+    expect(Number.isFinite(verdict.totalMass_kg)).toBe(true);
+    expect(Number.isFinite(verdict.liftoffTWR)).toBe(true);
+  });
+});
+
 describe("maxEngineCount", () => {
   it("allows 9 engines on a 3.66 m tank with a Merlin-sized engine", () => {
     expect(maxEngineCount(3.66, 0.945)).toBe(9);

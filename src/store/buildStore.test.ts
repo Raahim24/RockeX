@@ -61,7 +61,7 @@ beforeEach(() => {
 });
 
 describe("setEngineCount", () => {
-  it("clamps to the tank fit (3.7 m tank + 0.92 m engine = 9)", () => {
+  it("caps at 9, the most any stage can hold", () => {
     store().setEngineCount(0, 50);
     expect(stage(0).engineCount).toBe(9);
   });
@@ -73,25 +73,31 @@ describe("setEngineCount", () => {
     expect(stage(0).engineCount).toBe(3);
   });
 
+  it("does not cut the count to fit the tank; the verdict explains instead", () => {
+    store().setStageTank(0, "narrow");
+    store().setEngineCount(0, 6);
+    expect(stage(0).engineCount).toBe(6);
+  });
+
   it("ignores an out-of-range stage index", () => {
     store().setEngineCount(5, 4);
     expect(store().build).toEqual(start);
   });
 });
 
-describe("part swaps re-clamp the engine count", () => {
-  it("setStageTank to a narrower tank lowers the count", () => {
+describe("part swaps keep the engine count", () => {
+  it("setStageTank to a narrower tank keeps the count", () => {
     store().setEngineCount(0, 9);
     store().setStageTank(0, "narrow");
     expect(stage(0).tankId).toBe("narrow");
-    expect(stage(0).engineCount).toBe(2); // floor(0.6 * (2 / 0.92)^2) = 2
+    expect(stage(0).engineCount).toBe(9);
   });
 
-  it("setStageEngine to a wider engine lowers the count", () => {
+  it("setStageEngine to a wider engine keeps the count", () => {
     store().setEngineCount(0, 9);
     store().setStageEngine(0, "big");
     expect(stage(0).engineId).toBe("big");
-    expect(stage(0).engineCount).toBe(2); // floor(0.6 * (3.7 / 2)^2) = 2
+    expect(stage(0).engineCount).toBe(9);
   });
 });
 
