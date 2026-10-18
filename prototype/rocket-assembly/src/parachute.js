@@ -17,8 +17,9 @@ const GAP = [7, 8]; // the ring span left open between disk and band (rings 7–
 export function createParachute({ diameter_m = 20, color = 0xff7a2a, gores = 16 } = {}) {
   const D = Math.max(0.5, diameter_m) * SCALE;
   const N = Math.max(8, Math.round(gores));
-  const Rs = 0.35 * D; // inflated skirt radius (a canopy inflates to ~70 % of its nominal diameter)
-  const Hd = 0.5 * Rs; // dome height above the skirt
+  const Rs = 0.35 * D; // inflated radius (a canopy inflates to ~70 % of its nominal diameter)
+  const Hd = 0.42 * Rs; // the disk's dome height above the gap
+  const Hb = 0.4 * Rs; // the band: a near-vertical skirt below the gap
   const Hl = 1.6 * D; // suspension line length (attach point → skirt)
   const COLS = N * 2; // two columns per gore, so the scallop between gores bulges
   const nV = (RINGS + 1) * COLS;
@@ -49,7 +50,17 @@ export function createParachute({ diameter_m = 20, color = 0xff7a2a, gores = 16 
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
   geo.setIndex(idx);
-  const canopy = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.85, metalness: 0 }));
+  // sunlit fabric glows through to its inside (the side the camera sees from below)
+  const canopyMat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.85, metalness: 0 });
+  canopyMat.onBeforeCompile = (sh) => {
+    // the side facing away from the main (first) directional light gets the light that comes through the cloth
+    sh.fragmentShader = sh.fragmentShader.replace(
+      "#include <emissivemap_fragment>",
+      "#include <emissivemap_fragment>\n#if NUM_DIR_LIGHTS > 0\ntotalEmissiveRadiance += diffuseColor.rgb * directionalLights[ 0 ].color * ( 0.45 * RECIPROCAL_PI ) * max( 0.0, - dot( normal, directionalLights[ 0 ].direction ) );\n#endif",
+    );
+  };
+  canopyMat.customProgramCacheKey = () => "parachute-translucent-v2";
+  const canopy = new THREE.Mesh(geo, canopyMat);
   canopy.name = "parachute-canopy";
   canopy.frustumCulled = false; // reshaped every frame
   canopy.castShadow = true;
@@ -85,14 +96,18 @@ export function createParachute({ diameter_m = 20, color = 0xff7a2a, gores = 16 
       // stretched: a narrow streamer from the skirt up ~0.9 D; inflated: the dome
       const rS = 0.025 * D * (0.4 + f);
       const yS = skirtY + 0.9 * D * s1 * (1 - f);
-      const ang = f * Math.PI * 0.5;
-      const rF = Rs * Math.sin(Math.max(ang, 0.12)) * full * over * b;
-      const yF = skirtY + Hd * Math.cos(ang) * (0.8 + 0.2 * full);
+      // disk-gap-band: a shallow dome (rings 0–7) to the gap, then the band falls near-vertically to the skirt
+      const fd = Math.min(f / (GAP[0] / RINGS), 1); // along the disk
+      const fb = Math.max(0, (f - GAP[1] / RINGS) / (1 - GAP[1] / RINGS)); // along the band
+      const ang = fd * THREE.MathUtils.degToRad(72);
+      const inBand = r >= GAP[1];
+      const rF = (inBand ? Rs * (0.95 - 0.08 * fb) : Rs * Math.sin(Math.max(ang, 0.1))) * full * over * b;
+      const yF = skirtY + (inBand ? Hb * (1 - fb) : Hb + 0.06 * Rs + Hd * Math.cos(ang)) * (0.8 + 0.2 * full);
       const rr = THREE.MathUtils.lerp(rS, rF, s2);
       const yy = THREE.MathUtils.lerp(yS, yF, s2);
       for (let c = 0; c < COLS; c++) {
         const a = (c / COLS) * Math.PI * 2;
-        const scallop = c % 2 ? 1 + 0.06 * s2 : 1; // the cloth bulges between the seams
+        const scallop = c % 2 ? 1 + 0.03 * s2 : 1; // the cloth bulges between the seams
         const i = (r * COLS + c) * 3;
         pos[i] = Math.cos(a) * rr * scallop;
         pos[i + 1] = yy + (c % 2 ? 0.015 * D * s2 : 0);

@@ -232,9 +232,12 @@ export function mountRange({ host, assessment = null, onOpen = null, dock: canDo
   }
   const toggle = () => (pop.hidden ? open() : close());
 
-  // Keys on the line or inside the popover stay here (the demo's window listener would explode on Space, etc.);
+  // Space and Enter on the line or inside the popover stay here (they press the focused control; the demo's window
+  // listener would also explode on Space); every other key, L included, reaches the demo's shortcuts.
   // Esc is caught on the way down so it closes the popover and nothing else.
-  const keepKeys = (e) => e.stopPropagation();
+  const keepKeys = (e) => {
+    if (e.key === " " || e.key === "Enter") e.stopPropagation();
+  };
   const onEsc = (e) => {
     if (e.key !== "Escape" || pop.hidden) return;
     e.stopImmediatePropagation();
@@ -248,7 +251,10 @@ export function mountRange({ host, assessment = null, onOpen = null, dock: canDo
     dockTop();
     if (!pop.hidden) position();
   };
-  line.addEventListener("click", toggle);
+  line.addEventListener("click", (e) => {
+    toggle();
+    if (e.detail > 0 && pop.hidden) line.blur?.(); // a mouse click that closed it: hand the keys back to the demo
+  });
   line.addEventListener("keydown", keepKeys);
   pop.addEventListener("keydown", keepKeys);
   addEventListener("keydown", onEsc, true);

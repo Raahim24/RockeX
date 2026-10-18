@@ -77,6 +77,14 @@ body.bright-sky .brand p.keys {
   font-size: 22px;
   font-weight: 650;
   letter-spacing: -0.01em;
+  line-height: 0;
+}
+
+.brand-logo {
+  display: block;
+  height: 22px;
+  width: auto;
+  mix-blend-mode: screen;
 }
 
 .brand p {
@@ -646,6 +654,9 @@ body.landing .bar {
   }
   .brand h1 {
     font-size: 18px;
+  }
+  .brand-logo {
+    height: 18px;
   }
   .brand p,
   .brand p.keys {

@@ -21,6 +21,8 @@ const KEYS = [
   [["Esc"], "close"],
 ];
 
+const LOGO_URL = new URL("../assets/brand/rockex-wordmark.png", import.meta.url).href;
+
 function make(tag, { id, className, attrs = {}, text } = {}) {
   const el = document.createElement(tag);
   if (id) el.id = id;
@@ -37,9 +39,13 @@ export function ensureShell() {
   let brand = document.querySelector("header.brand");
   if (!brand) {
     brand = make("header", { className: "brand" });
-    brand.append(make("h1", { text: "Rocket assembly" }));
     canvas.after(brand);
   }
+  // ROCKEX wordmark (white on black: screen-blended, so the black drops out over the scene and the scrim)
+  const title = brand.querySelector("h1") ?? brand.insertBefore(make("h1"), brand.firstChild);
+  const logo = make("img", { className: "brand-logo", attrs: { src: LOGO_URL, alt: "ROCKEX", width: "114", height: "22", draggable: "false" } });
+  title.replaceChildren(logo);
+  document.title = "ROCKEX";
   const hint = brand.querySelector("p") ?? brand.appendChild(make("p"));
   hint.className = "keys";
   hint.replaceChildren(

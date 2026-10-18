@@ -259,6 +259,7 @@ function applySky() {
   asColor(r.hemi?.ground, hemi.groundColor);
   if (Number.isFinite(r.hemi?.intensity)) hemi.intensity = r.hemi.intensity;
   if (Number.isFinite(r.environmentIntensity)) scene.environmentIntensity = r.environmentIntensity;
+  if (Number.isFinite(r.exposure)) renderer.toneMappingExposure = r.exposure; // UI4: clear day 0.92, else 1.0
   asColor(r.fog?.color, FOG0);
   scene.fog.color.copy(FOG0);
   skyFog = r.time === "day" ? r.fog : null; // by day the air is clear: the haze only far off (its suggested band)
@@ -1550,11 +1551,11 @@ function detailBudget(rawDt) {
     detailGuard.skip = 1;
   }
 }
-// In flight from tower clear to the end line the chase camera is far and sub-parts are sub-pixel: detail 1
-// (no instanced rivets/bolts, lines on shells only). Full detail on the pad, at liftoff and in the result view.
+// Full detail through the whole flight (user: the step-down at tower clear showed); only the frame-time guard
+// above lowers it, on a slow machine.
 let appliedDetail = detail;
 function applyDetail() {
-  const lvl = Math.min(detail, choreo.state.pastTower ? 1 : 2);
+  const lvl = detail;
   if (lvl !== appliedDetail) setDetailLevel((appliedDetail = lvl));
 }
 function luxuryBudget(rawDt) {

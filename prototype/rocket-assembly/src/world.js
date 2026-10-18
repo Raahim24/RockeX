@@ -248,6 +248,10 @@ const bodyFragment = /* glsl */ `
     }
     if (ground) {
       surf = mix(surf, cloudCol, cloudA);
+      // dusty bodies: the in-scatter gain suits long paths (the horizon, from orbit); over the few km to nearby
+      // ground it would brighten it far past the local ground patch (whose haze is the dust's), so it phases in
+      // with distance (1/e at 40 km); the dust haze still covers the near range
+      if (uDust.a > 0.0) inscatter *= 1.0 - exp(-tG / 4.0);
       col = mix(surf * T + inscatter, uDust.rgb, dustK);
       trans = 0.0;
     } else {
@@ -296,7 +300,7 @@ function bodyLook(name) {
     return { maps: ["earth_day", "earth_bump", "earth_night", "earth_clouds"], ocean: 1, relief: 0.8, atmo: { H, HM: 0.12, betaR: [0.058, 0.135, 0.331], betaM: [0.1, 0.1, 0.1], extM: [0.231, 0.231, 0.231], g: 0.76, top: 10 * H, glow: 1, glowColor: [0.008, 0.022, 0.07], ms: 0.3, gain: 8 } }; // glow = skyAt("earth", 0).haze
   if (name === "mars")
     // Mars: dust scatters red most but absorbs blue, so its extinction is roughly neutral (butterscotch sky)
-    return { maps: ["mars_color", "mars_bump"], ocean: 0, relief: 1.2, atmo: { H, HM: H, betaR: [0.004, 0.007, 0.014], betaM: [0.36, 0.21, 0.09], extM: [0.2, 0.2, 0.2], g: 0.6, top: 8 * H, glow: 0, glowColor: [0, 0, 0], dust: null, dustH: 0.15 } }; // dust (parked with the Mars relief): [0.25, 0.15, 0.09, 0.4] = the horizon's colour, 1/e over ~25 km of low air (est.)
+    return { maps: ["mars_color", "mars_bump"], ocean: 0, relief: 1.2, atmo: { H, HM: H, betaR: [0.004, 0.007, 0.014], betaM: [0.36, 0.21, 0.09], extM: [0.2, 0.2, 0.2], g: 0.6, top: 8 * H, glow: 0, glowColor: [0, 0, 0], dust: [0.25, 0.15, 0.09, 0.8], dustH: 0.15 } }; // dust: the horizon's colour, 1/e over ~12 km of low air (est.)
   return { maps: ["moon_color", "moon_disp"], ocean: 0, relief: 0.6, atmo: null };
 }
 
@@ -471,6 +475,8 @@ export function createWorld({ renderer = null } = {}) {
   const sunLight = new THREE.DirectionalLight(0xfff4e6, 2.4);
   sunLight.position.copy(sunDir).multiplyScalar(100);
   sunLight.name = "world-sun-light";
+  const realSun = sunDir.clone(); // the sun setSunDir sets (a story override may stand in for it)
+  let sunOverride = null;
 
   // Body-fixed frame for a moon-like body: lon 0 faces Earth, north along Earth's north.
   function faceEarth(b) {
@@ -532,9 +538,31 @@ export function createWorld({ renderer = null } = {}) {
   // lightingFor("moon").sunElevation_deg) during the coast so the actual landing site gets UI 2's light.
   function setSunDir(v) {
     if (!v || vec(v).lengthSq() < 1e-12) return;
-    sunDir.copy(vec(v).normalize());
+    realSun.copy(vec(v).normalize());
+    if (!sunOverride) applySun(realSun);
+  }
+  function applySun(v) {
+    sunDir.copy(v);
     sunLight.position.copy(sunDir).multiplyScalar(100);
   }
+  // Story sun (round 22): setSunOverride(dir) puts the world's sun (far layer, sunLight, sky recipe) at dir (world
+  // axes; { eci: true } for an ECI direction) until setSunOverride(null) brings back the real one; setSunDir /
+  // setSky calls meanwhile update the real sun underneath. Returns the sun in force. Direction only: nothing is
+  // added or removed. sunDirLightingPoint(pos_km, elevation_deg = 40, body = "earth"): a sun direction standing
+  // elevation_deg over the ground below pos_km (body-relative km, world axes), on the current sun's side.
+  function setSunOverride(v, { eci = false } = {}) {
+    if (!v) {
+      sunOverride = null;
+      applySun(realSun);
+      return sunDir.clone();
+    }
+    const d = eci ? fromECI(v) : vec(v);
+    if (d.lengthSq() < 1e-12) return sunDir.clone();
+    sunOverride = d.normalize().clone();
+    applySun(sunOverride);
+    return sunDir.clone();
+  }
+  const sunDirLightingPoint = (pos_km, elevation_deg = 40, body = "earth") => sunForSite(body, pos_km, elevation_deg);
   function sunForSite(name, pos_km, elevation_deg = lightingFor(name).sunElevation_deg) {
     const up = vec(pos_km).normalize();
     const el = elevation_deg * DEG;
@@ -971,5 +999,5 @@ export function createWorld({ renderer = null } = {}) {
     quad.geometry.dispose();
     quadMat.dispose();
   }
-  return { scene, camera, bodies, sunDir, sunLight, stats, setSky, skyRecipe, get sky() { return { ...skyState }; }, setResolutionScale, setEnabled, clearColor, setViewer, setViewerECI, setDestination, setBodyECI, fromECI, toECI, eciFrame, setSunDir, sunForSite, landingSite, skyAt, surfaceColourAt, isOceanAt, atmosphereLimb, createLocalGround, cloudDeck, attach, update, render, createPass, dispose };
+  return { scene, camera, bodies, sunDir, sunLight, stats, setSky, skyRecipe, get sky() { return { ...skyState }; }, setResolutionScale, setEnabled, clearColor, setViewer, setViewerECI, setDestination, setBodyECI, fromECI, toECI, eciFrame, setSunDir, setSunOverride, sunDirLightingPoint, get sunOverridden() { return !!sunOverride; }, sunForSite, landingSite, skyAt, surfaceColourAt, isOceanAt, atmosphereLimb, createLocalGround, cloudDeck, attach, update, render, createPass, dispose };
 }

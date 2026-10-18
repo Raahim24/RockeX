@@ -870,6 +870,77 @@ export function returnFromSpace(build, catalog, stageIndex, state, prop_kg) {
 // without it (below 9,400) never reaches orbit; a GO build always gets its mission (Head 1's rule, round 21).
 // A few nudges of k (2 % each) make reaching orbit match T >= L where the probe's estimate was not exact.
 // summary.calibration records it (est.); opts.calibrate = false flies the build uncalibrated.
+// The first stage's way home for the director (round 23, "a rocket the whole time"): the booster the ascent already
+// recovered (summary.booster), or, for a first stage the ascent did not recover (no landing legs, or no margin),
+// the same booster model flown from the recorded separation with a reserve that the ascent did not pay for
+// (modelled, est.; listed). mode: "rtls" back to the pad / tower, "droneship" where the arc comes down; the other
+// mode is tried if that one does not land. -> booster summary (as summary.booster) + modelled[], or null.
+export function boosterStory(build, catalog, summary, { mode = "rtls", only = false } = {}) {
+  // round 24: only = true keeps to that mode (every Earth ending is the tower catch); if no reserve lands there, the
+  // stage's own landing (wherever its arc comes down) is used and its last kilometres are moved to the tower
+  // (relocated: true, listed as a story choice)
+  if (summary?.booster?.returns && (!only || summary.booster.mode === mode)) return { ...summary.booster, modelled: [] };
+  const sep = summary?._sep0;
+  const st0 = stagesOf(build, catalog)[0];
+  if (!sep || !st0 || build.stages.length < 2) return null;
+  const legs = (catalog.visuals?.tanks?.[build.stages[0].tankId]?.features ?? []).includes("landing-legs");
+  const cfg = BOOSTER;
+  const modes = only ? [mode] : [mode, mode === "rtls" ? "droneship" : "rtls"];
+  const tries = [];
+  // as built first; then with the landing thrust capped at 3 g of the stage (deep throttling, modelled), for a
+  // big engine on a light empty core that the hoverslam cannot null at its 40 % minimum throttle
+  for (const capped of [false, true]) for (const frac of [0.08, 0.15, 0.25, 0.35, 0.5]) for (const m of modes) tries.push([frac, m, capped]);
+  const attempt = (frac, m, capped) => {
+    const limit = 3 * G0 * (st0.dry + frac * st0.prop);
+    const st = capped && st0.Fsl > limit ? { ...st0, Fsl: limit, Fvac: Math.min(st0.Fvac, limit * (st0.Fvac / st0.Fsl)) } : st0;
+    if (capped && st === st0) return null;
+    const r = returnBooster(sep, st, frac * st0.prop, cfg, true, m);
+    return r.landed && (m !== "rtls" || Math.abs(r.landingX_m) <= cfg.padRadius_m) ? r : null;
+  };
+  let found = null;
+  for (const [frac, m, capped] of tries) {
+    const r = attempt(frac, m, capped);
+    if (r) {
+      found = { r, frac, m, capped, relocated: false };
+      break;
+    }
+  }
+  if (!found && only) {
+    // no reserve brings it back to the pad: fly it where its arc comes down, and move the final descent
+    for (const capped of [false, true]) for (const frac of [0.08, 0.15, 0.25]) {
+      if (found) break;
+      const r = attempt(frac, "droneship", capped);
+      if (r) found = { r, frac, m: mode, capped, relocated: true };
+    }
+  }
+  if (!found) return null;
+  const { r, frac, m, capped, relocated } = found;
+  const hot = r.samples.filter((x) => x.heat > 0.25);
+  return {
+    returns: true,
+    mode: m,
+    sea: false,
+    relocated,
+    heating: hot.length ? { start_t: hot[0].t, end_t: hot.at(-1).t, peak_t: r.samples.find((x) => x.heat === 1)?.t ?? null } : null,
+    events: r.events,
+    samples: r.samples,
+    propellantReserve_kg: frac * st0.prop,
+    reserveFraction: frac,
+    touchdownSpeed_ms: r.touchdownSpeed_ms,
+    landingDownrange_m: relocated ? 0 : r.landingX_m,
+    arcDownrange_m: r.landingX_m,
+    propellantLeft_kg: r.prop_kg,
+    note: summary?.booster?.reason ?? null,
+    modelled: [
+      "reserve not taken from the ascent",
+      ...(legs ? [] : ["caught at the tower (no landing legs)"]),
+      ...(capped ? ["throttle"] : []),
+      ...(relocated ? ["final descent moved to the tower and drawn straight down (story; the arc comes down downrange)"] : []),
+    ],
+    est: true,
+  };
+}
+
 export function simulateAscent(build, catalog, opts = {}) {
   const raw = (o) => flyAscent(build, catalog, { ...opts, ...o });
   if (opts.calibrate === false || opts.ignoreVerdict) return raw({});
@@ -1195,6 +1266,7 @@ function flyAscent(build, catalog, opts = {}) {
       targetAlt_km: base.targetAlt_m / 1000,
       stackHeight_m: round(stackHeight_m, 1),
       remainingDeltaV_ms: res.remaining,
+      _sep0: res.sep0 ?? null, // the stack at the first separation (2-D state), for boosterStory
       mission: mission
         ? {
             id: mission.id,

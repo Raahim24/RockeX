@@ -1606,6 +1606,67 @@ export function createLaunchComplex({
     return { mesh, y_u: a.y, reach_u: reach, partId: a.id };
   });
 
+  // ---------- (1b) strongback (round 22): a Falcon-9-style transporter-erector beside the stack ----------
+  // A white lattice mast on the far side of the stack from the FSS, hinged at its base on the pad deck, with three
+  // cradle arm pairs hugging the stage. setStrongback(k): the cradles open (k 0 → 0.4) and the mast leans back
+  // ~10° away from the vehicle (k 0.2 → 1). Three meshes (mast, left and right cradles), no edge lines. Visual
+  // proportions (est.).
+  const sbR = Math.max(0.05, baseRadius_u, ...(manifest ?? []).map((sp) => sp.radius ?? 0)); // the widest part
+  const sbPw = Math.max(m(0.6), 0.22 * sbR); // cradle prong width
+  const sbW = 2 * (sbR + sbPw / 2 + m(0.2)); // mast width: the prongs pass just clear of either side of the stage
+  const sbD = Math.max(m(2.4), 0.8 * sbR); // mast depth
+  const sbGap = Math.max(m(1.2), 0.25 * sbR); // mast face → vehicle wall
+  const sbH = 0.9 * H;
+  const sbPivot = new THREE.Group();
+  sbPivot.name = "complex-strongback";
+  sbPivot.position.set(-dT - sbR - sbGap - sbD, 0, 0); // hinge: the mast's back edge on the deck; +x faces the stage
+  tower.add(sbPivot);
+  {
+    const B = new Builder(m(2));
+    const cs = Math.max(m(0.35), 0.1 * sbD); // member size
+    for (const x of [cs / 2, sbD - cs / 2]) for (const z of [-sbW / 2 + cs / 2, sbW / 2 - cs / 2]) B.aabb(x, sbH / 2, z, cs, sbH, cs, C.mastTop, false);
+    const nL = Math.max(3, Math.round(sbH / Math.max(m(5), sbW)));
+    const y0 = cs * 0.4; // the lowest tie sits on the deck
+    for (let i = 0; i <= nL; i++) {
+      const y = y0 + ((sbH - y0) * i) / nL;
+      for (const z of [-sbW / 2 + cs / 2, sbW / 2 - cs / 2]) B.aabb(sbD / 2, y, z, sbD, cs * 0.7, cs * 0.7, C.mastTop, false);
+      for (const x of [cs / 2, sbD - cs / 2]) B.aabb(x, y, 0, cs * 0.7, cs * 0.7, sbW, C.mastTop, false);
+      if (i < nL) {
+        const y1 = y0 + ((sbH - y0) * (i + 1)) / nL;
+        for (const z of [-sbW / 2 + cs / 2, sbW / 2 - cs / 2]) B.strut(v3(cs / 2, y, z), v3(sbD - cs / 2, y1, z), cs * 0.5, cs * 0.5, C.mastTop, v3(0, 0, Math.sign(z)), false);
+        B.strut(v3(cs / 2, y, -sbW / 2 + cs / 2), v3(cs / 2, y1, sbW / 2 - cs / 2), cs * 0.5, cs * 0.5, C.mastTop, v3(-1, 0, 0), false);
+      }
+    }
+    const mast = lookMesh(B, "complex-strongback-mast", S.steel, { night: nightU, lines: false, cast: true, receive: true });
+    sbPivot.add(mast);
+  }
+  // the cradles: one mesh per side, hinged on the mast's front corner; each prong runs past the stage's far side
+  const sbLen = sbGap + 2 * sbR + sbPw;
+  const sbProngs = [-1, 1].map((side) => {
+    const B = new Builder(m(2));
+    const ph = Math.max(m(0.5), 0.15 * sbR);
+    for (const f of [0.3, 0.56, 0.8]) {
+      const y = sbH * f;
+      B.aabb(sbLen / 2, y, 0, sbLen, ph, sbPw, C.mastTop, false);
+      B.aabb(sbGap + sbR, y, -side * sbPw * 0.3, sbR * 0.6, ph * 1.5, sbPw * 0.4, C.hood, false); // the pad facing the stage
+    }
+    const mesh = lookMesh(B, `complex-strongback-cradle:${side < 0 ? "left" : "right"}`, S.steel, { night: nightU, lines: false, cast: true, receive: true });
+    mesh.position.set(sbD, 0, side * sbW / 2);
+    sbPivot.add(mesh);
+    return { mesh, side };
+  });
+  let strongback = 0;
+  function setStrongback(k = 0) {
+    strongback = clamp(Number(k) || 0, 0, 1);
+    const open = strongback / 0.4 >= 1 ? 1 : (strongback / 0.4) ** 2 * (3 - 2 * (strongback / 0.4));
+    const t = clamp((strongback - 0.2) / 0.8, 0, 1);
+    const lean = t * t * (3 - 2 * t);
+    for (const p of sbProngs) p.mesh.rotation.y = -p.side * open * THREE.MathUtils.degToRad(65); // swing outward
+    sbPivot.rotation.z = lean * THREE.MathUtils.degToRad(10); // the top moves away from the vehicle
+    return strongback;
+  }
+  setStrongback(0);
+
   // ---------- (2) RSS (Group on the hinge; its mesh in RSS-local: +x along the arm of the structure) ----------
   const rssGroup = new THREE.Group();
   rssGroup.name = "complex-rss";
@@ -2424,6 +2485,12 @@ export function createLaunchComplex({
     },
     catchArms,
     catchPoint_u: catchPoint,
+    // k 0: upright against the stage, cradles closed; 1: leaned back ~10°, cradles open
+    setStrongback,
+    get strongback() {
+      return strongback;
+    },
+    strongbackObject: sbPivot,
     setDaylight(day = true) {
       daylight = !!day;
       applyDaylight();

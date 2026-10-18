@@ -162,9 +162,15 @@ export function mountReadiness({ host = null, hud = null, destinations = null, o
         "aria-checked": "false",
         "data-id": d.id,
         text: d.label,
-        onclick: () => onDestination?.(missionOf(d), d),
-        // Keys typed here are the panel's, not the demo's shortcuts (Space would explode the stack).
-        onkeydown: (e) => e.stopPropagation(),
+        onclick: (e) => {
+          onDestination?.(missionOf(d), d);
+          if (e.detail > 0) e.currentTarget.blur?.(); // a mouse click: hand the keys back to the demo (L launches)
+        },
+        // Only the keys that press this button stay here (Space would also explode the stack); every other key,
+        // L included, reaches the demo's shortcuts.
+        onkeydown: (e) => {
+          if (e.key === " " || e.key === "Enter") e.stopPropagation();
+        },
       }),
     );
   }

@@ -959,7 +959,7 @@ function detailMaps(body) {
 
 // createTerrain({ body: "moon" | "mars", size_u, seed, padRadius_u, sunDir, tint, sunLight = true })
 //   -> { object3d, sun (null with sunLight: false), sunDir (site frame, unit), heightAt(x, z), padRadius_u,
-//        prewarm(renderer), dispose() }
+//        prewarm(renderer), setHaze(colour, d_u), dispose() }
 // sunLight: false leaves out the DirectionalLight (adding a light recompiles every material): aim the scene's
 // own key light along sunDir instead; the baked self-shadowing uses sunDir either way. prewarm(renderer)
 // uploads the detail textures ahead of the first frame that shows the ground. Build ~80–100 ms (+ ~150 ms the
@@ -1026,14 +1026,19 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
   const bands = mars
     ? [
         { r0: 0.6, r1: 4, ext: zone * 1.4, dens: perKm2(700) },
-        { r0: 4, r1: 25, ext: m(600), dens: perKm2(160) },
-        { r0: 25, r1: 160, ext: half, dens: perKm2(4) },
+        { r0: 4, r1: 25, ext: m(600), dens: perKm2(260) },
+        { r0: 25, r1: 150, ext: half, dens: perKm2(14) }, // 50–300 m across: the ones that read from 1–3 km
       ]
     : [
-        { r0: 0.6, r1: 4, ext: zone * 1.4, dens: perKm2(4000) },
-        { r0: 4, r1: 25, ext: m(600), dens: perKm2(700) },
+        // the small ones thin out radially (full inside ~30 m, gone by ~190 m); the medium ones keep their
+        // smallest size near the lander and raise it smoothly to ~19 m by ~320 m (floor: the grid can only carry
+        // ~19 m+ out there, and it coarsens fast past ~150 m, which left the landing zone's cluster as a blotch with
+        // a rim), then end on a circle near 600 m
+        { r0: 0.6, r1: 4, ext: zone * 1.4, dens: perKm2(4000), taper: [m(30), m(190)] },
+        { r0: 4, r1: 25, ext: m(600), dens: perKm2(700), taper: [m(380), m(600)], floor: [m(40), m(320), 3.75] },
         { r0: 25, r1: 220, ext: half, dens: perKm2(14) },
       ];
+  const thin = rng(seed + 202); // the tapers' own stream: the craters that stay are the ones that were there
   for (const bd of bands) {
     const ext = Math.min(bd.ext, half * 1.05);
     const r1 = Math.min(m(bd.r1), 0.2 * S);
@@ -1045,9 +1050,12 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
       const x = (rand() - 0.5) * 2 * ext;
       const z = (rand() - 0.5) * 2 * ext;
       if (r > m(25) && Math.hypot(x, z) < zone + 0.6 * r) continue; // big ones stay out of the landing zone
+      if (bd.taper && thin() > 1 - smoothstep(bd.taper[0], bd.taper[1], Math.hypot(x, z))) continue;
+      if (bd.floor && r < r0 * (1 + bd.floor[2] * smoothstep(bd.floor[0], bd.floor[1], Math.hypot(x, z)))) continue;
       if (r < 1.3 * spacing(x, z)) continue; // the grid there could not carry it (it would alias into a blob)
-      const fresh = rand() ** (mars ? 1.6 : 0.8); // 1 fresh … 0 degraded (Mars: mostly sand-filled)
-      craters.push({ x, z, r, fresh, depth: r * (mars ? 0.2 : 0.32) * (0.3 + 0.7 * fresh), rim: r * (mars ? 0.04 : 0.07) * (0.25 + 0.75 * fresh), k: 1.5 + 1.3 * fresh });
+      const bigM = mars && r > m(25);
+      const fresh = rand() ** (mars ? (bigM ? 0.6 : 1.6) : 0.8); // 1 fresh … 0 degraded (Mars: small ones mostly sand-filled)
+      craters.push({ x, z, r, fresh, depth: r * (mars ? (bigM ? 0.34 : 0.2) : 0.32) * (0.3 + 0.7 * fresh), rim: r * (mars ? (bigM ? 0.06 : 0.04) : 0.07) * (0.25 + 0.75 * fresh), k: 1.5 + 1.3 * fresh });
     }
   }
   // spatial grid: each crater listed in every cell its 2.5 r reach overlaps
@@ -1068,13 +1076,50 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
   const windA = 0.6;
   const wx = Math.cos(windA);
   const wz = Math.sin(windA);
-  const edgeFade = (x, z) => 1 - smoothstep(0.8 * half, 0.98 * half, Math.max(Math.abs(x), Math.abs(z)));
+  // heights and the large-scale albedo settle to the far map's toward the edge. Mars: radially over the outer
+  // ~40 %, while the ground itself fades out (alpha) over the outer ~25 % so the far layer's ground, with its own
+  // haze and in-scattered light, shows through: no square, no brightness step at the border
+  const edgeFade = mars
+    ? (x, z) => 1 - smoothstep(0.62 * half, 0.98 * half, Math.hypot(x, z))
+    : (x, z) => 1 - smoothstep(0.8 * half, 0.98 * half, Math.max(Math.abs(x), Math.abs(z)));
+  // ---- Mars: dune fields, dark rock fields, wrinkle ridges (a visual model, every size est.) ----
+  // Fields of dark basaltic sand ~1 km across and smaller dark rock fields between them, none on the landing
+  // zone: [dune, rock] weights 0…1.
+  const marsField = (x, z, r) => {
+    const F = smoothstep(0.5, 0.62, fbm(x / m(900) + 3.3, z / m(900) - 1.1, 3)) * smoothstep(m(260), m(450), r);
+    const R = smoothstep(0.53, 0.71, fbm(x / m(420) - 7.7, z / m(420) + 9.1, 3)) * (1 - F) * smoothstep(m(140), m(320), r);
+    return [F, R];
+  };
+  // Two wrinkle ridges 0.5–1 km off the landing spot: a broad arch with a narrower crest on one flank, 18–34 m
+  // high, wandering and swelling along their length. Their own random stream, so the Moon's layout is unchanged.
+  const rr = rng(seed + 101);
+  const DUNE_BIG_L = m(180);
+  const DUNE_BIG_H = m(12);
+  const bigDuneWarp = (x, z) => 1.4 * fbm(x / m(600) + 5, z / m(600) - 9, 2);
+  const bigDunePhase = (x, z) => (x * wx + z * wz) / DUNE_BIG_L + bigDuneWarp(x, z) + 1000; // + 1000: positive for %
+  const ridges = !mars
+    ? []
+    : [0, 1].map((i) => {
+        const th = rr() * Math.PI;
+        const n = [Math.cos(th), Math.sin(th)];
+        const off = m(500 + 500 * rr()) * (rr() < 0.5 ? -1 : 1);
+        const H = m(18 + 16 * rr());
+        const W = m(150 + 90 * rr());
+        return (x, z, r) => {
+          const along = -x * n[1] + z * n[0];
+          const sd = x * n[0] + z * n[1] - off + m(240) * (fbm(along / m(800) + 13 * i, 7.3 * i, 2) - 0.5);
+          if (Math.abs(sd) > 3 * W) return 0;
+          const k = 0.5 + fbm(along / m(450) + 40 + i, 3.1 + i, 2);
+          return H * k * (Math.exp(-((sd / W) ** 2)) + 0.7 * Math.exp(-(((sd - 0.35 * W) / (0.25 * W)) ** 2))) * smoothstep(m(250), m(450), r);
+        };
+      });
   // Height and an albedo factor at (x, z); heightAt is the public half.
   const sample = (x, z) => {
     const r = Math.hypot(x, z);
     const fine = 1 - smoothstep(m(250), m(450), r); // features the far, coarser grid cannot carry fade out
     let h = (fbm(x / m(420) + 31, z / m(420) - 17, 3) - 0.5) * m(mars ? 14 : 9) + (fbm(x / m(45), z / m(45), 3) - 0.5) * m(mars ? 2.2 : 1.2) + (fbm(x / m(7) + 7, z / m(7) - 3, 3) - 0.5) * m(mars ? 0.35 : 0.3) * fine;
     let a = 0;
+    let dark = 0; // Mars: dark sand drifted into the floors of old craters
     for (const c of cells.get(key(Math.floor(x / CELL), Math.floor(z / CELL))) ?? []) {
       const dx = x - c.x;
       const dz = z - c.z;
@@ -1083,17 +1128,31 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
       const d = Math.hypot(dx, dz) / c.r;
       if (d < 1) h += -c.depth + (c.depth + c.rim) * d ** c.k;
       else if (d < 2) h += c.rim * ((d ** -3 - 0.125) / 0.875);
-      if (d < 2.5) a += c.fresh ** 2 * (d < 1 ? 0.12 : 0.28 * Math.exp(-(((d - 1) / 0.7) ** 2))); // bright fresh ejecta
+      if (d < 2.5) a += c.fresh ** 2 * (d < 1 ? (mars ? 0 : 0.12) : 0.28 * Math.exp(-(((d - 1) / 0.7) ** 2))); // bright fresh ejecta
+      // Mars: dark sand drifted into crater floors (more in old ones), so a crater reads as a hole whatever the
+      // light; bright fresh ejecta outside the rim (a, above)
+      if (mars && d < 0.85) dark += ((c.r > m(25) ? 0.3 : 0.18) + 0.2 * (1 - c.fresh)) * smoothstep(0.85, 0.45, d);
+      // the big ones also get a bright rim (dust-free crest rock): dark floor, pale ring = a hole in any light
+      if (mars && c.r > m(25) && d > 0.75 && d < 1.35) a += 0.35 * Math.exp(-(((d - 1.02) / 0.1) ** 2));
     }
     if (mars) {
       const along = x * wx + z * wz;
       const dune = Math.sin(along / m(9) + 2.2 * fbm(x / m(60), z / m(60), 2)) * 0.5 + 0.5;
       h += m(1.1) * dune ** 3 * (0.5 + fbm(x / m(25) + 3, z / m(25), 2)) * fine;
-      const big = Math.sin(along / m(48) + 1.6 * fbm(x / m(300), z / m(300), 2)) * 0.5 + 0.5; // large dunes
-      h += m(3.5) * big ** 2 * fbm(x / m(200) - 5, z / m(200) + 2, 2);
+      // broad relief the 1–3 km view reads: a swell of ±15 m over ~1.2 km
+      h += (fbm(x / m(1200) - 21, z / m(1200) + 8, 2) - 0.5) * m(30);
+      const [F, R] = marsField(x, z, r);
+      if (F > 0) {
+        // big transverse dunes across the wind, ~180 m apart, ~12 m high: a rounded profile here (crest at 3/4 of
+        // the wavelength, what the grid can carry); the shader turns it into the sharp crest and slip face
+        const f = bigDunePhase(x, z) % 1;
+        h += DUNE_BIG_H * F * (f < 0.75 ? 0.5 - 0.5 * Math.cos((Math.PI * f) / 0.75) : 0.5 + 0.5 * Math.cos((Math.PI * (f - 0.75)) / 0.25));
+      }
+      if (R > 0) h += m(3) * R * (fbm(x / m(45) + 9, z / m(45) - 4, 2) - 0.35); // hummocky rock
+      for (const g of ridges) h += g(x, z, r);
     }
     const flat = smoothstep(padRadius_u, padRadius_u * 1.7, r); // flat landing spot
-    return [h * flat * edgeFade(x, z), Math.min(a, 0.35)];
+    return [h * flat * edgeFade(x, z), Math.min(a, 0.35), Math.min(dark, 0.35)];
   };
   const heightAt = (x, z) => sample(x, z)[0];
 
@@ -1104,19 +1163,40 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
   const hs = new Float32Array(pos.count);
   const tint = tintIn ?? (mars ? [0.62, 0.36, 0.22] : [0.56, 0.55, 0.53]); // tint: linear rgb, e.g. world.surfaceColourAt
   const kMean = mars ? 0.75 : 0.68;
+  // Mars, per vertex for the shader: dune-field weight, the small dunes' phase warp, rock-field weight
+  const marsA = mars ? new Float32Array(pos.count * 4) : null;
+  const kArr = new Float32Array(pos.count); // each vertex's albedo factor before the edge fade
+  let kW = 0;
+  let kSum = 0;
   for (let i = 0; i < pos.count; i++) {
     const x = w(pos.getX(i) / half);
     const z = w(pos.getZ(i) / half);
-    const [h, bright] = sample(x, z);
+    const [h, bright, dark] = sample(x, z);
     pos.setXYZ(i, x, h, z);
     hs[i] = h;
     uvA.setXY(i, x / S + 0.5, 0.5 - z / S); // u along +x, v along −z (the tangent frame of the detail normals)
     const big = fbm(x / m(70) + 11, z / m(70) - 5, 3);
-    const k = kMean + 0.4 * (big - 0.5) * (mars ? 1.2 : 1.4) + bright * (mars ? 0.4 : 1);
-    const kk = kMean + (k - kMean) * edgeFade(x, z); // the edge settles to the tint, like the far map
+    let k = kMean + 0.4 * (big - 0.5) * (mars ? 1.2 : 1.4) + bright * (mars ? 0.4 : 1);
+    if (mars) {
+      const [F, R] = marsField(x, z, Math.hypot(x, z));
+      const fade = edgeFade(x, z);
+      k *= 1 - 0.45 * F - 0.42 * R - dark;
+      marsA.set([F * fade, 2.4 * fbm(x / m(170) + 1.7, z / m(170) - 2.9, 2), R * fade, bigDuneWarp(x, z)], i * 4);
+    }
+    kArr[i] = k;
+    const wA = dw(x) * dw(z); // the vertex's share of the area (the grid is dense in the middle)
+    kW += wA;
+    kSum += wA * k;
+  }
+  // Mars: the dune and rock fields and crater floors pull the mean below kMean; match (and fade the edge to) the
+  // patch's actual mean so it is as bright as the far ground around it. The Moon keeps kMean.
+  const kAvg = mars ? kSum / kW : kMean;
+  for (let i = 0; i < pos.count; i++) {
+    const kk = kAvg + (kArr[i] - kAvg) * edgeFade(pos.getX(i), pos.getZ(i)); // the edge settles to the tint, like the far map
     col.set([tint[0] * kk, tint[1] * kk, tint[2] * kk], i * 3);
   }
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  if (mars) geo.setAttribute("aMars", new THREE.BufferAttribute(marsA, 4));
   geo.computeVertexNormals();
   geo.computeBoundingSphere();
 
@@ -1167,19 +1247,43 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
   const normal = det.normal.clone();
   normal.needsUpdate = true;
   const groundMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: albedo, normalMap: normal, normalScale: new THREE.Vector2(1.6, 1.6), roughness: 0.97, metalness: 0 });
-  const tu = { uFine: { value: m(4) }, uCoarse: { value: m(60) }, uLow: { value: m(220) }, uHalf: { value: half } };
+  // haze: aerial perspective toward uHaze over uHazeD (1/e distance, scene units; 0 = none), Mars by default
+  const tu = { uFine: { value: m(4) }, uCoarse: { value: m(60) }, uLow: { value: m(220) }, uHalf: { value: half }, uWind: { value: new THREE.Vector2(wx, wz) }, uDuneL: { value: m(42) }, uDuneH: { value: m(4) }, uBigL: { value: DUNE_BIG_L }, uBigH: { value: DUNE_BIG_H }, uHaze: { value: mars ? skyAt(0, sd, "mars").horizon : new THREE.Color() }, uHazeD: { value: mars ? m(30000) : 0 }, uFadeA: { value: mars ? 1 : 0 } };
+  if (mars) groundMat.defines = { TERR_MARS: "" };
   groundMat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, tu);
     shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", "#include <common>\nattribute float sunVis;\nvarying float vSunVis;\nvarying vec3 vTerrP;")
-      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvSunVis = sunVis;\nvTerrP = position;");
+      .replace("#include <common>", "#include <common>\nattribute float sunVis;\nvarying float vSunVis;\nvarying vec3 vTerrP;\n#ifdef TERR_MARS\nattribute vec4 aMars;\nvarying vec4 vMars;\n#endif")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvSunVis = sunVis;\nvTerrP = position;\n#ifdef TERR_MARS\nvMars = aMars;\n#endif");
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "void main() {",
         /* glsl */ `
-        uniform float uFine, uCoarse, uLow, uHalf;
+        uniform float uFine, uCoarse, uLow, uHalf, uHazeD, uFadeA;
+        uniform vec3 uHaze;
         varying float vSunVis;
         varying vec3 vTerrP;
+        #ifdef TERR_MARS
+        uniform vec2 uWind;
+        uniform float uDuneL, uDuneH, uBigL, uBigH;
+        varying vec4 vMars;
+        // Transverse dunes in the dune fields: a gentle stoss slope up to a sharp crest, a steep slip face down.
+        // Small ones (~40 m apart) whole; on the big ones (~180 m, rounded in the mesh) the difference between the
+        // sharp and the rounded profile. -> (dh/dx, dh/dz, small-dune phase, weight); faded when sub-pixel.
+        vec4 terrDune() {
+          float ph = dot(vTerrP.xz, uWind) / uDuneL + vMars.y;
+          float f = fract(ph);
+          float vis = vMars.x * (1.0 - smoothstep(0.12, 0.45, fwidth(ph)));
+          float slope = (f < 0.8 ? smoothstep(0.0, 0.12, f) / 0.8 : -1.0 / 0.2) * uDuneH / uDuneL * vis;
+          float pb = dot(vTerrP.xz, uWind) / uBigL + vMars.w + 1000.0;
+          float fb = fract(pb);
+          float visB = vMars.x * (1.0 - smoothstep(0.15, 0.5, fwidth(pb)));
+          float sharp = fb < 0.75 ? 1.0 / 0.75 : -1.0 / 0.25;
+          float round = fb < 0.75 ? 0.5 * PI / 0.75 * sin(PI * fb / 0.75) : -0.5 * PI / 0.25 * sin(PI * (fb - 0.75) / 0.25);
+          slope += (sharp - round) * uBigH / uBigL * visB;
+          return vec4(uWind * slope, f, vis);
+        }
+        #endif
         float tH(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         float tN(vec2 p) {
           vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -1221,7 +1325,12 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
           vec3 c = tAlb(p / uCoarse + 17.0);
           float low = 1.0 + 0.12 * (tN(p / uLow) - 0.5) + 0.04 * (tN(p / (uLow * 0.37) + 5.0) - 0.5);   // ±8 %
           vec3 a = f * (0.45 + 0.55 * c / 0.8) * low;
-          return vec4(mix(a, vec3(0.8), 0.7 * tEdge()), 1.0);
+          #ifdef TERR_MARS
+          vec4 dn = terrDune();
+          a *= 1.0 - dn.w * (0.3 * step(0.8, dn.z) - 0.12 * smoothstep(0.55, 0.8, dn.z) * step(dn.z, 0.8));  // dark slip faces, pale crests
+          a *= 1.0 + vMars.z * 0.3 * (tN(p / (uFine * 3.0) + 3.0) - 0.5);                                   // mottled rock fields
+          #endif
+          return vec4(mix(a, vec3(0.8), 0.7 * tEdge()), 1.0 - uFadeA * smoothstep(0.72 * uHalf, 0.97 * uHalf, length(vTerrP.xz)));
         }
         vec3 terrNormal() {
           vec2 p = vec2(vTerrP.x, -vTerrP.z);
@@ -1237,11 +1346,14 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
       )
       // (onBeforeCompile sees the #include lines, not the chunks: replace the includes themselves)
       .replace("#include <map_fragment>", "diffuseColor *= terrAlbedo();")
-      .replace("#include <normal_fragment_maps>", "vec3 mapN = terrNormal();\nmapN.xy *= normalScale;\nnormal = normalize( tbn * mapN );")
+      .replace("#include <normal_fragment_maps>", "vec3 mapN = terrNormal();\nmapN.xy *= normalScale;\n#ifdef TERR_MARS\nvec4 dune = terrDune();\nmapN.xy += vec2(-dune.x, dune.y);\n#endif\nnormal = normalize( tbn * mapN );")
+      .replace("#include <fog_fragment>", "#include <fog_fragment>\nif (uHazeD > 0.0) gl_FragColor.rgb = mix(gl_FragColor.rgb, uHaze, 1.0 - exp(-length(vViewPosition) / uHazeD));")
       .replace("#include <lights_fragment_begin>", THREE.ShaderChunk.lights_fragment_begin.replace("getDirectionalLightInfo( directionalLight, directLight );", "getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= vSunVis;"));
   };
-  groundMat.customProgramCacheKey = () => "terrain-antitile-v3";
+  groundMat.customProgramCacheKey = () => "terrain-antitile-v5";
+  groundMat.transparent = mars; // the faded rim (uFadeA)
   const ground = new THREE.Mesh(geo, groundMat);
+  ground.renderOrder = mars ? -1 : 0; // first among the transparent: effects above it draw over it
   ground.name = "terrain-ground";
   ground.receiveShadow = true;
   ground.castShadow = false; // its own shadows are baked (sunVis); the shadow map carries the lander and boulders
@@ -1271,7 +1383,7 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
     let placed = 0;
     for (let i = 0; i < n * 4 && placed < n; i++) {
       const [x, z] = pick();
-      if (Math.hypot(x, z) < padRadius_u * 1.5 || Math.abs(x) > half * 0.8 || Math.abs(z) > half * 0.8) continue;
+      if (Math.hypot(x, z) < padRadius_u * 1.5 || Math.abs(x) > half * 0.8 || Math.abs(z) > half * 0.8 || (mars && Math.hypot(x, z) > half * 0.7)) continue;
       const s = size();
       sc.set(s * (0.8 + 0.5 * rand()), s * (0.6 + 0.4 * rand()), s * (0.8 + 0.5 * rand()));
       q.setFromEuler(e.set(rand() * 6.3, rand() * 6.3, rand() * 6.3));
@@ -1348,7 +1460,12 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
       for (const t of [albedo, normal]) renderer?.initTexture?.(t);
     },
     // mean albedo per unit tint (vertex colour × detail), for matching the far layer's brightness (world.js)
-    albedoMean: kMean * 0.8,
+    albedoMean: kAvg * 0.8,
+    // aerial haze toward colour over d_u (1/e distance, scene units; 0 = none); Mars has a default
+    setHaze(colour, d_u) {
+      tu.uHaze.value.copy(colour);
+      tu.uHazeD.value = d_u;
+    },
     // scales the vertex colours: one factor, or per channel ([r, g, b] / a THREE.Color)
     scaleAlbedo(f = 1) {
       const k = typeof f === "number" ? [f, f, f] : f.isColor ? [f.r, f.g, f.b] : f;
