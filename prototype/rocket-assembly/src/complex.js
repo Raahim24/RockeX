@@ -73,6 +73,7 @@
 import * as THREE from "three";
 import { SCALE } from "./layout.js";
 import { LOOK, disposeLooks, padLayout, paintProp, peachLineMaterial, propMaterial, propMaterials, setPropLook } from "./parts.js";
+import { horizonDisc } from "./planet.js";
 
 // ---------- visual proportions (shape only, never shown as facts) ----------
 const TOWER_SHARE = 1.15; // FSS lattice top / stack height
@@ -287,6 +288,174 @@ function nightHook(shader) {
 const nightKey = () => "complex-night-v1";
 
 let SH = null;
+// ---------- (11) the coast (round 22): the site's shore out to the horizon ----------
+// One disc (planet.js horizonDisc, curving with the Earth) just under the apron, its middle cut away under the
+// apron: the Atlantic ~1.4 km east of the pad (wave normals at two scales, Fresnel toward a sky reflection, sun
+// glitter, a surf line, shallow water lighter and greener), beach, a dune line and scrub inland, a lagoon band
+// ~4 km west (calm water), a haze toward the horizon colour; it fades out as the camera climbs past ~3–9 km (the
+// far layer takes over). Lit from the sky recipe (setSky / setDaylight), not by scene lights. Visual model:
+// every distance and colour est.
+const COAST_VERT = /* glsl */ `
+  #include <common>
+  #include <fog_pars_vertex>
+  varying vec3 vW;
+  varying vec3 vWorld;
+  void main() {
+    vW = position;
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vWorld = wp.xyz;
+    vec4 mvPosition = viewMatrix * wp;
+    gl_Position = projectionMatrix * mvPosition;
+    #include <fog_vertex>
+  }
+`;
+const COAST_FRAG = /* glsl */ `
+  #include <common>
+  #include <fog_pars_fragment>
+  uniform float uTime, uM, uApronR, uDay, uCloudy, uFadeLo, uFadeHi;
+  uniform vec3 uSun, uSunCol, uAmb, uSky, uHorizon;
+  varying vec3 vW;
+  varying vec3 vWorld;
+  // (cells wrap every 1024: the hash keeps its precision kilometres out)
+  float cH(vec2 p) { p = mod(p, 1024.0); return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float cN(vec2 p) {
+    vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cH(i), cH(i + vec2(1.0, 0.0)), f.x), mix(cH(i + vec2(0.0, 1.0)), cH(i + vec2(1.0, 1.0)), f.x), f.y);
+  }
+  // wave height (metres-ish) at p (metres): swell, wind waves, ripples drifting with time
+  float waves(vec2 p, float calm, float fine) {
+    float a = cN(p / 22.0 + vec2(uTime * 0.35, uTime * 0.12));
+    float b = cN(p / 7.0 + vec2(-uTime * 0.5, uTime * 0.3));
+    float c = cN(p / 140.0 + vec2(uTime * 0.05, -uTime * 0.03));
+    return (a * 0.6 * fine + b * 0.18 * fine + c * 1.6) * calm;
+  }
+  void main() {
+    if (length(vW.xz) < uApronR) discard;
+    vec2 pm = vW.xz / uM;                                   // metres, +x east, +y south
+    float shore = 1400.0 + 260.0 * sin(pm.y / 3100.0) + 90.0 * (cN(vec2(3.0, pm.y / 700.0)) - 0.5);
+    float s = pm.x - shore;                                 // > 0: the Atlantic
+    float lag0 = -3600.0 + 200.0 * sin(pm.y / 2300.0 + 1.0);
+    float lag = min(pm.x - (lag0 - 1400.0), lag0 - pm.x);  // > 0: the lagoon band
+    float water = max(s, lag);
+    vec3 V = normalize(cameraPosition - vWorld);
+    float dist = length(cameraPosition - vWorld);
+    float fw = length(fwidth(pm));                          // metres per pixel
+    vec3 sunLit = uSunCol * max(uSun.y, 0.0) * uDay + uAmb;
+    vec3 col;
+    if (water > 0.0) {
+      float calm = lag > 0.0 ? 0.35 : 1.0;
+      float fine = 1.0 - smoothstep(2.0, 12.0, fw);        // ripples fade once sub-pixel
+      float swell = 1.0 - smoothstep(20.0, 90.0, fw);
+      float h0 = waves(pm, calm, fine);
+      vec2 g = vec2(waves(pm + vec2(0.6, 0.0), calm, fine) - h0, waves(pm + vec2(0.0, 0.6), calm, fine) - h0) / 0.6;
+      g *= swell;
+      vec3 N = normalize(vec3(-g.x * 2.5, 1.0, -g.y * 2.5));
+      float F = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+      vec3 R = reflect(-V, N);
+      vec3 sky = mix(uHorizon, uSky, smoothstep(0.0, 0.35, R.y));
+      float shallow = lag > 0.0 ? 0.5 : 1.0 - smoothstep(0.0, 600.0, s);
+      vec3 body = mix(vec3(0.012, 0.05, 0.1), vec3(0.03, 0.17, 0.17), shallow);
+      col = mix(body * sunLit, sky, F);
+      float rs = max(dot(R, uSun), 0.0);
+      col += uSunCol * (pow(rs, 400.0) * 40.0 + pow(rs, 60.0) * 0.6) * uDay * (1.0 - 0.85 * uCloudy);
+      // surf: a broken white line where the waves reach the beach
+      float surf = lag > 0.0 ? 0.0 : (1.0 - smoothstep(0.0, 25.0, s)) * (0.5 + 0.5 * cN(pm / 9.0 + uTime * 0.4));
+      col = mix(col, vec3(0.85, 0.88, 0.9) * sunLit, surf * 0.8);
+    } else {
+      float e = -s;                                         // metres inland from the ocean shore
+      float n1 = mix(cN(pm / 45.0), 0.5, smoothstep(12.0, 40.0, fw));       // mottling fades once sub-pixel
+      float n2 = mix(cN(pm / 330.0 + 7.0), 0.5, smoothstep(90.0, 300.0, fw));
+      vec3 scrub = mix(vec3(0.07, 0.09, 0.04), vec3(0.13, 0.12, 0.07), n1 * 0.6 + n2 * 0.4);
+      // patches a few hundred metres across: dry sandy scrub, darker wet hammocks
+      float n3 = mix(cN(pm / 900.0 + 11.0), 0.5, smoothstep(250.0, 800.0, fw));
+      scrub = mix(scrub, vec3(0.2, 0.18, 0.11), smoothstep(0.6, 0.75, n3));
+      scrub = mix(scrub, vec3(0.045, 0.065, 0.035), 1.0 - smoothstep(0.25, 0.38, n3));
+      // sandy tracks: a loose grid of wandering dirt roads (~1.8 × 2.3 km), gone once thinner than a pixel
+      float tz = abs(fract(pm.y / 1800.0 + 0.08 * cN(vec2(pm.x / 900.0, 5.0))) - 0.5) * 1800.0;
+      float tx = abs(fract(pm.x / 2300.0 + 0.08 * cN(vec2(9.0, pm.y / 900.0))) - 0.5) * 2300.0;
+      float track = (1.0 - smoothstep(2.5, 5.0, min(tz, tx))) * (1.0 - smoothstep(4.0, 14.0, fw));
+      scrub = mix(scrub, vec3(0.45, 0.4, 0.3), track * 0.8);
+      vec3 sand = vec3(0.62, 0.56, 0.44);
+      float dune = smoothstep(55.0, 70.0, e) * (1.0 - smoothstep(130.0, 190.0, e + 40.0 * (n1 - 0.5)));
+      vec3 alb = mix(scrub, mix(sand, scrub, smoothstep(0.45, 0.7, n1)), dune);
+      alb = mix(alb, sand * 1.08, 1.0 - smoothstep(50.0, 62.0, e));     // the beach
+      alb = mix(alb, sand * 0.7, 1.0 - smoothstep(0.0, 14.0, e));       // wet sand
+      alb = mix(alb, vec3(0.08, 0.1, 0.06), 1.0 - smoothstep(0.0, 60.0, -lag)); // marsh on the lagoon banks
+      float crest = smoothstep(60.0, 75.0, e) * (1.0 - smoothstep(75.0, 95.0, e)) * max(uSun.x, 0.0);
+      col = alb * (1.0 + 0.25 * crest) * sunLit;
+    }
+    float hz = 1.0 - exp(-dist / (uM * mix(26000.0, 9000.0, uCloudy)));
+    col = mix(col, uHorizon, hz);
+    gl_FragColor = vec4(col, 1.0 - smoothstep(uFadeLo, uFadeHi, cameraPosition.y - vWorld.y));
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+    #include <fog_fragment>
+  }
+`;
+const DAY_SUN = new THREE.Vector3(-0.34, 0, 0.94).normalize().multiplyScalar(Math.cos((40 * Math.PI) / 180)).setY(Math.sin((40 * Math.PI) / 180));
+function createCoast({ m, y, apronR }) {
+  const u = {
+    uTime: { value: 0 },
+    uM: { value: m(1) },
+    uApronR: { value: apronR },
+    uDay: { value: 1 },
+    uCloudy: { value: 0 },
+    uFadeLo: { value: m(2500) },
+    uFadeHi: { value: m(9000) },
+    uSun: { value: DAY_SUN.clone() },
+    uSunCol: { value: new THREE.Color(1.0, 0.91, 0.78).multiplyScalar(4.8 / Math.PI) },
+    uAmb: { value: new THREE.Color(0.38, 0.55, 0.92).multiplyScalar((0.55 / Math.PI) * 1.6) },
+    uSky: { value: new THREE.Color(0.07, 0.21, 0.64) },
+    uHorizon: { value: new THREE.Color(0.5, 0.65, 0.86) },
+  };
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {},
+    vertexShader: COAST_VERT,
+    fragmentShader: COAST_FRAG,
+    fog: false, // its own haze to the horizon: main's builder fog band (a few stack heights) would swamp it
+    transparent: true, // only while it fades out with height
+  });
+  Object.assign(mat.uniforms, u);
+  const R_KM = 6371;
+  const mesh = new THREE.Mesh(horizonDisc(m(120000), m(R_KM * 1000)), mat);
+  mesh.name = "complex-coast";
+  mesh.position.y = y;
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -1; // first among the transparent: never over the effects above it
+  mesh.raycast = () => {};
+  mesh.userData.nonPickable = true;
+  const night = { sky: new THREE.Color(0.0015, 0.002, 0.005), horizon: new THREE.Color(0.008, 0.022, 0.07), amb: new THREE.Color(0.56, 0.65, 0.78).multiplyScalar(0.02) };
+  return {
+    mesh,
+    uniforms: u,
+    // the recipe from world.setSky (colours, sun, cloud) or just day / night
+    setSky(r) {
+      const day = r.time === "day";
+      u.uDay.value = day ? 1 : 0;
+      u.uCloudy.value = r.weather === "cloudy" ? 1 : 0;
+      if (day) {
+        u.uSun.value.copy(r.sunDir).normalize();
+        u.uSunCol.value.copy(r.key.color).multiplyScalar(r.key.intensity / Math.PI);
+        u.uAmb.value.copy(r.hemi.sky).multiplyScalar((r.hemi.intensity / Math.PI) * 1.6);
+        u.uSky.value.copy(r.sky?.zenith ?? r.fog.color);
+        u.uHorizon.value.copy(r.sky?.horizon ?? r.fog.color);
+      } else this.setDaylight(false);
+    },
+    setDaylight(day) {
+      u.uDay.value = day ? 1 : 0;
+      if (!day) {
+        u.uAmb.value.copy(night.amb);
+        u.uSky.value.copy(night.sky);
+        u.uHorizon.value.copy(night.horizon);
+      } else if (u.uSky.value.equals(night.sky)) {
+        u.uAmb.value.setRGB(0.38, 0.55, 0.92).multiplyScalar((0.55 / Math.PI) * 1.6);
+        u.uSky.value.setRGB(0.07, 0.21, 0.64);
+        u.uHorizon.value.setRGB(0.5, 0.65, 0.86);
+      }
+    },
+  };
+}
+
 function shared() {
   if (SH) return SH;
   const tex = {
@@ -872,6 +1041,7 @@ export function createLaunchComplex({
   else if (lightingSun?.isObject3D) sunDir = lightingSun.position.clone().sub(lightingSun.target?.position ?? v3());
   const night = !(sunDir && sunDir.lengthSq() > 1e-9 && sunDir.normalize().y > 0.08);
   const floodK = night ? 1 : 0.25;
+  let daylight = !night; // runtime day / night (setDaylight / setSky)
 
   const object3d = new THREE.Group();
   object3d.name = "launch-complex";
@@ -1199,6 +1369,8 @@ export function createLaunchComplex({
   const gapB = m(18);
   bermSection(ap, [fx0 - farmHalfX, fz0 + farmHalfZ], [fx0 + farmHalfX - gapB, fz0 + farmHalfZ], groundY, bermH, bermTop, bermBase, C.berm, true, true);
   bermSection(ap, [fx0 + farmHalfX, fz0 + farmHalfZ - gapB], [fx0 + farmHalfX, fz0 - farmHalfZ], groundY, bermH, bermTop, bermBase, C.berm, true, true);
+  const coast = createCoast({ m, y: groundY - m(2.5), apronR: half * 0.98 });
+  object3d.add(coast.mesh);
   const apron = lookMesh(ap, "complex-apron", S.apron, { xray: () => xGround(1), ground: groundOf(1, 1, 1, 1), lines: false, receive: false });
   site.add(apron);
 
@@ -2083,12 +2255,15 @@ export function createLaunchComplex({
 
   // ---------- pad adoption (hide the pad's own ground, lower the ground map) ----------
   const adopted = [];
+  let groundMap = null;
   function restorePad() {
     for (const a of adopted) {
       if ("visible" in a) a.o.visible = a.visible;
       if ("y" in a) a.o.position.y = a.y;
     }
     adopted.length = 0;
+    if (groundMap) groundMap.visible = true;
+    groundMap = null;
   }
   function adoptPad(target = null) {
     restorePad();
@@ -2106,6 +2281,8 @@ export function createLaunchComplex({
         });
         if (y0 === null) continue;
         adopted.push({ o, y: o.position.y });
+        groundMap = o;
+        o.visible = !daylight;
         o.position.y = groundY - m(1.5) - y0; // well under the apron: a hair's gap z-fights at a distance
       }
     }
@@ -2151,9 +2328,11 @@ export function createLaunchComplex({
   };
   // Day or night at runtime (world.setSky): by day no night falloff on the apron and structures, dim light
   // pools and spots, no lamp glows or beams (intensities and visibility only; the light count never changes).
-  let daylight = !night;
   function applyDaylight() {
     const k = daylight ? 0.25 : 1;
+    coast.setDaylight(daylight);
+    lampMat.emissiveIntensity = daylight ? 0 : S.lamp.emissiveIntensity * (look === "xray" ? 0.6 : 1);
+    if (groundMap) groundMap.visible = !daylight; // the line-art map would draw grid lines over the coast
     groundU.uGFar.value.z = daylight ? 1 : 0.16;
     nightU.uNight.value.z = daylight ? 1 : 0.2;
     groundU.uGPoolColor.value.setRGB(1.0, 0.78, 0.55).multiplyScalar(0.9 * k);
@@ -2175,6 +2354,7 @@ export function createLaunchComplex({
   const beaconCol = beaconGeo.attributes.color;
   const padC = new THREE.Vector3();
   function update(t = 0) {
+    coast.uniforms.uTime.value = t;
     nightU.uNightC.value.copy(object3d.getWorldPosition(padC));
     // beacons: 1.6 s cycle, alternate towers half a cycle apart, soft on/off
     for (let i = 0; i < beaconCol.count; i++) {
@@ -2248,6 +2428,14 @@ export function createLaunchComplex({
       daylight = !!day;
       applyDaylight();
     },
+    // world.setSky's recipe: day / night, the coast's sun, sky and cloud
+    setSky(r) {
+      if (!r) return;
+      daylight = r.time === "day";
+      applyDaylight();
+      coast.setSky(r);
+    },
+    coast: coast.mesh,
     // "minimal" | "full": what stands (painted look); "painted" | "xray": the look only, keeping what stands
     setLook(next = "painted") {
       if (next === "minimal" || next === "full") {
@@ -2258,7 +2446,7 @@ export function createLaunchComplex({
       look = next === "xray" ? "xray" : "painted";
       setPropLook(object3d, look);
       setSpots();
-      lampMat.emissiveIntensity = S.lamp.emissiveIntensity * floodK * (look === "xray" ? 0.6 : 1);
+      lampMat.emissiveIntensity = daylight ? 0 : S.lamp.emissiveIntensity * (look === "xray" ? 0.6 : 1);
       return look;
     },
     update,

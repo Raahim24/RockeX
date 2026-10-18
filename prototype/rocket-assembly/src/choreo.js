@@ -25,7 +25,7 @@ import { animate, spring } from "animejs";
 import { createHologramMaterial } from "./fx/hologram.js";
 import { createBoltFlash } from "./fx/flash.js";
 import { COLORS, LOOK, applyDeploy, deployables, landerOf, padLayout, setShellOpacity as setShell } from "./parts.js";
-import { createVents, createDeluge, createTrenchJet, createSteamCloud, createCondensationHalo, createColdGasPuffs, createIgnitionFlash, createPlasmaGlow, createImpact, plumeLean } from "./fx/launchfx.js";
+import { createVents, createDeluge, createTrenchJet, createSteamCloud, createCondensationHalo, createColdGasPuffs, createIgnitionFlash, createPlasmaGlow, createImpact, plumeLean, createTouchdownBurst } from "./fx/launchfx.js";
 import { attachPlumes, createPadLight, createPlume, P0 } from "./plume.js";
 import { createPlanet, createSurfacePatch, createDustPuff, createSkyDome } from "./planet.js";
 import { createDroneShip } from "./anchors.js";
@@ -1133,7 +1133,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
           piece.mesh.rotateZ(Math.sign(piece.explode.dir.x) * dt * -0.5);
         }
       }
-      if (d.t > 2.2 + d.drift) d.part.group.visible = false; // out of frame: gone
+      if (d.t > 3.2 + d.drift) d.part.group.visible = false; // out of frame: gone (the close-up beats last ~3 s)
     }
   }
 
@@ -1214,7 +1214,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         if (L.F && e.stage === 0 && top && !L.onboardDone) {
           L.onboardDone = true;
           const sepY = top.slotY + top.height - L.pivotY;
-          L.cut = { t: 0, up: 0, fired: false, hold: 0, fn: () => (L.onboard = { part: top, sepY, until: L.real + 2 }) };
+          L.cut = { t: 0, up: 0, fired: false, hold: 0, fn: () => (L.onboard = { part: top, sepY, until: L.real + 3 }) };
         }
         break;
       }
@@ -1284,8 +1284,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         break;
       case "breakup": {
         // Aerodynamic break-up: what is above the lowest stage tears away and scatters; the plasma peels pieces.
+        // 2–3 large pieces: the lowest stage stays with the trajectory, the rest leaves as whole parts (never
+        // their sub-parts), the top two grouped as one piece when there are more.
         const flying = parts.filter((p) => !L.gone.has(p)).sort((a, b) => a.slotY - b.slotY);
-        for (const part of flying.slice(1)) drop(part, { spread: true });
+        for (const part of flying.slice(1)) drop(part);
         L.brokenUp = true;
         state.shake = 0.8;
         break;
@@ -1316,6 +1318,13 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         break;
       }
       case "touchdown": {
+        if (L.catch) {
+          L.anchors.catchArms((L.catch.k = 1));
+          const base = L.pad.worldToLocal(root.localToWorld(new THREE.Vector3()));
+          L.catch.burst.fire(base, stackRadius());
+          state.shake = 0.35;
+          break;
+        }
         L.lander?.lm.setProbesVisible?.(false); // the contact probes bend on touchdown
         const payload = L.lander ? { group: L.lander.lm.group, radius: L.lander.lm.footprint_u ?? 1 } : parts.find((p) => p.kind === "payload");
         if (payload) {
@@ -1331,6 +1340,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         if (fairing) {
           drop(fairing, { spread: true });
           puffsOn(fairing, [0.1, 0.4], { atTop: true }); // the halves' push-off jets
+          // A close-up of the halves peeling off (~2 s), in and out through quick fades.
+          if (L.F && !L.onboard && !L.cut) {
+            const sepY = fairing.slotY + fairing.height * 0.35 - L.pivotY;
+            L.cut = { t: 0, up: 0, fired: false, hold: 0, fn: () => (L.onboard = { part: fairing, sepY, until: L.real + 2, look: "part" }) };
+          }
         }
         sfx.play("whoosh", { rate: 1.3, gain: 0.6 });
         retarget();
@@ -1440,6 +1454,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   const ease1 = (x, goal, dt, tau) => x + (goal - x) * (1 - Math.exp(-dt / tau));
   const chaseV = new THREE.Vector3();
   const chaseP = new THREE.Vector3();
+  const goalDir = new THREE.Vector3();
+  const rotAxis = new THREE.Vector3();
   const chaseT = new THREE.Vector3();
   const chaseLook = new THREE.Vector3();
   const chaseDown = new THREE.Vector3();
@@ -1514,13 +1530,21 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   const spLook = new THREE.Vector3();
   function spaceCam(dt) {
     const c = L.chase;
-    // Local up at the vehicle, in near axes: from the current body's centre out to the vehicle.
+    // Local up at the vehicle, in near axes: from the current body's centre out to the vehicle. Through coasts and
+    // burns in space the axes are LOCKED (the planet stays put in the lower frame instead of sweeping under the
+    // vehicle); they ease back to the live local frame for re-entry and the descent.
+    const seg0 = L.smp.segment;
+    const live = /reentry|landing|braking|approach|vertical|entry|parachute|deorbit/.test(seg0);
+    c.lockK = ease1(c.lockK ?? 0, live ? 0 : 1, dt, 0.8); // 1 = locked
     const centre = bodyCentre(L.smp.body === "space" ? "earth" : L.smp.body, L.smp);
-    spUp.copy(L.V).sub(centre).normalize().applyQuaternion(L.QnInv);
+    const upNow = new THREE.Vector3().copy(L.V).sub(centre).normalize().applyQuaternion(L.QnInv);
+    c.upLock ??= upNow.clone();
+    if (c.lockK < 0.05) c.upLock.copy(upNow);
+    spUp.copy(upNow).lerp(c.upLock, c.lockK).normalize();
     // Direction of travel along the surface (the velocity, or the nose when the velocity is near vertical).
     const v = L.smp.vel_eci_kms ?? L.smp.vel_kms;
     const f = v ? new THREE.Vector3(v[0], v[1], v[2]).applyQuaternion(world.eciFrame).applyQuaternion(L.QnInv) : null;
-    if (f) {
+    if (f && c.lockK < 0.5) {
       f.addScaledVector(spUp, -f.dot(spUp));
       if (f.lengthSq() > 1e-8) spFwd.lerp(f.normalize(), 1 - Math.exp(-dt / 0.8)).normalize(); // eased: no snaps
     }
@@ -1530,6 +1554,13 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const dist = L.trackDist * (low ? 1.3 : 1.6);
     L.flight.localToWorld(spLook.set(0, c.trackY ?? L.trackLocalY, 0));
     spGoal.copy(spLook).addScaledVector(spFwd, -Math.cos(el) * dist).addScaledVector(spUp, Math.sin(el) * dist);
+    if (L.catch && seg === "landing") {
+      // The catch: from the pad camera's side (chosen clear of the tower), wide enough for the tower and its arms.
+      const az = c.azSide;
+      const d = Math.max(dist, L.catch.armY * 2.6);
+      const e = THREE.MathUtils.degToRad(9);
+      spGoal.copy(spLook).add(new THREE.Vector3(Math.sin(az) * Math.cos(e), Math.sin(e), Math.cos(az) * Math.cos(e)).multiplyScalar(d));
+    }
     // In space, aim a little below the vehicle so the Earth and its limb fill the lower part of the frame.
     if (!low) spLook.addScaledVector(spUp, -0.12 * dist);
     c.space = Math.min(1, (c.space ?? 0) + dt / 2.5); // blend in from the ascent framing over 2.5 s
@@ -1547,7 +1578,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const o = L.onboard;
     const side = new THREE.Vector3(Math.sin(0.58), 0, Math.cos(0.58));
     L.flight.localToWorld(obEye.set(side.x * r * 3.4, o.sepY + r * 4.5, side.z * r * 3.4));
-    if (o.part?.group.visible) o.part.group.localToWorld(obAim.set(0, o.part.height * 0.3, 0));
+    if (o.look === "part" && o.part?.group.visible) o.part.group.localToWorld(obAim.set(0, o.part.height * 0.5, 0));
+    else if (o.part?.group.visible) o.part.group.localToWorld(obAim.set(0, o.part.height * 0.3, 0));
     else L.flight.localToWorld(obAim.set(0, o.sepY - r * 8, 0));
     camera.position.copy(obEye);
     chaseLook.copy(obAim);
@@ -1589,6 +1621,23 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const k = L.padCam.k.v;
     if (k < 1) camera.position.lerpVectors(L.padCam.from, camera.position, k);
     controls.target.copy(k < 1 ? chaseLook.clone().lerp(L.padCam.fromTarget, 1 - k) : chaseLook);
+    // The view direction turns at most 10°/s (eased) once off the deck: no swings round the vehicle, whatever the
+    // goals do. Deliberate cuts (the close-ups, on a black frame) jump straight to their view.
+    goalDir.copy(controls.target).sub(camera.position);
+    const gd = goalDir.length();
+    goalDir.divideScalar(Math.max(gd, 1e-6));
+    // (Snap only on a black cut frame, the opening blend and the pad shot; inside a close-up it eases too.)
+    const snap = !c.viewDir || state.cut >= 0.98 || k < 1 || (c.anchor < 0.99 && !L.onboard);
+    if (snap) c.viewDir = (c.viewDir ?? new THREE.Vector3()).copy(goalDir);
+    else {
+      const ang = c.viewDir.angleTo(goalDir);
+      if (ang > 1e-5) {
+        const step = Math.min(THREE.MathUtils.degToRad(10) * dt, ang * (1 - Math.exp(-dt / 0.5)));
+        rotAxis.crossVectors(c.viewDir, goalDir);
+        if (rotAxis.lengthSq() > 1e-12) c.viewDir.applyAxisAngle(rotAxis.normalize(), step).normalize();
+      }
+      camera.position.copy(controls.target).addScaledVector(c.viewDir, -gd);
+    }
     camera.lookAt(controls.target);
     framedR = stackRadius() * 3;
     framedMode = "stack";
@@ -1669,6 +1718,18 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     L.flight.position.copy(fA).multiplyScalar(L.pivotY - L.baseY);
     if (L.pad) {
       fP.copy(L.P0).sub(L.V).multiplyScalar(NEAR_PER_KM).applyQuaternion(L.QnInv);
+      if (L.catch && smp.segment === "landing") {
+        // The stage's base stops where its catch point (just below its top) meets the arms: the pad sinks under
+        // it by that height over the last kilometre, so at touchdown it hangs in the arms beside the tower.
+        const { lo, hi } = flyingSpan();
+        const lift = Math.max(0, L.catch.armY - (hi - lo) * 0.85);
+        const alt_m = Math.max(0, smp.alt_km * 1000);
+        const w = 1 - THREE.MathUtils.smoothstep(alt_m, 0, 1000);
+        fP.y -= lift * w;
+        // Arms: open from ~1 km (k to 0.4), close over the last 40 m (k to 1).
+        const k = alt_m > 1000 ? 0 : alt_m > 40 ? 0.4 * (1 - (alt_m - 40) / 960) : 0.4 + 0.6 * (1 - alt_m / 40);
+        if (Math.abs(k - L.catch.k) > 1e-4) L.anchors.catchArms((L.catch.k = k));
+      }
       L.pad.position.copy(fP);
       L.pad.quaternion.copy(L.QnInv);
       // Never hidden: the complex carries flood lights, and hiding them changes the scene's light count (every
@@ -1749,6 +1810,12 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       const land = L.F.endState.landing ?? {};
       if (land.site === "pad") {
         L.padHome = true; // the pad comes back into view as the stage nears it
+        // SpaceX-style catch (UI4's complex): the stage comes down the pad axis and stops in the tower's arms.
+        if (L.anchors?.catchArms && L.anchors.catchPoint_u && L.pad) {
+          const cp = L.pad.worldToLocal(L.anchors.tower.localToWorld(L.anchors.catchPoint_u.clone()));
+          L.catch = { armY: cp.y, k: 0, burst: createTouchdownBurst({ surface: "catch" }) };
+          L.pad.add(L.catch.burst.object3d);
+        }
         return;
       }
       const pos = world.fromECI(land.pos_eci_km ?? L.F.sampleAt(L.F.totalScreen_s).pos_eci_km);
@@ -1809,7 +1876,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     placeFlight(smp);
     if (L.F.endState?.type === "lost" && (L.tumbling || tS > (L.peakT ?? Infinity))) fallUpdate(dt, smp, tS);
     if (!L.lander && !L.landerChecked && (smp.segment === "braking" || smp.segment === "entry")) separateLander();
-    if (!L.legsOut && (smp.segment === "approach" || smp.segment === "vertical" || smp.segment === "landing")) {
+    if (!L.legsOut && !L.catch && (smp.segment === "approach" || smp.segment === "vertical" || smp.segment === "landing")) {
       L.legsOut = true; // the landing legs swing out for the last part of the descent
       if (L.lander) deployLanderLegs(L.lander.lm);
       else for (const p of parts.filter((q) => !L.gone.has(q))) if (deployables(p).length) deploy(p, { gap: 300 });
@@ -1817,10 +1884,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     // Plumes on the sample's stage and throttle (the spacecraft's own engine once only it flies); a burn after
     // SECO (departure, deorbit, entry, landing) relights the stage's engines.
     const s = { alt_m: smp.alt_km * 1000, stage: smp.stageIndex ?? -1, throttle: smp.throttle };
-    if (smp.burn && smp.throttle > 0 && tS > 0) {
+    if (smp.burn && smp.throttle > 0 && tS > 0 && !L.done) {
       for (const pl of L.plumes) if (pl.stage === s.stage && pl.dead) Object.assign(pl, { dead: false, flicker: null, ignite: Math.min(pl.ignite, t) });
     }
-    const thr = tS < 0 ? 0 : updatePlumes(dt, t, s);
+    const thr = tS < 0 || L.done ? 0 : updatePlumes(dt, t, s); // the end holds with the engines off
     if (L.landerPlume) L.landerPlume.update(dt, { throttle: smp.stageIndex == null ? smp.throttle : 0, ambientPressure_Pa: 0, cameraDistance: camera.position.distanceTo(controls.target) });
     if (tS >= 0) {
       L.padLight?.update(dt, thr, Math.max(0, s.alt_m));
@@ -1835,6 +1902,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     L.fx?.igniterFlash?.update(dt);
     for (const p of L.fx?.puffs ?? []) p.update(dt, { wind_ms: L.wind });
     L.fx?.plasma?.update(dt, { intensity: smp.heat ?? 0 });
+    L.catch?.burst.update(dt);
     L.dust?.update(dt);
     if (L.real < (L.vibUntil ?? 0)) state.shake = Math.max(state.shake, 0.55);
     chaseCam(dt, t, L.done);
@@ -2113,7 +2181,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     controls.maxPolarAngle = Math.PI * 0.95; // the pad camera looks up from near the deck
     controls.maxDistance = Infinity; // the look-down aims at a pad kilometres below
     L.far0 = camera.far;
-    camera.far = 32000; // UI4's Earth local ground is a 120 km disc meeting the far horizon (flight only:
+    camera.far = 40000; // UI4's Earth local ground is a 120 km disc meeting the far horizon (flight only:
     camera.updateProjectionMatrix(); // the builder keeps its depth precision)
     sfx.play("launch-swell");
     // Pad effects: vents at the umbilical ports (where the arms meet the vehicle), deluge, trench jet, steam.
@@ -2739,6 +2807,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     controls.maxPolarAngle = L.maxPolar0;
     controls.maxDistance = L.maxDist0;
     camera.up.set(0, 1, 0);
+    if (L.catch) {
+      L.anchors?.catchArms?.(0);
+      L.catch.burst.dispose?.();
+      L.catch.burst.object3d.removeFromParent();
+    }
     state.pastTower = false;
     state.countdown = false;
     if (L.far0) {

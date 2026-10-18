@@ -632,6 +632,7 @@ export function createWorld({ renderer = null } = {}) {
   let resScale = typeof window !== "undefined" && (window.devicePixelRatio ?? 1) >= 1.5 ? 0.5 : 1;
   let enabled = true;
   const clearColor = new THREE.Color(0x000000);
+  const SPACE_BLACK = new THREE.Color(0x000000);
   const stats = { scale: resScale, width: 0, height: 0, cpuMs: 0, gpuMs: null, passes: 0, skipped: false };
   let rt = null;
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -694,7 +695,8 @@ export function createWorld({ renderer = null } = {}) {
   function draw(r, target) {
     const t0 = typeof performance !== "undefined" ? performance.now() : 0;
     r.setRenderTarget(target);
-    r.setClearColor(clearColor, 1);
+    // drawing: space is black (the atmosphere paints any sky over it); off: the builder's clearColor
+    r.setClearColor(enabled ? SPACE_BLACK : clearColor, 1);
     r.clear();
     stats.skipped = !enabled;
     if (!enabled) {
@@ -803,7 +805,8 @@ export function createWorld({ renderer = null } = {}) {
   // light recipe for those conditions (main's key / fill / hemisphere and fog take colours and intensities from
   // it; the light count never changes): { time, weather, sunDir (world = the pad's site frame: +x east, +y up,
   // +z south), key: { color, intensity }, fill: { color, intensity }, hemi: { sky, ground, intensity },
-  // environmentIntensity, fog: { color, near_u, far_u }, background } (colours linear; visual values).
+  // environmentIntensity, exposure (renderer.toneMappingExposure), fog: { color, near_u, far_u }, background,
+  // sky: { zenith, horizon } } (colours linear; visual values).
   const skyState = { time: "night", weather: "clear" };
   const DAY_SUN = new THREE.Vector3(-0.34, 0, 0.94).normalize().multiplyScalar(Math.cos(40 * DEG)).setY(Math.sin(40 * DEG));
   const NIGHT_SUN = sunDir.clone();
@@ -827,16 +830,18 @@ export function createWorld({ renderer = null } = {}) {
     const s = skyAt("earth", 0);
     const C = (r, g, b) => new THREE.Color(r, g, b);
     if (!day)
-      return { ...skyState, sunDir: sunDir.clone(), key: { color: new THREE.Color(0xffb48a), intensity: 2.8 }, fill: { color: new THREE.Color(0x6a7fa8), intensity: 0.3 }, hemi: { sky: new THREE.Color(0x8fa6c8), ground: new THREE.Color(0x0f1118), intensity: 0.08 }, environmentIntensity: 0.25, fog: { color: s.horizon, near_u: 45, far_u: 130 }, background: new THREE.Color(0x0b0d12) };
+      return { ...skyState, sunDir: sunDir.clone(), exposure: 1.0, key: { color: new THREE.Color(0xffb48a), intensity: 2.8 }, fill: { color: new THREE.Color(0x6a7fa8), intensity: 0.3 }, hemi: { sky: new THREE.Color(0x8fa6c8), ground: new THREE.Color(0x0f1118), intensity: 0.08 }, environmentIntensity: 0.25, fog: { color: s.horizon, near_u: 45, far_u: 130 }, background: new THREE.Color(0x0b0d12) };
     return {
       ...skyState,
       sunDir: sunDir.clone(),
       // clear: a strong sun over a light fill (contrast), fog only far out (a crisp pad to the horizon, haze at
       // the sea line); cloudy: flat light and a closer haze
-      key: cloudy ? { color: C(0.86, 0.88, 0.92), intensity: 0.9 } : { color: C(1.0, 0.91, 0.78), intensity: 4.8 },
-      fill: cloudy ? { color: C(0.7, 0.73, 0.78), intensity: 0.5 } : { color: C(0.5, 0.64, 0.95), intensity: 0.3 },
+      key: cloudy ? { color: C(0.86, 0.88, 0.92), intensity: 0.9 } : { color: C(1.0, 0.91, 0.78), intensity: 3.4 },
+      fill: cloudy ? { color: C(0.7, 0.73, 0.78), intensity: 0.5 } : { color: C(0.5, 0.64, 0.95), intensity: 0.42 },
+      exposure: cloudy ? 1.0 : 0.92, // renderer.toneMappingExposure (white paint keeps its detail in the sun)
       hemi: cloudy ? { sky: C(0.62, 0.65, 0.7), ground: C(0.24, 0.24, 0.23), intensity: 2.0 } : { sky: C(0.38, 0.55, 0.92), ground: C(0.4, 0.32, 0.22), intensity: 0.55 },
       environmentIntensity: cloudy ? 0.7 : 0.4,
+      sky: { zenith: s.zenith.clone(), horizon: s.horizon.clone() },
       fog: cloudy ? { color: s.horizon, near_u: 400, far_u: 5000 } : { color: s.horizon, near_u: 6000, far_u: 40000 },
       background: s.horizon.clone(),
     };

@@ -108,6 +108,7 @@ const hemi = new THREE.HemisphereLight(0x8fa6c8, 0x0f1118, 0.08);
 scene.add(hemi);
 let skyKeyDir = null; // by day the key light is the sun (world.setSky's sunDir)
 let skyFog = null;
+let lastSky = null; // the last setSky recipe (a rebuilt complex takes it too)
 
 const root = new THREE.Group(); // shakes on lock
 scene.add(root);
@@ -224,7 +225,8 @@ function applyBounds(b) {
   anchors?.dispose();
   anchors = createLaunchComplex({ baseRadius_u: b.baseRadius_u, stackHeight_u: b.height_u, manifest: current.manifest, pad: pad.group });
   anchors.setRssAngle(RSS_MATED); // the service structure stands mated around the vehicle on the pad
-  anchors.setDaylight?.(skyState.time === "day");
+  if (lastSky && anchors.setSky) anchors.setSky(lastSky);
+  else anchors.setDaylight?.(skyState.time === "day");
   pad.group.add(anchors.object3d);
 }
 applyBounds(current.bounds);
@@ -262,7 +264,9 @@ function applySky() {
   skyFog = r.time === "day" ? r.fog : null; // by day the air is clear: the haze only far off (its suggested band)
   asColor(r.background, BG);
   world.clearColor.copy(BG);
-  anchors?.setDaylight?.(r.time === "day");
+  if (anchors?.setSky) anchors.setSky(r); // the complex's daylight and its coast (sun, sky colours, cloud cover)
+  else anchors?.setDaylight?.(r.time === "day");
+  lastSky = r;
   skyButtons();
 }
 const aurora = createAurora({});
@@ -1644,14 +1648,15 @@ function frame() {
   band.near = band.near == null ? goalNear : band.near + (goalNear - band.near) * kb;
   band.far = band.far == null ? goalFar : band.far + (goalFar - band.far) * kb;
   const dist = camera.position.distanceTo(controls.target);
-  if (skyFog && Number.isFinite(skyFog.near_u)) {
-    // Day: the builder's tight depth band would wash the far side of everything into the bright haze.
-    scene.fog.near = Math.max(scene.fog.near, skyFog.near_u);
-    scene.fog.far = Math.max(scene.fog.far, skyFog.far_u ?? skyFog.near_u * 4);
-  }
   const open = landing?.fogOpen ?? 0; // the landing's dive opens the band wide (ground map, cloud deck)
   scene.fog.near = Math.max(0.1, THREE.MathUtils.lerp(dist - band.near, dist * 0.5, open));
   scene.fog.far = THREE.MathUtils.lerp(dist + band.far, dist * 8, open);
+  if (skyFog && Number.isFinite(skyFog.near_u)) {
+    // Day: the builder's tight depth band (in the bright haze colour) would turn everything past the rocket into
+    // a uniform grey; by day the air is clear out to the recipe's band (after the band above, which it overrides).
+    scene.fog.near = Math.max(scene.fog.near, skyFog.near_u);
+    scene.fog.far = Math.max(scene.fog.far, skyFog.far_u ?? skyFog.near_u * 4);
+  }
   // A launch's sky (choreo.state.sky): fog in the horizon's colour, opened with the climb; stars by the sky.
   const sky = choreo.state.sky;
   if (sky) {
