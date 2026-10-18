@@ -1370,13 +1370,55 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
 
 // ---------- ocean ----------
 
-// createOcean({ size_u, sunDir }) -> { object3d, update(dt, { sky?, sunDir? }), setSky({ zenith, horizon }),
-//   setHull({ position, length_u, width_u, yaw } | null), bob(t), dispose() }
-// One plane: normals from scrolling noise layers (calmer with distance to avoid shimmer), Fresnel reflection of
+// A ground disc out to the horizon: a centre vertex and 56 rings of 96, radii from 2 m growing geometrically to
+// radius_u (dense near the middle). planetR_u > 0 bends it down with the planet's curvature (y −= r² / 2R) so its
+// rim meets the far layer's horizon; 0 leaves it flat (the ocean bends in its shader instead).
+export function horizonDisc(radius_u, planetR_u = 0) {
+  const RINGS = 56;
+  const SEGS = 96;
+  const r0 = 2 * SCALE;
+  const pos = [0, 0, 0];
+  const nrm = [0, 1, 0];
+  const uv = [0.5, 0.5];
+  for (let k = 0; k < RINGS; k++) {
+    const r = r0 * (radius_u / r0) ** (k / (RINGS - 1));
+    const drop = planetR_u > 0 ? (r * r) / (2 * planetR_u) : 0;
+    const tilt = planetR_u > 0 ? r / planetR_u : 0;
+    for (let j = 0; j < SEGS; j++) {
+      const a = (j / SEGS) * Math.PI * 2;
+      pos.push(Math.cos(a) * r, -drop, Math.sin(a) * r);
+      nrm.push(Math.cos(a) * tilt, 1, Math.sin(a) * tilt);
+      uv.push(0.5 + (Math.cos(a) * r) / (2 * radius_u), 0.5 - (Math.sin(a) * r) / (2 * radius_u));
+    }
+  }
+  const idx = [];
+  for (let j = 0; j < SEGS; j++) idx.push(0, 1 + ((j + 1) % SEGS), 1 + j);
+  for (let k = 0; k < RINGS - 1; k++) {
+    for (let j = 0; j < SEGS; j++) {
+      const a = 1 + k * SEGS + j;
+      const b = 1 + k * SEGS + ((j + 1) % SEGS);
+      idx.push(a, b, a + SEGS, b, b + SEGS, a + SEGS);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+// createOcean({ size_u, sunDir, radius_u?, planetR_u? }) -> { object3d, update(dt, { sky?, sunDir? }),
+//   setSky({ zenith, horizon }), setHull({ position, length_u, width_u, yaw } | null), bob(t), dispose() }
+// One surface: a square plane of size_u, or with radius_u a disc out to the horizon (rings spaced
+// geometrically from the centre, curving down with the planet's radius planetR_u, so it meets the far layer's
+// horizon with no gap; keep the camera's far plane beyond the horizon distance). Normals from scrolling noise
+// layers (calmer with distance to avoid shimmer), Fresnel reflection of
 // the sky colours (skyAt), a tight sun-glint path, a deep-water body colour, foam where the swell meets the
 // drone ship's hull (setHull), scene fog. bob(t) gives the ship's heave and roll: put the ship at
 // y = ship.freeboard_u + bob.y (deck above the water) with rotation (bob.rx, yaw, bob.rz). 1 draw.
-export function createOcean({ size_u = 4000, sunDir = DEFAULT_SUN } = {}) {
+export function createOcean({ size_u = 4000, sunDir = DEFAULT_SUN, radius_u = 0, planetR_u = 6371000 * SCALE } = {}) {
   const uniforms = THREE.UniformsUtils.merge([
     THREE.UniformsLib.fog,
     {
@@ -1390,15 +1432,19 @@ export function createOcean({ size_u = 4000, sunDir = DEFAULT_SUN } = {}) {
       uHull: { value: new THREE.Vector4(0, 0, 0, 0) }, // centre x, z, half length, half width (0: no hull)
       uHullYaw: { value: 0 },
       uFoamW: { value: 3 * SCALE }, // foam band width outside the hull (visual)
+      uCurve: { value: radius_u > 0 ? 1 / (2 * planetR_u) : 0 }, // drop = r² / 2R
     },
   ]);
   const mat = new THREE.ShaderMaterial({
     uniforms,
     vertexShader: /* glsl */ `
       #include <fog_pars_vertex>
+      uniform float uCurve;
       varying vec3 vWorldPos;
       void main() {
-        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vec3 p = position;
+        p.y -= dot(p.xz, p.xz) * uCurve;   // the planet's curvature (0 for the flat square)
+        vec4 wp = modelMatrix * vec4(p, 1.0);
         vWorldPos = wp.xyz;
         vec4 mvPosition = viewMatrix * wp;
         gl_Position = projectionMatrix * mvPosition;
@@ -1456,7 +1502,9 @@ export function createOcean({ size_u = 4000, sunDir = DEFAULT_SUN } = {}) {
       }`,
     fog: true,
   });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size_u, size_u).rotateX(-Math.PI / 2), mat);
+  const geo = radius_u > 0 ? horizonDisc(radius_u) : new THREE.PlaneGeometry(size_u, size_u).rotateX(-Math.PI / 2);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = radius_u <= 0;
   mesh.name = "ocean";
   mesh.receiveShadow = false;
   mesh.raycast = () => {};

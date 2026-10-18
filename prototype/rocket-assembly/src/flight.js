@@ -7,10 +7,23 @@
 //   sampleAt(t_screen) -> { t_sim, t_screen, body ("earth" | "moon" | "mars" | "space"), segment, phase,
 //     stageIndex (null once only the spacecraft flies), pos_km (body-centred; "space" = Earth-centred), pos_eci_km,
 //     vel_kms (relative to the body), vel_eci_kms, dest_eci_km, speed_ms, alt_km, axis (unit nose / thrust axis),
-//     pitch_deg (0 = straight up), yaw_deg (0 = north, 90 = east), throttle, burn, mass_kg, chute, heat, dust }
+//     pitch_deg (0 = straight up), yaw_deg (0 = north, 90 = east), throttle, burn, mass_kg, chute, heat, dust,
+//     alpha_deg (a lost flight's tumble), brokenUp }; finite everywhere, before 0 and after the end (the last point
+//     is held: after an impact the vehicle stays on the surface).
+//   Failure beats in events (each with t_sim and t_screen), for the failure kit and the director:
+//     "pad-abort"       { twr }                                          blocked, or held down on the pad
+//     "depleted"        { stageIndex, altitude_m, v_ms }                 the last stage burns out short of orbit, or
+//                                                                         the departure burn runs dry (also dv_ms)
+//     "tumble-start"    { stageIndex, q_Pa, altitude_m, v_ms }            unpowered, the air starts to turn it
+//     "breakup"         { stageIndex, altitude_m, v_ms, q_Pa, alpha_deg, qAlpha_Pa_deg, limit_Pa_deg, note }
+//     "impact"          { surface, v_ms, downrange_km, lat_deg, lon_deg }
+//     "transfer-failed" { shortBy_ms, apogee_km }                         at the dry burn (or the Moon flyby)
+//   tumble / breakup are model choices (est.): tumble once q >= 500 Pa after burnout, angle of attack 0 -> 90 deg
+//   over 5 s, breakup when q x alpha > 150 kPa x deg (not a sourced vehicle limit).
 //   kind: the mission's destination ("earth" | "moon" | "mars", arrival.js).
 //   endState: { type, line (ready to show), text (= line) , ... }; type:
-//     "landed" (body; Earth missions bring the stage home: missionLine, landing { site, ... }) | "in-orbit-of" (body)
+//     "landed" (body; Earth missions bring the stage home, a story ending: line "Stage brought home (story) · est.",
+//     story: true, missionLine, landing { site, ... }) | "in-orbit-of" (body)
 //     | "lost" (impact { downrange_km, surface: "sea" | "ground" }) | "transfer-failed" (body, shortBy_ms,
 //     apogee_km (null if it escapes Earth), perigee_km, period_s) | "aborted" (blocked, or never left the pad).
 //   stageDrops: [{ type: "sep" | "fairing" | "payload-release" | "spacecraft-sep", stageIndex, t_sim, t_screen,
@@ -26,7 +39,7 @@
 // - Beyond LEO: a third of a circular parking orbit, then the departure burn, flown: the upper stage's own vacuum
 //   thrust and mass flow (engines.json), prograde, RK4 under Earth's gravity, until it has given the mission's
 //   departure delta-v (missions.json: mission - leo; for lunar-orbit, moon-transfer - leo, the rest being the
-//   insertion) or its propellant is gone ("propellant-depleted": burn time from the remaining delta-v at that mass
+//   insertion) or its propellant is gone ("depleted": burn time from the remaining delta-v at that mass
 //   flow). The orbit after cutoff comes from vis-viva (apogee, perigee, period).
 // - Earth missions end with the stage landing back on Earth (round 20): LEO releases the payload and times the
 //   de-orbit to touch down on the pad; Earth escape does the same, the spacecraft leaving on its own escape burn
@@ -63,7 +76,7 @@
 // (https://nssdc.gsfc.nasa.gov/planetary/factsheet/moonfact.html, .../marsfact.html, .../earthfact.html).
 import { simulateAscent, returnFromSpace } from "./ascent.js";
 import { arrivalTimeline, descentTimeline, lightingFor, atmosphereFor } from "./arrival.js";
-import { G0 } from "./physics.js";
+import { G0, evaluateBuild } from "./physics.js";
 
 export { lightingFor, atmosphereFor };
 
@@ -82,6 +95,9 @@ const ESCAPE_SHOW_KM = 1e5; // escape coast shown out to this distance (model ch
 const DEORBIT_PERIGEE_ALT = 50; // km: the de-orbit burn aims the perigee this low (model choice)
 const ENTRY_INTERFACE_ALT = 120; // km: where the Kepler coast hands over to the booster model (model choice)
 const MODELLED_DEORBIT = 0.1; // km/s: the retro assumed when no propellant is left (Head 1's brief, est.)
+const TUMBLE_Q_PA = 500; // Pa: an unpowered, uncontrolled vehicle starts to tumble once the air grips it (model choice)
+const TUMBLE_RAMP_S = 5; // s: its angle of attack grows from 0 to 90 deg over this (model choice)
+const QALPHA_LIMIT = 150e3; // Pa x deg: breakup when q x alpha passes this (model choice, est.; not a sourced limit)
 const DRONE_SHIP_KM = 600; // km down the launch track from the Cape: where a GTO stage's return is timed to (model choice)
 const PAYLOAD_OFF = [0.05, 1, 0]; // drop-away of a payload leaving a stage that comes home: forward off the nose
 const FLYBY_ALT = 500; // km: a lunar-orbit build short of insertion crosses the Moon's orbit this far off (model choice)
@@ -371,8 +387,19 @@ export function flightTimeline(build, catalog, opts = {}) {
   const ascent = opts.ascent ?? simulateAscent(build, catalog);
   const s = ascent.summary;
   if (s.outcome === "blocked") {
+    // not flown: the pad-abort beat and a still rocket on the pad (sampleAt holds the pad point)
     const line = `Pad abort · ${s.reason}`;
-    return { blocked: true, outcome: "blocked", reason: s.reason, endState: { type: "aborted", line, text: line }, est: true };
+    const twr = round(evaluateBuild(build, catalog).liftoffTWR ?? 0, 3);
+    const pad = mul(U_SITE, R.earth);
+    const still = {
+      t_sim: 0, t_screen: 0, body: "earth", segment: "pad", phase: "pad", stageIndex: 0, pos_km: r3(pad), pos_eci_km: r3(pad), vel_kms: [0, 0, 0], vel_eci_kms: [0, 0, 0], dest_eci_km: null,
+      speed_ms: 0, alt_km: 0, axis: r3(U_SITE), pitch_deg: 0, yaw_deg: 90, throttle: 0, burn: null, mass_kg: null, chute: 0, heat: 0, dust: 0, alpha_deg: 0, brokenUp: false,
+    };
+    return {
+      blocked: true, outcome: "blocked", reason: s.reason, kind: arrivalTimeline(build, catalog, s).body, endState: { type: "aborted", line, text: line, twr },
+      events: [{ type: "pad-abort", t_sim: 0, t_screen: 0, body: "earth", twr, reason: s.reason }], segments: [], stageDrops: [], bodies: { earth: { radius_km: R.earth, pos_km: [0, 0, 0] } },
+      sampleAt: (t) => ({ ...still, t_screen: Math.max(0, Number.isFinite(t) ? t : 0) }), screenToSim: () => 0, simToScreen: () => 0, totalScreen_s: 0, totalSim_s: 0, est: true,
+    };
   }
   const arrival = arrivalTimeline(build, catalog, s);
   const payload = catalog.payloads.find((p) => p.id === build.payloadId) ?? null;
@@ -388,6 +415,13 @@ export function flightTimeline(build, catalog, opts = {}) {
   const AS = ascent.samples;
   const AE = ascent.events;
   const inOrbit = s.remainingDeltaV_ms != null;
+  // failure beats of a flight that never reaches orbit (model choices, est.): after the last stage burns out, the
+  // unpowered vehicle has no attitude control; once the air grips it (q >= TUMBLE_Q_PA) it starts to tumble, its
+  // angle of attack growing to 90 deg over TUMBLE_RAMP_S, and it breaks up when q x alpha passes QALPHA_LIMIT
+  const burnout = !inOrbit ? AE.find((e) => e.type === "seco") : null;
+  const tumbleS = burnout ? AS.find((x) => x.t >= burnout.t && x.q_Pa >= TUMBLE_Q_PA) : null;
+  const alphaAt = (t) => (tumbleS && t >= tumbleS.t ? Math.min(90, (90 * (t - tumbleS.t)) / TUMBLE_RAMP_S) : 0);
+  const breakS = tumbleS ? AS.find((x) => x.t >= tumbleS.t && x.q_Pa * alphaAt(x.t) >= QALPHA_LIMIT) : null;
   const kind = arrival.body; // the mission's destination
 
   const pieces = []; // { name, body, t0, t1, fn(t) -> state, coast }
@@ -406,7 +440,7 @@ export function flightTimeline(build, catalog, opts = {}) {
     const [i, j, u] = bracket(AS, t, "t");
     const a = AS[i];
     const b = AS[j];
-    const alt = lerp(a.alt_m, b.alt_m, u) / 1000;
+    const alt = Math.max(0, lerp(a.alt_m, b.alt_m, u) / 1000); // held at the surface after an impact
     const th = lerp(a.downrange_m, b.downrange_m, u) / 1000 / R.earth;
     const gam = lerp(a.gamma_deg, b.gamma_deg, u) * rad;
     const v = lerp(a.vel_ms, b.vel_ms, u) / 1000;
@@ -420,6 +454,8 @@ export function flightTimeline(build, catalog, opts = {}) {
       stageIndex: a.stage,
       mass_kg: lerp(a.mass_kg, b.mass_kg, u),
       heat: lerp(a.heat ?? 0, b.heat ?? 0, u),
+      alpha_deg: alphaAt(t),
+      brokenUp: Boolean(breakS && t >= breakS.t),
       phase: "ascent",
     };
   };
@@ -433,7 +469,9 @@ export function flightTimeline(build, catalog, opts = {}) {
   win(0, (liftoff?.t ?? 0) + 3);
   for (const e of AE) {
     if (e.t > tEndAscent + 1e-6) continue;
-    ev(e.type, e.t, { body: "earth", stage: e.stage, ...(e.type === "impact" ? impact : {}) });
+    if (!liftoff && e.type === "impact") continue; // held down: a pad abort, not a crash
+    ev(e.type, e.t, { body: "earth", stage: e.stage, ...(e.type === "impact" ? { ...impact, v_ms: Math.round(lastA.vel_ms) } : {}) });
+    if (e.type === "impact") win(e.t - 2, e.t);
     if (e.type === "maxq") win(e.t - 0.5, e.t + 0.5);
     if (e.type === "fairing") {
       win(e.t - 0.2, e.t + 0.8);
@@ -456,8 +494,30 @@ export function flightTimeline(build, catalog, opts = {}) {
 
   if (!inOrbit) {
     // never in orbit: the ascent samples already run through the fall (re-entry heating in `heat`) to the ground
-    if (!liftoff) endState = end("aborted", "Pad abort · thrust never beat weight; the hold-downs stayed shut (est.)");
-    else {
+    const twr = round(evaluateBuild(build, catalog).liftoffTWR ?? 0, 3);
+    if (!liftoff) {
+      endState = end("aborted", "Pad abort · thrust never beat weight; the hold-downs stayed shut (est.)", { twr });
+      ev("pad-abort", tEndAscent, { body: "earth", twr });
+    } else {
+      if (burnout) ev("depleted", burnout.t, { body: "earth", stageIndex: burnout.stage, altitude_m: burnout.alt_m, v_ms: Math.round(burnout.vel_ms) });
+      if (tumbleS) {
+        ev("tumble-start", tumbleS.t, { body: "earth", stageIndex: tumbleS.stage, q_Pa: Math.round(tumbleS.q_Pa), altitude_m: Math.round(tumbleS.alt_m), v_ms: Math.round(tumbleS.vel_ms) });
+        win(tumbleS.t - 0.5, tumbleS.t + 1);
+      }
+      if (breakS) {
+        ev("breakup", breakS.t, {
+          body: "earth",
+          stageIndex: breakS.stage,
+          altitude_m: Math.round(breakS.alt_m),
+          v_ms: Math.round(breakS.vel_ms),
+          q_Pa: Math.round(breakS.q_Pa),
+          alpha_deg: round(alphaAt(breakS.t), 1),
+          qAlpha_Pa_deg: Math.round(breakS.q_Pa * alphaAt(breakS.t)),
+          limit_Pa_deg: QALPHA_LIMIT,
+          note: "breakup threshold on q x alpha is a model choice (est.), not a sourced vehicle limit",
+        });
+        win(breakS.t - 0.5, breakS.t + 1.5);
+      }
       const how = s.outcome === "shortfall" ? "Reached space but not orbital speed" : "Never reached orbital speed";
       endState = end("lost", `Lost · ${how}; fell back and came down ${impact.surface === "sea" ? `${num(impact.downrange_km)} km downrange` : "near the pad"} (est.)`, { impact });
     }
@@ -594,7 +654,8 @@ export function flightTimeline(build, catalog, opts = {}) {
         deorbit_ms: Math.round(plan.dvB * 1000),
         modelled: ["return timed to the recovery zone", ...(plan.modelled ? ["de-orbit delta-v"] : []), ...ret.modelled],
       };
-      endState = end("landed", "Landed back on Earth · est.", { body: "earth", missionLine, landing });
+      // the stage coming home is the round-20 story ending (real upper stages are not recovered): said so in words
+      endState = end("landed", "Stage brought home (story) · est.", { body: "earth", missionLine, landing, story: true });
       ev("end", tDown, { body: "earth" });
     }
 
@@ -656,7 +717,8 @@ export function flightTimeline(build, catalog, opts = {}) {
       const vCut = burn.at(-1).v;
       ev("departure-burn", tDep, { body: "earth", stage: upper, dv_ms: Math.round(burnDv * 1000), duration_s: round(burnT, 1) });
       win(tDep - 0.5, tDep + 0.5);
-      ev(depleted ? "propellant-depleted" : "departure-cutoff", tCut, { body: "earth", stage: upper, dv_ms: Math.round(burnDv * 1000) });
+      if (depleted) ev("depleted", tCut, { body: "earth", stage: upper, stageIndex: upper, altitude_m: Math.round((len(pCut) - R.earth) * 1000), v_ms: Math.round(len(vCut) * 1000), dv_ms: Math.round(burnDv * 1000) });
+      else ev("departure-cutoff", tCut, { body: "earth", stage: upper, dv_ms: Math.round(burnDv * 1000) });
       win(tCut - 0.5, tCut + 0.5);
       if (burnT >= 1) {
         pieces.push({
@@ -695,6 +757,8 @@ export function flightTimeline(build, catalog, opts = {}) {
       };
       const fail = (line, tEnd) => {
         shareKey = "failed";
+        // the beat where the failure shows: the burn running dry, or the Moon passing by
+        ev("transfer-failed", events.find((x) => x.type === "moon-flyby")?.t_sim ?? tCut, { body: "space", shortBy_ms: shortBy, apogee_km: orbitOut.apogee_km });
         endState = end("transfer-failed", line, { body: arrival.body, shortBy_ms: shortBy, ...orbitOut });
         ev("end", tEnd, { body: "space" });
       };
@@ -990,6 +1054,8 @@ export function flightTimeline(build, catalog, opts = {}) {
       mass_kg: st.mass_kg == null ? null : Math.round(st.mass_kg),
       chute: round(st.chute ?? 0, 3),
       heat: round(st.heat ?? 0, 3),
+      alpha_deg: round(st.alpha_deg ?? 0, 1), // a lost flight's tumble (angle of attack), else 0
+      brokenUp: Boolean(st.brokenUp), // after a lost flight's breakup
       dust: round(st.dust ?? 0, 3),
     };
   };
@@ -1017,6 +1083,7 @@ export function flightTimeline(build, catalog, opts = {}) {
     parking: inOrbit ? { perigee_km: round(s.perigee_km, 1), apogee_km: Number.isFinite(s.apogee_km) ? round(s.apogee_km, 1) : null, t_sim: round(tEndAscent, 1) } : null,
     peak: { alt_km: round(Math.max(...AS.map((x) => x.alt_m)) / 1000, 1), speed_ms: Math.round(Math.max(...AS.map((x) => x.vel_ms))) },
     mission: mission?.id ?? null,
+    payload: payload ? { id: payload.id, archetype: catalog.visuals?.payloads?.[payload.id]?.archetype ?? null } : null,
     _clock: clock, // for checks
     est: true,
   };
@@ -1043,7 +1110,7 @@ export function flightSummaryText(f) {
   const p = f.parking;
   if (p) out.push(est(`Reached a ${num(p.perigee_km)} × ${p.apogee_km == null ? "escape" : num(p.apogee_km)} km parking orbit at ${tPlus(p.t_sim)}`));
   const dep = at("departure-burn");
-  const dry = at("propellant-depleted");
+  const dry = at("depleted");
   const apo = at("apogee");
   const days = (name) => {
     const g = f.segments.find((x) => x.name === name);
@@ -1078,9 +1145,8 @@ export function flightSummaryText(f) {
     if (f.mission === "gto") out.push(est(`The departure burn added ${num(dep.dv_ms)} m/s; apogee ${num(apo.apogee_km)} km`));
     else if (f.mission === "earth-escape") out.push(est(`The spacecraft left on its own ${num(at("spacecraft-departure").dv_ms)} m/s escape burn`));
     else if (at("payload-release")) out.push(est(`The payload was released at ${tPlus(at("payload-release").t_sim)}`));
-    const where = L.site === "pad" ? "back on the pad" : `on the drone ship ${num(L.downrange_km)} km downrange`;
-    out.push(est(`The stage returned and landed ${where} at ${L.touchdown_ms.toFixed(1)} m/s`));
-    return { headline: `${mission} reached · landed ${L.site === "pad" ? "on the pad" : "on the drone ship"}`, sentences: out };
+    out.push(`In our story ending the stage de-orbits and lands on ${L.site === "pad" ? "the pad" : "the drone ship"} (est.); real upper stages are not recovered.`);
+    return { headline: `${mission} reached · stage brought home (story)`, sentences: out };
   }
   // Moon / Mars
   const coast = days("transfer");
@@ -1091,8 +1157,11 @@ export function flightSummaryText(f) {
   }
   const td = at("touchdown");
   const chute = at("chute-open");
-  out.push(est(f.kind === "mars" && chute ? `It came through entry, opened its parachute at ${num(chute.vel_ms)} m/s and touched down at ${num(td.vel_ms)} m/s` : `It descended from a ${num(LUNAR_ORBIT_ALT)} km orbit and touched down at ${num(td.vel_ms)} m/s`));
-  return { headline: `Landed on ${BODY_NAME[f.kind]}`, sentences: out };
+  // name the vehicle that lands: the rocket's job ended at injection; the lander lands on its own engine
+  const lm = f.payload?.id === "apollo-csm-lm";
+  const who = lm ? "The LM" : "The lander";
+  out.push(est(f.kind === "mars" && chute ? `${who} came through entry, opened its parachute at ${num(chute.vel_ms)} m/s and touched down at ${num(td.vel_ms)} m/s` : `${who} descended from a ${num(LUNAR_ORBIT_ALT)} km orbit and touched down at ${num(td.vel_ms)} m/s`));
+  return { headline: lm ? `LM landed on ${BODY_NAME[f.kind]}` : `Lander touched down on ${BODY_NAME[f.kind]}`, sentences: out };
 }
 
 // A part's 2 s drop-away at its detach time. Body frame: +y = the vehicle's nose axis, +x = the vehicle's right

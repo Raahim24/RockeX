@@ -17,7 +17,7 @@ import { createSilhouette } from "./silhouette.js";
 import { createLaunchComplex } from "./complex.js";
 import { animate, spring } from "animejs";
 import { SCALE, buildManifest, sceneBounds } from "./layout.js";
-import { createMaterials, createPart, createPad, createStars, setShellOpacity, setPropLook, LOOK } from "./parts.js";
+import { createMaterials, createPart, createPad, createStars, setShellOpacity, setPropLook, setDetailLevel, LOOK } from "./parts.js";
 import { createChoreographer } from "./choreo.js";
 import { createOptionShelf } from "./optionShelf.js";
 import { createSfx } from "./fx/sfx.js";
@@ -26,9 +26,12 @@ import { createCard } from "./ui/card.js";
 import { createScrub } from "./ui/scrub.js";
 import { ensureShell } from "./ui/shell.js";
 import { createLanding } from "./ui/landing.js";
+import { mountRange, narrationFor } from "./ui/range.js";
 import { createGroundMap } from "./fx/launchfx.js";
 import { createWorld } from "./world.js";
-import { flightTimeline } from "./flight.js";
+import { flightTimeline, flightSummaryText } from "./flight.js";
+import { assessLaunch, effectsForFlight, CALM_CONDITIONS } from "./hazards.js";
+import { createLightning, createAurora } from "./fx/launchfx.js";
 import * as f from "./ui/format.js";
 
 const query = new URLSearchParams(location.search);
@@ -232,6 +235,8 @@ const sfx = createSfx();
 const world = createWorld({ renderer });
 const BG = scene.background;
 world.clearColor.copy(BG); // what shows behind the builder while the far layer is off
+const aurora = createAurora({});
+world.attach("earth", aurora); // its glow follows the day's simulated space weather (hazards.js stormGlow)
 const PAD_KM = new THREE.Vector3(0, world.bodies.earth.radius_km, 0);
 const viewerKm = new THREE.Vector3();
 const choreo = createChoreographer({ parts, scene, root, camera, controls, sfx, onChange: syncUi, scale: SCALE, bounds: current.bounds, makePart, world });
@@ -391,6 +396,8 @@ createScrub({
 
 // ---------- UI ----------
 const { btnRockets, rocketsEl, btnBuildAll, btnExplode, btnReset, hudText } = shell;
+// The range line (UI 5's range.js): a persistent "Range: GO · …" button in the HUD with a factors popover.
+const rangeUi = mountRange({ host: shell.hud, onOpen: () => selector.clear() });
 
 // Build all becomes Launch once the stack is complete.
 btnBuildAll.addEventListener("click", () => (isComplete() ? launch() : choreo.buildAll()));
@@ -398,8 +405,21 @@ btnBuildAll.addEventListener("click", () => (isComplete() ? launch() : choreo.bu
 // Rockets: the presets as an in-place list above the bar. One line each: name, stages, height est.,
 // payload → mission (all from the records and the layout). Choosing one loads it (it appears built).
 // Compare mode (key C): the closest real rocket (GCAT twin) first, then the other presets; choosing one shows
-// it beside the current rocket at true scale.
+// it beside the current rocket at true scale. Touch screens have no C key: the list's last row opens it there.
 let rocketsMode = "switch";
+// A preset's list line (stages, height est., payload → mission): fixed per preset, worked out once.
+const presetMetaMemo = new Map();
+function presetMeta(id) {
+  if (!presetMetaMemo.has(id)) {
+    const b = presetToBuild(getPreset(id));
+    const height = sceneBounds(buildManifest(b, catalog)).height_m;
+    const payload = catalog.payloads.find((x) => x.id === b.payloadId);
+    const mission = catalog.missions.find((x) => x.id === b.missionId);
+    const n = b.stages.length;
+    presetMetaMemo.set(id, `${n} stage${n === 1 ? "" : "s"} · ${f.m(height)} est. · ${payload?.name ?? b.payloadId} → ${mission?.name ?? b.missionId}`);
+  }
+  return presetMetaMemo.get(id);
+}
 function rocketsHtml(mode = "switch") {
   const rows = [];
   const rec = mode === "compare" ? twinRecord() : null;
@@ -411,15 +431,14 @@ function rocketsHtml(mode = "switch") {
   presetIds.forEach((id, i) => {
     if (mode === "compare" && i === presetIndex && !current.modified) return; // not itself
     const p = getPreset(id);
-    const b = presetToBuild(p);
-    const height = sceneBounds(buildManifest(b, catalog)).height_m;
-    const payload = catalog.payloads.find((x) => x.id === b.payloadId);
-    const mission = catalog.missions.find((x) => x.id === b.missionId);
-    const n = b.stages.length;
-    const meta = `${n} stage${n === 1 ? "" : "s"} · ${f.m(height)} est. · ${payload?.name ?? b.payloadId} → ${mission?.name ?? b.missionId}`;
+    const meta = presetMeta(id);
     const cur = mode === "switch" && i === presetIndex && !current.modified;
     rows.push(`<li><button type="button" class="opt" data-i="${i}"${cur ? ' aria-current="true"' : ""}><span class="opt-name">${f.esc(p.name)}</span><span class="opt-meta" title="${f.esc(meta)}">${f.esc(meta)}</span></button></li>`);
   });
+  if (mode === "switch" && matchMedia("(pointer: coarse)").matches && isComplete() && !choreo.state.launch) {
+    const [name, meta] = twin || rival ? ["Clear comparison", "Back to this rocket alone"] : ["Compare…", "Beside the closest real rocket or another preset"];
+    rows.push(`<li class="more"><button type="button" class="opt" data-compare="1"><span class="opt-name">${name}</span><span class="opt-meta">${meta}</span></button></li>`);
+  }
   return `<ul>${rows.join("")}</ul>`;
 }
 function setRocketsOpen(open, mode = "switch") {
@@ -429,7 +448,7 @@ function setRocketsOpen(open, mode = "switch") {
     rocketsMode = mode;
     rocketsEl.innerHTML = rocketsHtml(mode);
     rocketsEl.setAttribute("aria-label", mode === "compare" ? "Compare with" : "Pre-made rockets");
-  }
+  } else if (rocketsEl.contains(document.activeElement)) btnRockets.focus({ preventScroll: true }); // keyboard: back to its button
   rocketsEl.hidden = !open;
   btnRockets.setAttribute("aria-expanded", String(open));
   if (open && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -440,6 +459,11 @@ btnRockets.addEventListener("click", () => setRocketsOpen(rocketsEl.hidden));
 rocketsEl.addEventListener("click", (e) => {
   const opt = e.target.closest(".opt");
   if (!opt) return;
+  if (opt.dataset.compare) {
+    if (!twin && !rival) return setRocketsOpen(true, "compare");
+    setRocketsOpen(false);
+    return clearCompare();
+  }
   const mode = rocketsMode;
   setRocketsOpen(false);
   if (mode !== "compare") return switchPreset(Number(opt.dataset.i) - presetIndex);
@@ -492,7 +516,16 @@ function syncUi() {
   btnExplode.textContent = exploded ? "Assemble" : "Explode";
   btnExplode.classList.toggle("on", exploded);
   const launched = Boolean(choreo.state.launch);
-  if (built === parts.length && !launched) presimulate();
+  if (built < parts.length && !launched) rangeUi.update(null); // no complete stack, no range line
+  if (built === parts.length && !launched) {
+    presimulate();
+    if (range.key !== buildKey(current.build) || !range.a) {
+      assessRange();
+      range.showUntil = performance.now() + 4000;
+      clearTimeout(syncUi.rangeTimer);
+      syncUi.rangeTimer = setTimeout(() => syncUi(), 4100); // the line goes after 4 s
+    }
+  }
   btnBuildAll.textContent = built === parts.length ? "Launch" : "Build all";
   btnBuildAll.disabled = busy > 0 || exploded || launched;
   btnExplode.disabled ||= launched;
@@ -670,6 +703,7 @@ addEventListener("assembly:command", (e) => {
 // Switching rockets ([ ], the Rockets list) shows the new one built (one snap); reset and the story start empty.
 function switchPreset(step, { built = true } = {}) {
   shelf.clear();
+  rangeUi.setPhase("pad");
   presetIndex = (presetIndex + step + presetIds.length) % presetIds.length;
   current = loadPreset(presetIds[presetIndex]);
   selector.clear();
@@ -691,6 +725,7 @@ function switchPreset(step, { built = true } = {}) {
 // Reset means reset: back to the empty pad and, if Options changed the build, the pristine preset.
 function reset() {
   shelf.clear();
+  rangeUi.setPhase("pad");
   if (current.modified) switchPreset(0, { built: false });
   else choreo.reset();
   setPropLook(pad.group, "painted"); // new parts arrive painted; the pad and anchors match them
@@ -762,6 +797,8 @@ function endingOutcome(a) {
   return `<strong class="go">In ${f.esc(name)}</strong> · est.`;
 }
 let lastSim = null;
+let lastFlight = null; // the flight.js timeline of the last launch (its summary goes on the card)
+let rangeFlight = false; // the range line switched to its in-flight form
 function onTelemetry(tel) {
   // The planet ending (arrival.js): a short label per leg, then one outcome line (est. by construction).
   if (tel.booster === true) {
@@ -779,14 +816,22 @@ function onTelemetry(tel) {
     ].join(" · ");
     return;
   }
+  if (tel.countdown == null && !rangeFlight) {
+    rangeFlight = true;
+    rangeUi.setPhase("flight");
+  }
   if (tel.endState) {
+    rangeUi.setPhase("result");
     // flight.js's end state (rounds 16–17): its sentence, green when it got there, warm red when it did not.
+    // UI 2's flightSummaryText: the short headline in the HUD, its sentences on the result card and for Grok.
     const st = tel.endState;
     const ok = ["landed", "in-orbit-of", "orbit", "in-orbit", "escape"].includes(st.type);
-    const line = st.line ?? st.text ?? "";
-    const html = (st.missionLine ? `${f.esc(st.missionLine)} · ` : "") + `<strong class="${ok ? "go" : "nogo"}">${f.esc(line)}</strong>`;
+    const sum = lastFlight ? flightSummaryText(lastFlight) : null;
+    const headline = sum?.headline ?? st.line ?? st.text ?? "";
+    const html = `<strong class="${ok ? "go" : "nogo"}">${f.esc(headline)}</strong> · est.`;
     telemetry.final = html;
-    report("launch", html);
+    telemetry.sentences = [...(sum?.sentences ?? []), ...[].concat(range.a ? narrationFor(range.a) ?? [] : [])];
+    report("launch", [headline, ...telemetry.sentences].join(" "));
     hudText.innerHTML = html;
     return;
   }
@@ -825,12 +870,58 @@ function presimulate() {
   idle(() => {
     simCache.pending = false;
     if (isComplete() && !choreo.state.launch) simFor(current.build);
+    idle(() => {
+      if (!isComplete() || choreo.state.launch) return;
+      twinRecord(); // Compare's first row
+      for (const id of presetIds) presetMeta(id); // and the others
+    });
   });
 }
+// Range and space weather (UI 5's hazards.js; simulated conditions, real rules): assessed when the stack is
+// complete and on Launch. Its HUD line ("Range: GO · winds 9 kt · Kp 3") shows beside the verdict for 4 s and
+// again on Launch; a SCRUB holds the launch (with a distant lightning strike when that is the cause) and a second
+// press of L tries the next window (attempt + 1). GO conditions drive the wind on the pad effects and plumes and
+// the aurora's glow. The story always gets calm conditions.
+const range = { key: null, attempt: 0, a: null, showUntil: 0, scrubbed: false, lightning: null };
+function assessRange({ calm = false } = {}) {
+  const key = buildKey(current.build);
+  if (range.key !== key) Object.assign(range, { key, attempt: 0, scrubbed: false });
+  range.a = calm
+    ? assessLaunch({ build: current.build, conditions: CALM_CONDITIONS })
+    : assessLaunch({ build: current.build, presetId: current.modified ? undefined : current.preset.id, attempt: range.attempt });
+  const fx = effectsForFlight(range.a);
+  aurora.setIntensity?.(fx.stormGlow ?? 0);
+  rangeUi.update(range.a);
+  return { a: range.a, fx };
+}
+function strikeLightning(where) {
+  if (!where) return;
+  if (!range.lightning) {
+    range.lightning = createLightning({ ground_u: -pad.layout.plinthH });
+    scene.add(range.lightning.object3d);
+  }
+  range.lightning.fire(where);
+}
+
 async function launch({ countdown, brief = false } = {}) {
   if (!isComplete() || choreo.state.busy || choreo.state.launch) return;
   setRocketsOpen(false);
   if (choreo.state.exploded && !(await choreo.assemble())) return;
+  // The range first: after a scrub, a second press tries the next window.
+  if (!brief && range.scrubbed && range.key === buildKey(current.build)) range.attempt++;
+  const { a, fx } = assessRange({ calm: brief });
+  range.showUntil = performance.now() + 4000;
+  if (!a.go) {
+    range.scrubbed = true;
+    const why = a.blockers?.[0]?.text ?? fx.scrubReason ?? "";
+    hudText.innerHTML = `<strong class="nogo">${f.esc(a.hud)}</strong>${why ? ` · ${f.esc(why)}` : ""} · L: next window`;
+    report("launch", hudText.innerHTML);
+    strikeLightning(fx.lightning);
+    clearTimeout(launch.abortTimer);
+    launch.abortTimer = setTimeout(() => syncUi(), 5000);
+    return;
+  }
+  range.scrubbed = false;
   const sim = simFor(current.build);
   // A verdict with a blocking warning never flies (ascent.js says "blocked"): a pad abort line for 3 s, no sim.
   if (sim.summary.outcome === "blocked" || !sim.samples.length) {
@@ -847,7 +938,11 @@ async function launch({ countdown, brief = false } = {}) {
   const arrival = arrivalTimeline(current.build, catalog, sim.summary);
   // One timeline for the whole flight (UI 2's flight.js); the story runs it shorter.
   const flight = brief ? null : flightTimeline(current.build, catalog, { ascent: sim }); // the story keeps its short ascent
-  choreo.launch(sim, { pad: pad.group, clamps: pad.clamps, anchors, onTelemetry, arrival, countdown, brief, timeline: !flight || flight.blocked ? null : flight });
+  lastFlight = flight && !flight.blocked ? flight : null;
+  rangeFlight = false;
+  telemetry.sentences = [];
+  rangeUi.setPhase("countdown");
+  choreo.launch(sim, { pad: pad.group, clamps: pad.clamps, anchors, onTelemetry, arrival, countdown, brief, timeline: !flight || flight.blocked ? null : flight, wind_ms: fx.wind_ms });
 }
 
 // ---------- twin compare (design B8/C10) ----------
@@ -855,9 +950,16 @@ async function launch({ countdown, brief = false } = {}) {
 // beside the stack (UI4's createSilhouette), with one HUD line: catalog.twinLine + "est." (the match uses our
 // build's estimated mass and thrust) + the GCAT attribution (CC BY 4.0). Key C toggles; a build change hides it.
 let twin = null;
+// The closest real rocket, memoised per build (the GCAT search is slow enough to stall opening Compare); it is
+// also worked out at idle once the stack is complete (presimulate).
+const twinMemo = { key: null, rec: null };
 function twinRecord() {
-  const list = catalogModule.closestRockets?.(current.build, 1);
-  return Array.isArray(list) ? list[0]?.rocket ?? null : null;
+  const key = buildKey(current.build);
+  if (twinMemo.key !== key) {
+    const list = catalogModule.closestRockets?.(current.build, 1);
+    Object.assign(twinMemo, { key, rec: Array.isArray(list) ? list[0]?.rocket ?? null : null });
+  }
+  return twinMemo.rec;
 }
 const gcatCredit = () => String(catalogModule.gcatSource ?? "").split("; ").pop();
 function showTwin() {
@@ -1058,6 +1160,10 @@ async function makeCardCanvas() {
   if (telemetry.final) {
     y += 32;
     text(plain(telemetry.final), 64, y, `600 19px ${MONO}`, "#ffb48a");
+    for (const line of telemetry.sentences ?? []) {
+      y += 26;
+      text(line, 64, y, `450 15px ${FONT}`, "#a9adb8");
+    }
   }
   // Stages, payload, mission: straight from the records.
   y += 64;
@@ -1204,6 +1310,7 @@ function skipNow() {
     return showStoryEnd();
   }
   const what = choreo.skip();
+  if (what === "pad") rangeUi.setPhase("pad"); // a held flight back on the pad
   if (what === "settled" && swapping) {
     swapping = false;
     shown = null;
@@ -1250,12 +1357,14 @@ addEventListener("keydown", (e) => {
   // After a launch the final frame holds (HUD outcome line) until R, Esc or a double-click.
   if (e.key === "Escape" && choreo.state.launch === "done" && !choreo.state.ending) {
     choreo.skip();
+    rangeUi.setPhase("pad");
     return syncUi();
   }
   const k = e.key.toLowerCase();
   const byKey = parts.find((p) => p.key === k);
   if (byKey) return onPartKey(byKey);
   if (k === " ") {
+    if (document.activeElement?.matches?.("button:focus-visible")) return; // Tab-focused: Space presses it
     e.preventDefault();
     if (document.activeElement?.tagName === "BUTTON") document.activeElement.blur();
     choreo.toggleExplode();
@@ -1346,7 +1455,27 @@ const animating = () => {
   const s = choreo.state;
   return s.busy > 0 || s.auto || s.scrubbing || Boolean(s.launch) || landingOn();
 };
+// Past the luxuries, the guard steps the parts' detail down (UI4's setDetailLevel: 2 all, 1 no instanced
+// rivets/bolts and fewer lines, 0 also the smallest detail pieces) when the frame time stays over 22 ms with DoF
+// and GTAO already off; ?lite=1 starts at 0.
+let detail = lite ? 0 : 2;
+setDetailLevel(detail);
+const detailGuard = { sum: 0, n: 0, skip: 1 };
+function detailBudget(rawDt) {
+  if (detail === 0 || landingOn() || gtao?.enabled || dof?.enabled) return void (detailGuard.sum = detailGuard.n = 0);
+  detailGuard.sum += rawDt;
+  detailGuard.n++;
+  if (detailGuard.sum < 3) return;
+  const avg = detailGuard.sum / detailGuard.n;
+  detailGuard.sum = detailGuard.n = 0;
+  if (detailGuard.skip-- > 0) return; // the first window after a change settles
+  if (avg > 0.022) {
+    setDetailLevel(--detail);
+    detailGuard.skip = 1;
+  }
+}
 function luxuryBudget(rawDt) {
+  detailBudget(rawDt);
   if (!gtao) return;
   gtao.enabled = perf.gtaoOk && !animating();
   if (!gtao.enabled && !dof?.enabled) {
@@ -1412,6 +1541,8 @@ function frame() {
   if (!landingOn()) controls.update(); // its polar/distance clamps would bend the dive's path
   choreo.postUpdate();
   shelf.update(dt);
+  range.lightning?.update(dt);
+  aurora.update?.(dt);
   // Depth cue: fog (background colour) in a band around the orbit target, sized by what is framed, so the far
   // side of the rocket and its far lines fade toward black while the near silhouette stays bright.
   // The band is wide at home and while building (the pad stays visible) and tight on a focus or exploded view.

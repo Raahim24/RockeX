@@ -192,7 +192,7 @@ kbd {
   padding: 0 5px;
   border: 1px solid var(--hairline);
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 15px;
   color: var(--text-2);
   white-space: nowrap;
@@ -372,10 +372,13 @@ kbd {
   transition: background 140ms;
 }
 
-:is(.detail, .rockets) .opt:hover:not(:disabled),
-:is(.detail, .rockets) .opt:focus-visible {
+:is(.detail, .rockets) .opt:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.06);
-  outline: none;
+}
+
+:is(.detail, .rockets) .opt:focus-visible {
+  outline: 2px solid var(--holo);
+  outline-offset: -2px;
 }
 
 :is(.detail, .rockets) .opt[aria-current="true"] {
@@ -444,6 +447,12 @@ kbd {
   text-overflow: ellipsis;
 }
 
+.rockets li.more {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--hairline);
+}
+
 /* Landing page: a big title and one button over the planet; the rest of the UI waits (body.landing, until the
    dive passes 0.98). */
 .brand,
@@ -458,6 +467,13 @@ body.landing .bar,
 body.landing .detail {
   opacity: 0;
   pointer-events: none;
+}
+
+body.landing .bar {
+  visibility: hidden;
+  transition:
+    opacity 600ms ease,
+    visibility 0s linear 600ms;
 }
 
 /* The atmosphere's glow during the landing dive (opacity from ui/landing.js); over the canvas, under the UI. */
@@ -589,6 +605,7 @@ body.landing .detail {
   font-size: 12px;
   color: var(--text-2);
   text-align: right;
+  max-width: calc(100vw - 560px); /* wraps before the key legend under the title */
   pointer-events: none;
   user-select: none;
 }
@@ -606,6 +623,16 @@ body.landing .detail {
   color: var(--nogo);
 }
 
+@media (max-width: 1100px) {
+  .hud {
+    top: 124px;
+    left: 32px;
+    right: 32px;
+    max-width: none;
+    text-align: left;
+  }
+}
+
 @media (max-width: 760px) {
   .brand {
     top: 16px;
@@ -620,7 +647,14 @@ body.landing .detail {
     display: none;
   }
   .hud {
-    display: none;
+    top: 44px;
+    left: 16px;
+    right: 16px;
+    font-size: 11px;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
   }
   .detail {
     left: 12px;
@@ -649,6 +683,18 @@ body.landing .detail {
   .rockets {
     width: auto;
     right: 0;
+  }
+}
+
+/* Touch: number buttons and source links get a 24 px tall hit box; the negative margin keeps the rows' layout. */
+@media (pointer: coarse) {
+  .detail .num {
+    padding: 4px 0;
+    margin: -4px 0;
+  }
+  .detail .src a {
+    padding: 6px 0;
+    margin: -6px 0;
   }
 }
 

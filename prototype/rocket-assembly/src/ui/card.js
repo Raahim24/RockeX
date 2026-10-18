@@ -89,7 +89,7 @@ function stageFooter(P, d, { withTwr }) {
       : "burn –",
   );
   if (withTwr && Number.isFinite(d.twr)) {
-    bits.push(`TWR ${P.calc(f.twr(d.twr), `TWR = F_SL / (m0 · g0) = ${f.kN(d.thrust_kN)} / (${f.t(d.startMass_kg)} · ${G0})`, "liftoff; the app needs ≥ 1.2")} ${DERIVED}`);
+    bits.push(`TWR ${P.calc(f.twr(d.twr), `TWR = F_SL / (m0 · g0) = ${f.kN(d.thrust_kN)} / (${f.t(d.startMass_kg)} · ${G0})`, `liftoff; the app needs ≥ ${RULES?.TWR_OK ?? 1.15}`)} ${DERIVED}`);
   }
   const warn = (d.warnings ?? []).map((w) => `<li>${f.esc(w)}</li>`).join("");
   return `<div class="stage"><p>${bits.map(nw).join(" · ")}</p>${warn ? `<ul class="warn">${warn}</ul>` : ""}</div>`;
@@ -115,13 +115,14 @@ function engineCard(part, ctx, P) {
   if (d && Number.isFinite(d.fitMaxEngines)) {
     const over = n > d.fitMaxEngines;
     const D = d.tank?.diameter_m;
-    const formula = `fit = ⌊0.6 · (D_tank / d_engine)²⌋, 1 to 9${D ? ` = ⌊0.6 · (${f.len(D)} / ${f.len(e.diameter_m)})²⌋` : ""}`;
+    const k = RULES?.ENGINE_FIT_FACTOR ?? 0.62;
+    const formula = `fit = ⌊${k} · (D_tank / d_engine)²⌋, 1 to 9${D ? ` = ⌊${k} · (${f.len(D)} / ${f.len(e.diameter_m)})²⌋` : ""}`;
     const num = P.calc(String(d.fitMaxEngines), formula, "the team app's packing rule");
-    rows.push(row("Fit rule", over ? `<span class="bad">${num} fit (real vehicle flew ${n})</span>` : `up to ${num} on this tank`, '<span class="tag">app rule</span>'));
+    rows.push(row("Fit rule", over ? `<span class="bad">${num} fit (${ctx.countSource ? "real vehicle flew" : "this build has"} ${n})</span>` : `up to ${num} on this tank`, '<span class="tag">app rule</span>'));
   }
   const countHtml = ctx.countSource
     ? P.rec(String(n), ["presets", ctx.presetId, "stages", part.stageIndex, "engineCount"], ctx.countSource)
-    : P.calc(String(n), "count kept from the preset, clamped by the app's fit rule for this engine/tank pair");
+    : P.calc(String(n), "count kept from the preset; more engines than the fit rule allows blocks the build (app rule)");
   const sources = [sourceLink(e.source), sourceLink(ctx.countSource, "count"), len ? sourceLink(len.source, "length") : ""];
   return {
     eyebrow: `Stage ${part.stageIndex + 1} · ${KIND_LABEL.engines}`,

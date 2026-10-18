@@ -3,6 +3,8 @@
 //     -> { go, hud, lines, conditions, blockers, cautions, window, seedKey, est }
 //   effectsForFlight(assessmentOrConditions) -> { wind_ms, windDrift_ms, stormGlow, scrub, scrubReason, lightning }
 //   simulateConditions(seedKey, build?) -> conditions; CALM_CONDITIONS; planeChangeDeltaV_ms(v_ms, di_deg)
+//   factorsFor(assessment) -> [{ id, name, value, limit, verdict: "go" | "watch" | "no-go", source, rule, est }]
+//     (one row per factor, for the popover in src/ui/range.js)
 // Every threshold comes from src/data/hazards.json with its URL and a verbatim quote; each blocker/caution carries
 // that rule's quote (rule) and URL (source). Nothing here is a real forecast.
 //
@@ -279,6 +281,48 @@ function evaluate(c) {
   return { blockers, cautions };
 }
 
+// One row per factor, for the range popover (src/ui/range.js): what was simulated, the limit, the verdict ("no-go"
+// = a blocker, "watch" = a caution, "go") and the rule's source (the blocker's or caution's own when there is one).
+// Values are plain strings; est marks a model choice in the value or the limit.
+export function factorsFor(a) {
+  const c = a.conditions;
+  const match = (ids) => {
+    const b = a.blockers.find((x) => ids.includes(x.id));
+    if (b) return { verdict: "no-go", item: b };
+    const w = a.cautions.find((x) => ids.includes(x.id));
+    return w ? { verdict: "watch", item: w } : { verdict: "go", item: null };
+  };
+  const row = (id, name, value, limit, ids, rule, est = false) => {
+    const m = match(ids);
+    return { id, name, value, limit, verdict: m.verdict, source: m.item?.source ?? rule.url, rule: m.item?.rule ?? rule.quote, est: est || Boolean(m.item?.est) };
+  };
+  const wind = W[c.windRule] ?? W["surface-wind-falcon-9"];
+  const msOf = (kt) => round(kt * MS_PER_KT);
+  const L = W.lightning;
+  const cloudRule = W[c.cloudRule === "thick-layer" ? "thick-cloud-layer" : c.cloudRule] ?? W.cumulus;
+  const cloudValue = {
+    clear: "clear",
+    cumulus: `cumulus ${c.cloud_nm} nm`,
+    "anvil-attached": `attached anvil ${c.cloud_nm} nm`,
+    "anvil-detached": `detached anvil ${c.cloud_nm} nm`,
+    "thick-layer": "thick freezing layer on the path",
+  }[c.cloudRule] ?? c.cloudRule;
+  const g = c.gScale;
+  const pc = PC[c.debrisObject] ?? PC.debris;
+  const noaa = { url: SW.url, quote: SW.cycleQuote };
+  return [
+    row("wind", "Pad wind", `${Math.round(c.windSurface_kt)} kt (${msOf(c.windSurface_kt)} m/s)`, `${c.windLimit_kt} kt (${msOf(c.windLimit_kt)} m/s), ${c.windRuleName ?? "Falcon 9"} rule${c.windRuleStandIn ? ", est." : ""}`, ["surface-wind"], wind, c.windRuleStandIn),
+    row("shear", "Upper-level wind shear", c.windShear, "high = control risk (est.)", ["wind-shear"], W["upper-wind-shear"], true),
+    row("lightning", "Lightning", c.lightning_nm == null ? `none in the last ${L.threshold.window_min} min` : `${c.lightning_nm} nm`, `none within ${L.threshold.value} nm in ${L.threshold.window_min} min`, ["lightning"], L),
+    row("field", "Electric field", `${kV(c.fieldMill_Vm)} kV/m`, `≤ ${kV(W["field-mill"].threshold.value)} kV/m`, ["field-mill"], W["field-mill"]),
+    row("clouds", "Clouds", cloudValue, `none within ${W.cumulus.threshold.value} nm; no thick freezing layer on the path`, ["cloud"], cloudRule),
+    row("geomagnetic", "Geomagnetic storm", `Kp ${c.kp}${g >= 1 ? ` · G${g}` : ""}`, `hold at G${G_HOLD} (Kp ${SW.geomagnetic.levels[G_HOLD - 1].kp}), est.`, ["geomagnetic", "orbit-drag"], noaa, true),
+    row("radiation", "Solar radiation storm", c.sScale ? `S${c.sScale}` : "none", `hold at S${S_HOLD}, est.`, ["radiation"], noaa, true),
+    row("radio", "Radio blackout", c.rScale ? `R${c.rScale}` : "none", `caution from R${R_CAUTION}; no hold`, ["radio-blackout"], noaa),
+    row("debris", "Collision risk", `Pc ${sci(c.debrisPc)} · ${pc.label}`, `≤ ${sci(pc.threshold.value)} (FAA); watched above ${sci(PC.any.threshold.value)} (NASA)`, ["debris"], pc),
+  ];
+}
+
 function windowFor(missionId) {
   const kinds = hazards.window.kinds;
   const k = kinds.find((w) => w.missions.includes(missionId)) ?? kinds.find((w) => w.id === "flexible");
@@ -293,8 +337,8 @@ export function assessLaunch({ build, verdict, seed, conditions, presetId, day, 
   const { blockers, cautions } = evaluate(c);
   const go = blockers.length === 0;
   const hud = go
-    ? `Range: GO · winds ${Math.round(c.windSurface_kt)} kt · Kp ${c.kp}`
-    : `Range: SCRUB · ${blockers[0].hud}${blockers.length > 1 ? ` +${blockers.length - 1}` : ""}`;
+    ? `Range: GO · winds ${Math.round(c.windSurface_kt)} kt · Kp ${c.kp} · est.`
+    : `Range: SCRUB · ${blockers[0].hud}${blockers.length > 1 ? ` +${blockers.length - 1}` : ""} · est.`; // simulated sky
   const win = windowFor(build?.missionId);
   const lines = [hud, ...blockers.map((b) => b.text), ...cautions.map((x) => x.text), win.line, "Simulated conditions · est."];
   return { go, hud, lines, conditions: c, blockers, cautions, window: win, seedKey, est: true };

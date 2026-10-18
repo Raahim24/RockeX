@@ -36,7 +36,7 @@
 // Scattering coefficients, cloud height, haze and colours are visual.
 import * as THREE from "three";
 import { atmosphereFor, lightingFor } from "./arrival.js";
-import { planetTexture, createTerrain, createOcean, skyAt as daySkyAt } from "./planet.js";
+import { planetTexture, createTerrain, createOcean, horizonDisc, skyAt as daySkyAt } from "./planet.js";
 import { createCloudLayer } from "./fx/launchfx.js";
 import { SCALE } from "./layout.js";
 
@@ -224,7 +224,9 @@ const bodyFragment = /* glsl */ `
         float g2 = uMieG * uMieG;
         float pM = 3.0 / (8.0 * PI) * ((1.0 - g2) * (1.0 + mu * mu)) / ((2.0 + g2) * pow(1.0 + g2 - 2.0 * uMieG * mu, 1.5));
         inscatter = uSunI * (sumR * uBetaR * pR + sumM * uBetaM * pM) * 12.0;
-        inscatter += uGlowColor * uGlow * (1.0 - exp(-dens * 0.08)); // night haze: thickest along the horizon
+        // night haze: thickest along the horizon, saturating to skyAt's haze colour over ~50 km of low air, so the
+        // far ground near the horizon meets the near layer's fog colour
+        inscatter += uGlowColor * uGlow * (1.0 - exp(-dens * 0.5));
         T = exp(-(uBetaR * od.x + uExtM * od.y));
       } else if (!ground) discard;
     } else if (!ground) {
@@ -251,7 +253,7 @@ function bodyLook(name) {
   const air = atmosphereFor(name);
   const H = air && !air.none ? air.scaleHeight_m / 1000 / KM_PER_UNIT : 0;
   if (name === "earth")
-    return { maps: ["earth_day", "earth_bump", "earth_night", "earth_clouds"], ocean: 1, relief: 0.8, atmo: { H, HM: 0.12, betaR: [0.058, 0.135, 0.331], betaM: [0.21, 0.21, 0.21], extM: [0.231, 0.231, 0.231], g: 0.76, top: 10 * H, glow: 1, glowColor: [0.004, 0.012, 0.05] } };
+    return { maps: ["earth_day", "earth_bump", "earth_night", "earth_clouds"], ocean: 1, relief: 0.8, atmo: { H, HM: 0.12, betaR: [0.058, 0.135, 0.331], betaM: [0.21, 0.21, 0.21], extM: [0.231, 0.231, 0.231], g: 0.76, top: 10 * H, glow: 1, glowColor: [0.008, 0.022, 0.07] } }; // glow = skyAt("earth", 0).haze
   if (name === "mars")
     // Mars: dust scatters red most but absorbs blue, so its extinction is roughly neutral (butterscotch sky)
     return { maps: ["mars_color", "mars_bump"], ocean: 0, relief: 1.2, atmo: { H, HM: H, betaR: [0.004, 0.007, 0.014], betaM: [0.36, 0.21, 0.09], extM: [0.2, 0.2, 0.2], g: 0.6, top: 8 * H, glow: 0, glowColor: [0, 0, 0] } };
@@ -774,10 +776,13 @@ export function createWorld({ renderer = null } = {}) {
     if (name === "earth") {
       if (kindIn ? kindIn === "ocean" : isOceanAt(f.lat, f.lon) === true) {
         kind = "ocean";
-        inner = createOcean({ size_u, sunDir: sunDir.clone().applyQuaternion(f.frame.clone().invert()) });
+        // out to the horizon and curving with the Earth, so no far-layer ground shows between it and the horizon
+        inner = createOcean({ size_u, radius_u: 120 * NEAR_U_PER_KM, planetR_u: RADIUS_KM.earth * NEAR_U_PER_KM, sunDir: sunDir.clone().applyQuaternion(f.frame.clone().invert()) });
       } else {
         kind = "ground";
-        const m = new THREE.Mesh(new THREE.CircleGeometry(size_u / 2, 64).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: tint, roughness: 0.95 }));
+        // a disc out to the horizon, curving with the Earth (like the ocean), fogged by the near layer far out
+        const m = new THREE.Mesh(horizonDisc(120 * NEAR_U_PER_KM, RADIUS_KM.earth * NEAR_U_PER_KM), new THREE.MeshStandardMaterial({ color: tint, roughness: 0.95 }));
+        m.frustumCulled = false;
         m.receiveShadow = true;
         m.name = "world-local-ground";
         const g = new THREE.Group();
