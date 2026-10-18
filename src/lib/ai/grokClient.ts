@@ -4,7 +4,9 @@
 const BASE_URL = "https://api.x.ai/v1";
 export const ADVISOR_MODEL = "grok-4.20-non-reasoning";
 export const IMAGE_MODEL = "grok-imagine-image-2.0";
-const VOICE = "eve";
+// Grok's voice for spoken lines and live talk (one setting, so they always match). Ara is xAI's default
+// conversational voice; GET /v1/tts/voices lists the other 27.
+const VOICE = "ara";
 const TRANSCRIBE_MODEL = "grok-voice-transcribe-2.0";
 
 export class GrokError extends Error {}

@@ -1,6 +1,6 @@
 // Owner: P3. Prompt builders and the rule-based fallback. Code computes every number; Grok only phrases.
 import { byId, type Catalog } from "@/lib/physics/catalog";
-import { evaluateBuild } from "@/lib/physics/feasibility";
+import { evaluateBuild, TWR_LOW_WARNING, TWR_OK } from "@/lib/physics/feasibility";
 import { applySuggestionToBuild } from "@/store/applySuggestion";
 import { DEMO_FIX } from "@/store/buildStore";
 import type { AdviseResponse, BuildState, Suggestion, Verdict } from "@/types";
@@ -77,9 +77,10 @@ export const rankCandidates = (build: BuildState, catalog: Catalog): Candidate[]
 
 /** Who Grok is, shared by the advisor and the agent. The audience is young people meeting rocket science for the first time. */
 export const GROK_PERSONA = [
-  "You are Grok, the flight engineer in a rocket-building game for young people who are new to space, and you build WITH them as a teammate: playful, hype, a bit chaotic and funny, like a favorite science YouTuber who roasts bad rockets but always roots for the builder.",
-  "It is a team effort and a conversation, not a lecture: say 'we' and 'let's', ask what they think or would try, react to their ideas, let them make the calls, and celebrate their reasoning. Be brief: one or two short sentences per turn (about 25 words), one idea at a time, then hand it back to them. Never read out lists of numbers; mention at most one number when it matters (the screen shows the rest).",
-  "Teach one real idea at a time in plain words a 13-year-old gets, and explain any term the first time you use it (delta-v is the rocket's speed budget; thrust-to-weight is whether the engines can lift the rocket off the pad). Make them want to try the next thing. Talk to them like a fellow engineer; never call them kid. Name the mission exactly as given; do not add destinations it does not have.",
+  "You are Grok, the flight engineer in a rocket-building game for young people who are new to space, and you build WITH them as a teammate. Sound like an excited friend at mission control, not a manual: warm, playful, a bit chaotic, genuinely thrilled by rockets, roasting bad rockets but always rooting for the builder.",
+  "Make it fun and keep them hooked: react like a person (ooh, okay okay, wait, no way), build a little suspense before a launch or a big reveal, celebrate wins loudly, and turn failures into a 'let's figure out why' moment. Now and then drop one real fact from the context that makes them go 'whoa', or set a tiny challenge ('bet we can do it with less fuel'). Vary how you start and end lines; never repeat the same catchphrase or question twice in a row.",
+  "It is a team effort and a conversation, not a lecture: say 'we' and 'let's', ask what they think or would try, ask them to guess what will happen, react to their ideas, let them make the calls, and celebrate their reasoning. Be brief: one or two short sentences per turn (about 25 words), one idea at a time, then hand it back to them. Never read out lists of numbers; mention at most one number when it matters (the screen shows the rest).",
+  "Teach one real idea at a time in plain words a 13-year-old gets, and explain any term the first time you use it (delta-v is the rocket's speed budget; thrust-to-weight is whether the engines can lift the rocket off the pad). Talk to them like a fellow engineer; never call them kid. Name the mission exactly as given; do not add destinations it does not have.",
   "Hard limits: the verdict and every number come from the app's physics code and are correct. Never calculate, estimate or invent a number; only quote numbers given to you. Facts about real rockets and parts come only from the context you are given. Roast the rocket, never the person; never call them dumb or bad. No slurs, no profanity, no jokes about crewed accidents or deaths.",
   "The only rule problems are the ones listed under Warnings in VERDICT; if Warnings is none, never claim a rule is broken. Stage 1 is the bottom stage; read each stage line carefully before naming its parts.",
 ].join(" ");
@@ -109,7 +110,7 @@ const stageLine = (build: BuildState, verdict: Verdict, catalog: Catalog, i: num
 const verdictLines = (v: Verdict): string[] => [
   `Feasible: ${v.feasible ? "yes" : "no"}`,
   `Delta-v: ${ms(v.totalDeltaV_ms)} of ${ms(v.requiredDeltaV_ms)} required, margin ${ms(v.marginDeltaV_ms)}${v.marginDeltaV_ms < 0 ? " (short)" : ""}`,
-  `Liftoff TWR: ${twr(v.liftoffTWR)} (needs 1.20)`,
+  `Liftoff TWR: ${twr(v.liftoffTWR)} (needs ${TWR_OK})`,
   `Total mass: ${tonnes(v.totalMass_kg)}`,
   `Warnings: ${v.warnings.length ? v.warnings.join("; ") : "none"}`,
 ];
@@ -161,7 +162,7 @@ export const advisorUserPrompt = (
 
 /** Message built by code alone. Used whenever Grok fails. Offers the top candidate only if it makes the build feasible. */
 export const fallbackAdvice = (verdict: Verdict, candidates: Candidate[] = [], catalog?: Catalog): AdviseResponse => {
-  const blocking = verdict.warnings.find((w) => w !== "liftoff TWR below 1.2");
+  const blocking = verdict.warnings.find((w) => w !== TWR_LOW_WARNING);
   const fix = candidates[0]?.verdict.feasible && catalog ? candidates[0] : undefined;
   let message: string;
   if (verdict.stages.length === 0) {
@@ -179,7 +180,7 @@ export const fallbackAdvice = (verdict: Verdict, candidates: Candidate[] = [], c
   } else if (blocking) {
     message = `This build can't fly yet: ${blocking}. Fix that first.`;
   } else if (!verdict.twrOk) {
-    message = `Liftoff TWR is ${twr(verdict.liftoffTWR)}, below the 1.2 needed. Add engines or lighten the bottom stage.`;
+    message = `Liftoff TWR is ${twr(verdict.liftoffTWR)}, below the ${TWR_OK} needed. Add engines or lighten the bottom stage.`;
   } else if (!verdict.deltaVOk) {
     message = `You are ${ms(-verdict.marginDeltaV_ms)} short of the ${ms(verdict.requiredDeltaV_ms)} this mission needs. Try a higher-efficiency upper stage or a bigger tank.`;
   } else {

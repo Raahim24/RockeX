@@ -4,6 +4,7 @@ import type { Catalog } from "@/lib/physics/catalog";
 import type { BuildState, Verdict } from "@/types";
 import { advisorContext } from "./context";
 import { advisorUserPrompt, GROK_PERSONA } from "./prompts";
+import type { AgentTurn } from "./schemas";
 
 const LIVE_RULES = [
   "SCREEN says what is actually built on the pad right now; trust it over everything else. If the pad is empty, the user has not chosen anything yet: do not present the starter blueprint as their rocket or their mission; ask what they want to do, and offer the starter blueprint only as an option. If it is half built, talk about the rocket as a plan you are building together. Never call it GO or NO-GO until the whole rocket is built.",
@@ -25,7 +26,13 @@ const idLines = (catalog: Catalog): string[] => [
   `MISSION IDS: ${catalog.missions.map((m) => `${m.id} (${m.name})`).join("; ")}`,
 ];
 
-export const realtimeInstructions = (build: BuildState, verdict: Verdict, catalog: Catalog, screen = ""): string =>
+export const realtimeInstructions = (
+  build: BuildState,
+  verdict: Verdict,
+  catalog: Catalog,
+  screen = "",
+  history: AgentTurn[] = [],
+): string =>
   [
     GROK_PERSONA,
     LIVE_RULES,
@@ -33,6 +40,9 @@ export const realtimeInstructions = (build: BuildState, verdict: Verdict, catalo
     "ROCKET PLAN (the full rocket once every part is placed; updated whenever it changes):",
     advisorUserPrompt(build, verdict, catalog, [], advisorContext(build, verdict, catalog, { allRules: true })),
     ...idLines(catalog),
+    ...(history.length
+      ? ["CONVERSATION SO FAR (this page; most recent last):", ...history.map((t) => `${t.role === "user" ? "User" : "Grok"}: ${t.text}`)]
+      : []),
   ].join("\n");
 
 /** Words the speech recognizer should expect: part, payload and mission names. */

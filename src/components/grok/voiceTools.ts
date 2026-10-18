@@ -4,7 +4,7 @@
 import { advisorCandidates, describeSuggestion } from "@/lib/ai/prompts";
 import { sanitizeSuggestion } from "@/lib/ai/schemas";
 import { byId, loadCatalog } from "@/lib/physics/catalog";
-import { evaluateBuild, maxEngineCount } from "@/lib/physics/feasibility";
+import { evaluateBuild, maxEngineCount, TWR_LOW_WARNING } from "@/lib/physics/feasibility";
 import { applySuggestionToBuild } from "@/store/applySuggestion";
 import { useBuildStore } from "@/store/buildStore";
 import type { BuildState, Suggestion, Verdict } from "@/types";
@@ -259,7 +259,7 @@ const ROLE: Record<string, string> = {
 };
 
 const kg = (v: number): string => `${Math.round(v).toLocaleString("en-US")} kg`;
-const blocking = (v: Verdict): string[] => v.warnings.filter((w) => w !== "liftoff TWR below 1.2");
+const blocking = (v: Verdict): string[] => v.warnings.filter((w) => w !== TWR_LOW_WARNING);
 
 export interface SlotOption {
   id: string;

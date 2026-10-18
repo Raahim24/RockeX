@@ -37,7 +37,7 @@ describe("odd-build sweep", () => {
       expect(v.totalMass_kg).toBeGreaterThan(0);
       if (v.feasible) {
         expect(v.deltaVOk && v.twrOk).toBe(true);
-        expect(v.liftoffTWR).toBeGreaterThanOrEqual(1.2);
+        expect(v.liftoffTWR).toBeGreaterThanOrEqual(1.15);
       }
       // A booster with sea-level thrust always gets a real closest rocket.
       if (boosterThrusts) expect(catalog.referenceRockets.some((r) => r.id === v.closestRocketId)).toBe(true);

@@ -442,7 +442,8 @@ function hudHtml() {
   const { preset, build, verdict, bounds } = current;
   const built = parts.filter((p) => p.built);
   const name = `<strong>${f.esc(preset.name)}</strong>${current.modified ? " (modified)" : ""}`;
-  if (built.length === 0) return `${name} · pad ready`;
+  // Nothing is built yet: the preset is only the plan (starter blueprint) the parts will come from.
+  if (built.length === 0) return `Empty pad · blueprint: ${name}`;
   if (built.length < parts.length) {
     const ids = (kind) => built.filter((p) => p.kind === kind).map((p) => p.stageIndex);
     const mass = stackMass_kg(build, catalog, { engines: ids("engines"), tanks: ids("tank"), payload: built.some((p) => p.kind === "payload") });

@@ -3,12 +3,15 @@
 // 24 kHz PCM16, Grok's voice streams back and plays as it arrives, the server hears when the user starts and
 // stops talking, and talking over Grok cuts it off. Tool calls run through voiceTools (checked by our code).
 
+import type { AgentTurn } from "@/lib/ai/schemas";
 import { useBuildStore } from "@/store/buildStore";
 import type { Verdict } from "@/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { runVoiceTool, VOICE_TOOLS } from "./voiceTools";
 
 const RATE = 24000;
+const MEMORY_TURNS = 20; // how much of the conversation a new session is given
+const VOICE_SPEED = 1.05; // a touch quicker than default: lively, not read out
 const IDLE_STOP_MS = 3 * 60_000; // a forgotten live session ends itself (it is billed per minute)
 // Tools that change the rocket itself; Grok narrates those changes, so the next "built" event is not repeated.
 const ROCKET_CHANGING_TOOLS = new Set(["swap_engine", "swap_tank", "set_engine_count", "add_stage", "remove_stage", "set_payload", "set_mission"]);
@@ -54,7 +57,12 @@ const loudness = (a: AnalyserNode, data: Uint8Array<ArrayBuffer>): number => {
   return Math.min(1, (data.reduce((s, v) => s + v, 0) / data.length / 255) * 3);
 };
 
-const currentRocket = (verdict: Verdict, screen: string) => ({ build: useBuildStore.getState().build, verdict, screen });
+const currentRocket = (verdict: Verdict, screen: string, history: AgentTurn[]) => ({
+  build: useBuildStore.getState().build,
+  verdict,
+  screen,
+  history: history.slice(-MEMORY_TURNS),
+});
 
 export interface LiveGrok {
   live: boolean;
@@ -76,7 +84,15 @@ export interface LiveGrok {
 }
 
 /** `onToolChange` runs after one of Grok's tool calls changed the rocket. */
-export function useLiveGrok(onToolChange?: () => void): LiveGrok {
+export interface LiveOptions {
+  /** Runs after one of Grok's tool calls changed the rocket. */
+  onToolChange?: () => void;
+  /** The conversation so far (until the page reloads); live turns are added to it, and new sessions continue it. */
+  memory: React.RefObject<AgentTurn[]>;
+  onTurn: (turn: AgentTurn) => void;
+}
+
+export function useLiveGrok({ onToolChange, memory, onTurn }: LiveOptions): LiveGrok {
   const [live, setLive] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [speaking, setSpeaking] = useState(false);
@@ -84,9 +100,11 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
   const [paused, setPaused] = useState(false);
   const level = useRef(0);
   const toolChangeRef = useRef(onToolChange);
+  const turnRef = useRef(onTurn);
   useEffect(() => {
     toolChangeRef.current = onToolChange;
-  }, [onToolChange]);
+    turnRef.current = onTurn;
+  }, [onToolChange, onTurn]);
   const s = useRef<{
     ws: WebSocket;
     ctx: AudioContext;
@@ -203,6 +221,16 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
         st.awaitingReply = false;
         st.lastActivity = Date.now();
         break;
+      case "conversation.item.input_audio_transcription.completed": {
+        const text = String(ev.transcript ?? "").trim();
+        if (text) turnRef.current({ role: "user", text: text.slice(0, 300) });
+        break;
+      }
+      case "response.output_audio_transcript.done": {
+        const text = String(ev.transcript ?? "").trim();
+        if (text) turnRef.current({ role: "grok", text: text.slice(0, 300) });
+        break;
+      }
       case "response.function_call_arguments.done": {
         const result = runVoiceTool(String(ev.name), String(ev.arguments ?? "{}"));
         if (result.ok && ROCKET_CHANGING_TOOLS.has(String(ev.name))) toolChangeRef.current?.();
@@ -233,7 +261,7 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
         const res = await fetch("/api/realtime", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...currentRocket(verdict, screen), token: true }),
+          body: JSON.stringify({ ...currentRocket(verdict, screen, memory.current ?? []), token: true }),
         });
         if (!res.ok) return false;
         const setup = (await res.json()) as Setup;
@@ -309,12 +337,16 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
             turn_detection: { type: "server_vad" },
             audio: {
               input: { format: { type: "audio/pcm", rate: RATE }, transcription: { language_hint: "en", keyterms: setup.keyterms } },
-              output: { format: { type: "audio/pcm", rate: RATE } },
+              output: { format: { type: "audio/pcm", rate: RATE }, speed: VOICE_SPEED },
             },
             tools: VOICE_TOOLS,
           },
         });
-        st.queue.push(`(Event: the user just tapped you to start talking. ${setup.welcome})`);
+        st.queue.push(
+          (memory.current ?? []).length > 0
+            ? "(Event: the user is back, continuing the same conversation (see CONVERSATION SO FAR). Do not greet them or introduce yourself again; pick up right where you left off in one short line.)"
+            : `(Event: the user just tapped you to start talking. ${setup.welcome})`,
+        );
         flush();
 
         const outData = new Uint8Array(outMeter.frequencyBinCount);
@@ -379,12 +411,12 @@ export function useLiveGrok(onToolChange?: () => void): LiveGrok {
     void fetch("/api/realtime", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(currentRocket(verdict, screen)),
+      body: JSON.stringify(currentRocket(verdict, screen, memory.current ?? [])),
     })
       .then((r) => (r.ok ? (r.json() as Promise<Setup>) : null))
       .then((setup) => setup && send({ type: "session.update", session: { instructions: setup.instructions } }))
       .catch(() => {});
-  }, []);
+  }, [memory]);
 
   return { live, connecting, speaking, hearing, level, start, stop, notify, refresh, paused, pause, resume };
 }

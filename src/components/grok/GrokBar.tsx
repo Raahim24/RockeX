@@ -25,7 +25,7 @@ const REACT_DELAY_MS = 1200; // let a burst of edits settle before Grok weighs i
 const REFRESH_DELAY_MS = 500;
 const GUIDE_SETTLE_MS = 1500; // a part that is followed by another this fast is part of a Build all
 const HOLD_MS = 350; // shorter than this is a tap, longer is a held question
-const HISTORY_TURNS = 8;
+const HISTORY_TURNS = 20; // the conversation memory kept until the page reloads (hold-to-ask sends the last 8)
 const catalog = loadCatalog();
 
 type Mode = "idle" | "live" | "paused" | "listening" | "thinking" | "speaking";
@@ -109,14 +109,21 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
   const speaker = useSpeaker();
   const recorder = useRecorder();
   const toolChanged = useRef(false); // the last change came from Grok's own tool call: don't narrate it twice
-  const live = useLiveGrok(useCallback(() => {
-    toolChanged.current = true;
-  }, []));
+  const history = useRef<AgentTurn[]>([]); // one conversation for live talk and hold-to-ask, until the page reloads
+  const remember = useCallback((turn: AgentTurn): void => {
+    history.current = [...history.current, turn].slice(-HISTORY_TURNS);
+  }, []);
+  const live = useLiveGrok({
+    onToolChange: useCallback(() => {
+      toolChanged.current = true;
+    }, []),
+    memory: history,
+    onTurn: remember,
+  });
   const [thinking, setThinking] = useState(false);
   const [caption, setCaption] = useState<string | null>(null);
   const [everLive, setEverLive] = useState(false);
   const latest = useRef("");
-  const history = useRef<AgentTurn[]>([]);
   const busy = useRef(false); // a spoken turn is in progress: reactions wait
   const pressedAt = useRef(0);
   const orbRef = useRef<HTMLButtonElement | null>(null);
@@ -154,9 +161,6 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
     speakingRef.current = speaker.speaking || recorder.listening;
   }, [speaker.speaking, recorder.listening]);
 
-  const remember = (turn: AgentTurn): void => {
-    history.current = [...history.current, turn].slice(-HISTORY_TURNS);
-  };
 
   // Say a line out loud (not live); if the voice fails, show it as a caption instead.
   const say = useCallback(
@@ -182,7 +186,7 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
     setThinking(false);
     remember({ role: "grok", text: advice.message });
     await say(advice.message, () => latest.current === askedFor);
-  }, [build, verdict, say]);
+  }, [build, verdict, say, remember]);
 
   // Live: keep Grok's picture of the rocket current.
   useEffect(() => {
@@ -260,7 +264,7 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
       setThinking(false);
       busy.current = false;
     }
-  }, [say]);
+  }, [say, remember]);
 
   useEffect(() => {
     const first = (e: Event): void => {
@@ -289,7 +293,7 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
         await say(DIDNT_CATCH, () => true);
         return;
       }
-      const answer = await postJson<AgentReply>("/api/agent", { question, history: history.current, screen, build, verdict });
+      const answer = await postJson<AgentReply>("/api/agent", { question, history: history.current.slice(-8), screen, build, verdict });
       setThinking(false);
       remember({ role: "user", text: question });
       if (!answer) {

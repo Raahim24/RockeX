@@ -24,7 +24,7 @@ describe("advisorContext", () => {
   });
 
   it("gives the advisor only the rules this verdict involves", () => {
-    expect(context).toContain("must be at least 1.2");
+    expect(context).toContain("must be at least 1.15");
     expect(context).not.toContain("Vacuum-only engines");
     expect(context).not.toContain("at least 3 %");
   });

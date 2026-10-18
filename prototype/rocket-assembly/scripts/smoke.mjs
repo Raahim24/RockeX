@@ -28,7 +28,7 @@
 //   card2     click a piece of the exploded stack, the card opens again
 //   assemble  click "Assemble", the button flips back to "Explode"
 //   next      "]" switches to the next preset (HUD shows its name, URL has ?build=<id>)
-//   reset     build part 1 with key "1", then "R": HUD is back to "pad ready"
+//   reset     build part 1 with key "1", then "R": HUD is back to "Empty pad"
 // Console warnings/errors, uncaught exceptions and failed loads are collected; exceptions and console errors
 // fail the run, warnings are only reported. A 404 for /favicon.ico is ignored (the page declares none).
 import { spawn } from "node:child_process";
@@ -641,9 +641,9 @@ await step(
     await press("r");
     const h = await until(async () => {
       const t = await hud();
-      return /pad ready/i.test(t) ? t : null;
+      return /empty pad/i.test(t) ? t : null;
     }, ms("reset"), 300);
-    if (!h) fail(`HUD never returned to "pad ready" within ${BUDGET.reset}s after R`);
+    if (!h) fail(`HUD never returned to "Empty pad" within ${BUDGET.reset}s after R`);
     await sleep(800);
     await shot("reset");
     return `HUD "${h}"`;

@@ -5,7 +5,11 @@ import { closestRocketId } from "./closest";
 import { ispForStage_s, rocketEquationDeltaV_ms, stageMass_kg } from "./deltav";
 import { liftoffThrust_kN, liftoffTWR } from "./twr";
 
-const TWR_OK = 1.2;
+// 1.15: real rockets lift off at about 1.15 to 1.2 (Saturn V 1.18, Atlas V 401 1.17 in our data); below this the
+// climb wastes too much propellant fighting gravity. Below 1.0 it cannot leave the pad at all.
+export const TWR_OK = 1.15;
+/** The only warning that does not block (the rocket can fly, just poorly); everything else is blocking. */
+export const TWR_LOW_WARNING = `liftoff TWR below ${TWR_OK}`;
 const TWR_BLOCKING = 1.0;
 // 3 %: lets every real stage in src/data pass (the lightest, Falcon 9 S2, is 3.23 %) and still stops fantasy tanks.
 const DRY_MASS_MIN_FRACTION = 0.03;
@@ -160,7 +164,7 @@ export const evaluateBuild = (build: BuildState, catalog: Catalog): Verdict => {
   if (twr < TWR_BLOCKING) {
     addBlocking("liftoff TWR below 1.0");
   } else if (!twrOk) {
-    warnings.push("liftoff TWR below 1.2");
+    warnings.push(TWR_LOW_WARNING);
   }
 
   const closestId = closestRocketId(totalMass_kg, thrust_kN, catalog.referenceRockets);

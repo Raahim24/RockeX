@@ -76,6 +76,16 @@ describe("/api/realtime", () => {
     expect(body.keyterms).toContain("RL10C-1");
   });
 
+  it("carries the conversation so far, so a new session continues it", async () => {
+    const req = new Request("http://test/api/realtime", {
+      method: "POST",
+      body: JSON.stringify({ build: DEMO_BUILD, verdict, history: [{ role: "user", text: "I want to go to Mars" }, { role: "grok", text: "Mars it is!" }] }),
+    });
+    const body = (await (await realtime(req)).json()) as { instructions: string };
+    expect(body.instructions).toContain("CONVERSATION SO FAR");
+    expect(body.instructions).toContain("User: I want to go to Mars");
+  });
+
   it("refuses to make tokens for other sites", async () => {
     vi.stubEnv("XAI_API_KEY", "test-key");
     expect((await realtime(post(true, "https://evil.example"))).status).toBe(403);

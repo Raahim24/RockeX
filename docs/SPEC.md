@@ -27,7 +27,7 @@ All units SI. Stage index 0 = bottom stage, first to fire. Code decides the verd
 | Rule | Effect |
 |---|---|
 | margin ≥ 0 | `deltaVOk` |
-| TWR ≥ 1.2 | `twrOk`; below 1.0 is a blocking warning |
+| TWR ≥ 1.15 (was 1.2; lowered 2026-10-18: real rockets lift off at about 1.15–1.2, e.g. Saturn V 1.18, Atlas V 401 1.17) | `twrOk`; below 1.0 is a blocking warning |
 | engine propellant = tank propellant | else blocking warning |
 | max engines = `floor(0.6 · (tankD/engineD)²)`, tune so 3.66 m tank + Merlin = 9 | `setEngineCount` clamps |
 | vacuum-only engines not on stage 0 | blocking warning, UI disallows |
