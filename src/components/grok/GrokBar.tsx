@@ -111,8 +111,8 @@ const ORB_CSS = `
 .grok-cloud-text { position: relative; display: block; max-width: 200px; padding: 4px 2px; text-wrap: balance; }
 .grok-cloud-trail { position: absolute; left: 50%; top: calc(100% + 2px); width: 0; height: 0; pointer-events: none; }
 .grok-cloud-trail::before, .grok-cloud-trail::after { content: ""; position: absolute; border-radius: 50%; background: #f6f7fb; border: 1.5px solid #b9bdc9; }
-.grok-cloud-trail::before { width: 15px; height: 15px; left: -7px; top: 0; }
-.grok-cloud-trail::after { width: 9px; height: 9px; left: -4px; top: 20px; }
+.grok-cloud-trail::before { width: 15px; height: 15px; left: calc(-7px + var(--lean, 0px) / 2); top: 0; }
+.grok-cloud-trail::after { width: 9px; height: 9px; left: calc(-4px + var(--lean, 0px)); top: 20px; }
 /* Grok stays off the landing page and bounces up into its corner once the builder shows (body.landing goes). */
 @keyframes grok-enter { 0% { opacity: 0; translate: 0 180px; scale: .4 } 50% { opacity: 1; translate: 0 -26px; scale: 1.06 }
   68% { translate: 0 8px; scale: .96 } 84% { translate: 0 -6px; scale: 1.02 } 100% { translate: 0 0; scale: 1 } }
@@ -151,14 +151,54 @@ function ThoughtCloud({ text }: { text: string }) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  // Centred over Grok's head, but never off screen and never over the option shelf (the column of part choices):
+  // then it sits just right of the shelf and its trail leans back toward Grok. Checked each frame because the
+  // shelf's labels follow the 3D scene.
+  const cloudRef = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState({ shift: 0, trail: 0, lean: 0 });
+  useEffect(() => {
+    let raf = 0;
+    let last = "";
+    const tick = (): void => {
+      raf = requestAnimationFrame(tick);
+      const cloud = cloudRef.current;
+      const dock = cloud?.parentElement;
+      if (!cloud || !dock) return;
+      const d = dock.getBoundingClientRect();
+      const cx = d.left + d.width / 2;
+      const w = cloud.offsetWidth;
+      let left = cx - w / 2;
+      let shelfLeft = Infinity;
+      let shelfRight = -Infinity;
+      document.querySelectorAll(".option-shelf > *").forEach((el) => {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) return;
+        shelfLeft = Math.min(shelfLeft, r.left);
+        shelfRight = Math.max(shelfRight, r.right);
+      });
+      if (shelfLeft < left + w && shelfRight > left) left = shelfRight + 16;
+      left = Math.max(8, Math.min(left, innerWidth - w - 8));
+      const trail = Math.min(Math.max(cx - left, 28), w - 28);
+      const next = { shift: Math.round(left - (cx - w / 2)), trail: Math.round(trail), lean: Math.round(Math.max(cx - left - trail, -48)) };
+      const key = `${next.shift},${next.trail},${next.lean}`;
+      if (key !== last) {
+        last = key;
+        setPlace(next);
+      }
+    };
+    tick();
+    return () => cancelAnimationFrame(raf);
+  }, []);
   const shown = text.length > CLOUD_CHARS ? `…${text.slice(-CLOUD_CHARS).replace(/^\S*\s/, "")}` : text;
   return (
     <div
       role="status"
       aria-live="polite"
+      ref={cloudRef}
       className="grok-cloud"
       style={{
         visibility: box.w ? "visible" : "hidden",
+        translate: `calc(-50% + ${place.shift}px) 0`,
         padding: `${box.h * SAFE.top}px ${box.w * SAFE.right}px ${box.h * SAFE.bottom}px ${box.w * SAFE.left}px`,
       }}
     >
@@ -169,7 +209,7 @@ function ThoughtCloud({ text }: { text: string }) {
       <span ref={textRef} className="grok-cloud-text" style={{ width: shown.length > 28 ? 200 : "max-content" }}>
         {shown}
       </span>
-      <span className="grok-cloud-trail" aria-hidden />
+      <span className="grok-cloud-trail" style={{ left: place.trail || "50%", ["--lean" as string]: `${place.lean}px` }} aria-hidden />
     </div>
   );
 }
@@ -399,23 +439,6 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
   };
 
   // Tap: start or end the live conversation. Hold (not live): ask one question.
-  // First-time help: a hint while options are on screen.
-  const [optionsHint, setOptionsHint] = useState(false);
-  useEffect(() => {
-    const command = (e: Event): void => {
-      const cmd = (e as CustomEvent<{ cmd: string }>).detail?.cmd;
-      if (cmd === "show_options") setOptionsHint(true);
-      if (cmd === "hide_options" || cmd === "reset") setOptionsHint(false);
-    };
-    addEventListener("assembly:command", command);
-    return () => removeEventListener("assembly:command", command);
-  }, []);
-  const placedNow = progress.filter((p) => p.built).length;
-  const [hintFor, setHintFor] = useState(placedNow);
-  if (hintFor !== placedNow) {
-    setHintFor(placedNow); // a part landed: its options (and the hint) are gone
-    setOptionsHint(false);
-  }
 
   const toggleLive = async (): Promise<void> => {
     if (live.live) {
@@ -567,7 +590,25 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
   // caption when the voice failed. It stays up a few seconds after Grok stops, then fades.
   const talking = live.live ? live.speaking : speaker.speaking;
   const spoken = (live.live ? live.subtitle : said)?.trim() || "";
-  const current = caption || (talking && spoken ? spoken : null);
+  // Subtitles can be switched off (remembered in this browser); a caption for a failed voice always shows.
+  const [subtitles, setSubtitles] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        if (localStorage.getItem("grok-subtitles") === "off") setSubtitles(false);
+      } catch {}
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
+  const toggleSubtitles = (): void => {
+    setSubtitles((on) => {
+      try {
+        localStorage.setItem("grok-subtitles", on ? "off" : "on");
+      } catch {}
+      return !on;
+    });
+  };
+  const current = caption || (subtitles && talking && spoken ? spoken : null);
   // The last line, kept for a moment after Grok stops so the bubble doesn't vanish mid-read.
   const [linger, setLinger] = useState<string | null>(null);
   useEffect(() => {
@@ -618,14 +659,27 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
             </span>
           </span>
         </button>
+        {/* Subtitles on/off: a small badge on Grok's shoulder, so the hint row under it keeps its width. */}
+        <button
+          type="button"
+          onClick={toggleSubtitles}
+          aria-pressed={subtitles}
+          aria-label={subtitles ? "Hide subtitles" : "Show subtitles"}
+          title={subtitles ? "Subtitles on: click to hide what Grok says" : "Subtitles off: click to show what Grok says"}
+          className={`absolute -right-3 -top-1 rounded-md border px-1 py-px text-[10px] font-bold leading-tight backdrop-blur ${
+            subtitles ? "border-white/40 bg-white/20 text-white" : "border-white/15 bg-black/40 text-neutral-500 line-through"
+          }`}
+        >
+          CC
+        </button>
         <div className="absolute left-1/2 top-full mt-2 -translate-x-1/2 whitespace-nowrap">
           {live.live && !live.paused && (
             <p
               className={`${chip} ${
-                live.hearing ? "bg-pink-500/80 text-white" : tapHint ? "bg-white/25 text-white" : "bg-white/10 text-neutral-200"
+                tapHint ? "bg-white/25 text-white" : "bg-white/10 text-neutral-200"
               }`}
             >
-              {live.hearing ? "🎙️ Listening… let go to send" : live.speaking ? "Hold Space to jump in" : "Hold Space to talk"}
+              {live.hearing ? "Listening" : live.speaking ? "Hold Space to jump in" : "Hold Space to talk"}
             </p>
           )}
           {live.live && live.paused && <p className={`${chip} bg-white/10 text-neutral-300`}>Paused · mic off</p>}
@@ -636,11 +690,6 @@ export function GrokBar({ rocketReady = true, progress = NO_PARTS }: Props) {
           )}
         </div>
       </div>
-      {optionsHint && live.live ? (
-        <div className="fixed bottom-40 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
-          <p className={`${chip} bg-white/10 text-neutral-200`}>👈 Tap a part on the left, or hold Space and say it</p>
-        </div>
-      ) : null}
 
       {/* All the buttons together on the right: Grok's group, sitting right on top of the screen's control bar. */}
       <div

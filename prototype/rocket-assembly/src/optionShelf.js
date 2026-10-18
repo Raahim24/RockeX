@@ -29,6 +29,7 @@ function withOption(build, partId, o) {
 export function createOptionShelf({ camera, scene, root, canvas, catalog, onPick }) {
   const mats = createMaterials(); // its own materials: no fog, untouched by the rocket's opacity toggles
   const labels = document.createElement("div");
+  labels.className = "option-shelf"; // the app keeps Grok's speech cloud clear of it
   labels.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:5";
   document.body.append(labels);
   const ray = new THREE.Raycaster();

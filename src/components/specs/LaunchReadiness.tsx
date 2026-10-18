@@ -137,8 +137,8 @@ export function LaunchReadiness({ complete }: { complete: boolean }) {
       >
         <header className="flex items-baseline gap-2 pb-2">
           <span className="h-1.5 w-1.5 shrink-0 self-center rounded-full" style={{ background: ready ? "var(--go)" : "var(--nogo)" }} aria-hidden />
-          <h2 className="text-[13px] font-semibold text-[var(--text)]">{ready ? "Ready to launch" : `${toFix} thing${toFix === 1 ? "" : "s"} to fix`}</h2>
-          {mission && <span className="ml-auto truncate text-[12px] text-[var(--text-2)]">{mission.name}</span>}
+          <h2 className="whitespace-nowrap text-[13px] font-semibold text-[var(--text)]">{ready ? "Ready to launch" : `${toFix} thing${toFix === 1 ? "" : "s"} to fix`}</h2>
+          {mission && <span className="ml-auto min-w-0 truncate text-[12px] text-[var(--text-2)]">{mission.name}</span>}
         </header>
 
         <ul className="flex flex-col divide-y divide-[var(--hairline)]">
