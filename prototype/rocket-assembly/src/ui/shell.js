@@ -41,9 +41,11 @@ export function ensureShell() {
     brand = make("header", { className: "brand" });
     canvas.after(brand);
   }
-  // ROCKEX wordmark (white on black: screen-blended, so the black drops out over the scene and the scrim)
+  // ROCKEX wordmark (white on black): drawn as a luminance mask over white, so its black is transparent on any
+  // backdrop, the day scrim included (a screen blend left a dark box there).
   const title = brand.querySelector("h1") ?? brand.insertBefore(make("h1"), brand.firstChild);
-  const logo = make("img", { className: "brand-logo", attrs: { src: LOGO_URL, alt: "ROCKEX", width: "114", height: "22", draggable: "false" } });
+  const logo = make("span", { className: "brand-logo", attrs: { role: "img", "aria-label": "ROCKEX" } });
+  logo.style.setProperty("--logo", `url("${LOGO_URL}")`);
   title.replaceChildren(logo);
   document.title = "ROCKEX";
   const hint = brand.querySelector("p") ?? brand.appendChild(make("p"));

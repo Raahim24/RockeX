@@ -2356,17 +2356,21 @@ export function createLaunchComplex({
   if (pad) adoptPad(pad);
 
   // ---------- catch (round 22): SpaceX-style "chopsticks" ----------
-  // catchArms(k), k 0 → 1: the two lowest arms ride to the lower one's height, step out to either side of the
-  // stack axis and swing open (k ≤ 0.4), then close straight in, lengthened so they straddle the stage either side
-  // of the axis (k = 1). k = 0 restores the pose they had at the first call. catchPoint_u: the stack axis at the
-  // arms' height, tower-local (anchors.tower.localToWorld(point.clone()) for world).
+  // catchArms(k, { y_u }), k 0 → 1: the two lowest arms ride to y_u (tower-local = pad-local height; default the
+  // lower arm's height), step out to either side of the stack axis and swing open (k ≤ 0.4), then close straight
+  // in, lengthened so they straddle the stage either side of the axis (k = 1). k = 0 restores the pose they had at
+  // the first call. catchPoint_u: the stack axis at the arms' height, tower-local (anchors.tower.localToWorld(
+  // point.clone()) for world); it follows y_u. Nothing else may write the arms' rotation, position or scale while
+  // a catch runs (a launch swing tween would undo it every frame).
   const catchList = [...arms].sort((p, q) => p.y_u - q.y_u).slice(0, 2);
   const catchY = catchList[0]?.y_u ?? topY;
   const catchPoint = v3(-dT, catchY, 0);
   const catchRest = new Map();
   const ease = (x) => x * x * (3 - 2 * x);
-  function catchArms(k = 1) {
+  function catchArms(k = 1, { y_u = catchY } = {}) {
     k = clamp(Number(k) || 0, 0, 1);
+    const ty = Number.isFinite(y_u) ? y_u : catchY;
+    catchPoint.y = ty;
     const ride = ease(Math.min(1, k / 0.4));
     const close = ease(Math.max(0, (k - 0.4) / 0.6));
     catchList.forEach((a, i) => {
@@ -2374,7 +2378,7 @@ export function createLaunchComplex({
       const r0 = catchRest.get(a);
       const side = i ? 1 : -1;
       const stretch = (dT - hw + baseRadius_u * 0.9) / a.reach_u;
-      a.mesh.position.set(r0.p.x, r0.p.y + (catchY - r0.p.y) * ride, r0.p.z + side * (baseRadius_u + armW * 0.6) * ride);
+      a.mesh.position.set(r0.p.x, r0.p.y + (ty - r0.p.y) * ride, r0.p.z + side * (baseRadius_u + armW * 0.6) * ride);
       const open = r0.r + (side * 1.0 - r0.r) * ride;
       a.mesh.rotation.y = open * (1 - close);
       a.mesh.scale.x = r0.s + (stretch - r0.s) * ride;

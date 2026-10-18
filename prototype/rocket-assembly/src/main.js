@@ -107,6 +107,7 @@ scene.add(fill);
 const hemi = new THREE.HemisphereLight(0x8fa6c8, 0x0f1118, 0.08);
 scene.add(hemi);
 let skyKeyDir = null; // by day the key light is the sun (world.setSky's sunDir)
+let keyBase = null; // the recipe's key intensity (eased down ~25 % at altitude in flight: no blown-out whites)
 let skyFog = null;
 let lastSky = null; // the last setSky recipe (a rebuilt complex takes it too)
 
@@ -242,6 +243,9 @@ const sfx = createSfx();
 // Off during the landing dive, which draws its own planet and sky.
 const world = createWorld({ renderer });
 const BG = scene.background;
+// The landing dive starts in black space whatever the sky setting (its own haze brightens it on the way down);
+// the day recipe applies at the pad.
+const SPACE_BG = new THREE.Color(0x0b0d12);
 const FOG0 = scene.fog.color.clone();
 world.clearColor.copy(BG); // what shows behind the builder while the far layer is off
 // The sky (UI4's world.setSky): one recipe for the far layer and for main's existing lights, fog and background
@@ -251,7 +255,7 @@ function applySky() {
   const r = world.setSky?.({ ...skyState });
   if (!r) return;
   asColor(r.key?.color, key.color);
-  if (Number.isFinite(r.key?.intensity)) key.intensity = r.key.intensity;
+  if (Number.isFinite(r.key?.intensity)) keyBase = key.intensity = r.key.intensity;
   skyKeyDir = r.time === "day" && r.sunDir ? new THREE.Vector3().copy(r.sunDir).normalize() : null;
   asColor(r.fill?.color, fill.color);
   if (Number.isFinite(r.fill?.intensity)) fill.intensity = r.fill.intensity;
@@ -814,6 +818,7 @@ function telemetryHtml(tel) {
   if (tel.countdown != null) return `<strong>${f.esc(current.preset.name)}</strong> · <strong>T−${tel.countdown}</strong>${tel.label ? ` · <strong>${f.esc(tel.label)}</strong>` : ""}`;
   const t = Math.max(0, tel.t);
   return [
+    tel.who ? `<strong>${f.esc(tel.who)}</strong>` : "", // the upper stage's release, the first stage's own clock
     `<strong>T+${pad2(t / 60)}:${pad2(t % 60)}</strong>`,
     `${f.num(Math.max(0, tel.alt_m) / 1000, 1)}\u00a0km`,
     f.ms(tel.vel_ms),
@@ -1490,7 +1495,7 @@ addEventListener(
     if (e.ctrlKey || e.deltaY >= 0 || e.target !== canvas || !canLeaveBuilder()) return;
     e.preventDefault();
     e.stopPropagation(); // OrbitControls would zoom in
-    scene.background = BG; // the landing paints its own sky (the world layer is off while it runs)
+    scene.background = SPACE_BG; // the landing paints its own sky (the world layer is off while it runs)
     landing.resume();
     landing.feed(landing.wheelPx(e));
   },
@@ -1620,7 +1625,7 @@ function frame() {
   // and the landing dive draws its own sky over a cleared near pass.
   const worldOn = !landingOn(); // at home too: the day sky and the sea behind the pad
   world.setEnabled(worldOn);
-  scene.background = landingOn() ? BG : null;
+  scene.background = landingOn() ? SPACE_BG : null;
   stars.visible = !worldOn; // the world draws its own
   if (worldPass) worldPass.enabled = !landingOn();
   if (nearPass) nearPass.clear = landingOn();
@@ -1686,6 +1691,9 @@ function frame() {
     const up = viewerKm.copy(vv.pos_km);
     const alt = up.length() - world.bodies.earth.radius_km;
     bright = alt < 120 && up.normalize().dot(world.sunDir) > -0.08;
+    if (keyBase != null) key.intensity = keyBase * (1 - 0.25 * THREE.MathUtils.smoothstep(alt, 2, 10));
+  } else if (keyBase != null && key.intensity !== keyBase) {
+    key.intensity = keyBase;
   }
   if (bright !== document.body.classList.contains("bright-sky")) document.body.classList.toggle("bright-sky", bright);
   if (worldOn) {

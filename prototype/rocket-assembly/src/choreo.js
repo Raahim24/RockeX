@@ -1095,7 +1095,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   function retarget() {
     const { lo, hi } = flyingSpan();
     L.trackLocalY = (lo + hi) / 2;
-    L.trackDist = Math.max(controls.minDistance, fitDist(hi - lo, stackRadius(), 0.72, THREE.MathUtils.degToRad(6))); // the chase's side view
+    L.trackDist = Math.max(controls.minDistance, fitDist(hi - lo, stackRadius(), 0.72, THREE.MathUtils.degToRad(8))); // the tracker's side view
   }
 
   function ignite(stage, t) {
@@ -1135,8 +1135,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       if (!d.part.group.visible) continue;
       d.t += dt;
       const fall = Math.max(0, d.t - d.drift);
-      d.part.group.position.addScaledVector(d.down, dt * (d.t < d.drift ? 1 * scale : 0.6 + fall * 6));
-      if (!d.noSpin) d.part.group.rotateOnWorldAxis(d.axis, dt * (d.t < d.drift ? 0.04 : 0.35));
+      // #35's motion: the push-off at ~1 m/s, then a gentle accelerating fall and a slow tumble
+      d.part.group.position.addScaledVector(d.down, dt * (d.t < d.drift ? 1 * scale : 0.4 + fall * 1.6));
+      if (!d.noSpin) d.part.group.rotateOnWorldAxis(d.axis, dt * (d.t < d.drift ? 0.04 : 0.25));
       if (d.spread) {
         for (const piece of d.part.pieces) {
           if (Math.abs(piece.explode.dir.x) < 0.3) continue; // fairing halves and their doors swing out
@@ -1144,7 +1145,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
           piece.mesh.rotateZ(Math.sign(piece.explode.dir.x) * dt * -0.5);
         }
       }
-      if ((d.t > 1 + d.drift && !inView(d.part)) || d.t > 10) d.part.group.visible = false; // gone once out of frame
+      if (d.t > 4 + d.drift && (!inView(d.part) || d.t > 8 + d.drift)) d.part.group.visible = false; // ~5.5 s, never popping in frame
     }
   }
 
@@ -1216,11 +1217,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         // camera eases out and down for a beat so it falls through the frame.
         const spent = parts.filter((p) => p.stageIndex === e.stage && !L.gone.has(p));
         if (e.stage === 0) L.stage0 = spent;
-        for (const part of spent) drop(part);
+        for (const part of spent) drop(part, { drift: 1.5 }); // #35: a 1.5 s push-off, then it falls behind
         sfx.play("clunk", { rate: 0.8, gain: 0.8 });
         retarget();
         const top = spent.reduce((a, b) => (!a || b.slotY > a.slotY ? b : a), null);
-        if (top) puffsOn(top, [0.1, 0.45]); // cold-gas push-off from its top ring
+        if (top) puffsOn(top, [0.15, 0.55, 0.95, 1.35]); // cold-gas thrusters at its top ring (#35)
         L.chase.sep0 = L.real; // the chase stays behind and pulls back ~3 s so the stage drops away in frame
         break;
       }
@@ -1250,7 +1251,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
           break;
         }
         const spent = parts.filter((p) => p.kind !== "payload" && !L.gone.has(p));
-        for (const part of spent) drop(part);
+        for (const part of spent) drop(part, { drift: 1.5 });
         retarget();
         const payload = parts.find((p) => p.kind === "payload");
         if (payload && !L.landerPlume) {
@@ -1507,32 +1508,20 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   function chaseGoals(t, done) {
     const c = L.chase;
     const tc = L.towerClear;
-    const g = { anchor: 1, az: c.azSide, el: THREE.MathUtils.degToRad(6), dist: L.trackDist, look: 0 /* metres down, as × dist */, lookUp: 0 };
+    // #35's tracker through the ascent: side-on from the pad camera's side, 8° up, in the launch site's axes (the
+    // gravity turn reads as the nose pitching over), easing in to each shorter stack after a drop.
+    const g = { anchor: 1, az: c.azSide, el: THREE.MathUtils.degToRad(8), dist: L.trackDist, look: 0 /* metres down, as × dist */, lookUp: 0 };
     if (!done) {
       // pad → rise: off the deck with the vehicle by tower clear + 1.5 s (sim time; real time in the opening)
       // On the timeline the clock speeds up after liftoff + 3 s (the pad then races away), so the camera leaves the
       // deck on screen time, 0.8–3 s after T0; without it, by tower clear.
       g.anchor = t <= 0 ? 0 : L.F ? THREE.MathUtils.smoothstep(L.real, 0.8, 3) : THREE.MathUtils.smoothstep(t, 0.35 * tc, tc + 1.5);
-      g.el = THREE.MathUtils.lerp(c.elPad, THREE.MathUtils.degToRad(6), g.anchor);
+      g.el = THREE.MathUtils.lerp(c.elPad, THREE.MathUtils.degToRad(8), g.anchor);
       g.dist = THREE.MathUtils.lerp(c.distPad, L.trackDist, g.anchor);
       g.lookUp = (1 - g.anchor) * c.lookPad; // the pad shot aims a little below the vehicle's middle
-      if (g.anchor > 0.98 && c.sweep0 == null) c.sweep0 = L.real;
     }
-    // look-back: up and round, looking down past the engines at the receding pad
-    if (c.sweep0 != null) {
-      const b = bump((L.real - c.sweep0) / 4.5);
-      g.az += THREE.MathUtils.degToRad(35) * b;
-      g.el += THREE.MathUtils.degToRad(34) * b;
-      g.dist *= 1 + 0.35 * b;
-      g.look += 0.22 * b; // the vehicle stays in frame, the ground beyond it
-    }
-    // staging / fairing (user, round 23): a close-up on the continuing rocket for ~4 s, centred, from a little
-    // above, so the spent stage or the halves fall away below it inside the frame; then ease back out
-    if (c.sep0 != null) {
-      const b = bump((L.real - c.sep0) / 4);
-      g.dist *= 1 - 0.38 * b;
-      g.el += THREE.MathUtils.degToRad(10) * b;
-    }
+    // (No look-back sweep and no pull-back or push-in at a separation (#35): the camera holds the rocket centred
+    // and the spent stage or the fairing halves drift and fall away inside the frame.)
     const seg = L.smp?.segment;
     if (done || (seg && seg !== "ascent")) {
       g.el = THREE.MathUtils.degToRad(14);
@@ -1579,8 +1568,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const seg = L.smp.segment;
     const low = /reentry|landing|braking|approach|vertical|entry|parachute|booster-descent/.test(seg);
     const el = THREE.MathUtils.degToRad(low ? 10 : 24);
-    const sepB = c.sep0 != null ? bump((L.real - c.sep0) / 4) : 0; // the separation close-up (as in chaseGoals)
-    const dist = L.trackDist * (low ? 1.3 : 1.6) * (1 - 0.38 * sepB);
+    const dist = L.trackDist * (low ? 1.3 : 1.6);
     L.flight.localToWorld(spLook.set(0, c.trackY ?? L.trackLocalY, 0));
     spGoal.copy(spLook).addScaledVector(spFwd, -Math.cos(el) * dist).addScaledVector(spUp, Math.sin(el) * dist);
     if (L.catch && (seg === "landing" || seg === "booster-descent")) {
@@ -1642,7 +1630,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const gd = goalDir.length();
     goalDir.divideScalar(Math.max(gd, 1e-6));
     // (Snap only on a black cut frame, the opening blend and the pad shot.)
-    const snap = !c.viewDir || state.cut >= 0.98 || k < 1 || c.anchor < 0.99;
+    // (And for ~3 s after a drop, so the ease-in to the shorter stack is not held back by the cap.)
+    const snap = !c.viewDir || state.cut >= 0.98 || k < 1 || c.anchor < 0.99 || (c.sep0 != null && L.real - c.sep0 < 3);
     if (snap) c.viewDir = (c.viewDir ?? new THREE.Vector3()).copy(goalDir);
     else {
       const ang = c.viewDir.angleTo(goalDir);
@@ -1729,7 +1718,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     // (Eased over ~0.7 s so a drop moves the frame smoothly instead of by a stage's height at once.)
     const baseY = L.lander ? L.lander.baseY : Math.min(...parts.filter((p) => !L.gone.has(p)).map((p) => p.slotY), Infinity);
     const goal = Number.isFinite(baseY) ? baseY : 0;
+    const base0 = L.baseY;
     L.baseY = L.baseY == null ? goal : L.baseY + (goal - L.baseY) * (1 - Math.exp(-(L.dtFrame ?? 0.016) / 0.25));
+    // The dropped parts move with that shift (it re-anchors the frame, not the physics): a spent stage stays
+    // below the stack it left instead of sliding up over it.
+    if (base0 != null && L.baseY !== base0) for (const d of L.debris) d.part.group.position.addScaledVector(fA, base0 - L.baseY);
     L.flight.position.copy(fA).multiplyScalar(L.pivotY - L.baseY);
     if (L.pad) {
       fP.copy(L.P0).sub(L.V).multiplyScalar(NEAR_PER_KM).applyQuaternion(L.QnInv);
@@ -1745,8 +1738,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
           L.catch.shift = new THREE.Vector3(-cpN.x - fEnd.x, 0, -cpN.z - fEnd.z);
         }
         fP.add(L.catch.shift);
+        // The arms take the stage ~70 % up its length, so it hangs clear of the deck (its base ~¼ of its height up
+        // on a Falcon 9: arms at 10.9 u, stage 11.5 u), not standing on the ring.
         const { lo, hi } = flyingSpan();
-        const lift = Math.max(0, L.catch.armY - (hi - lo) * 0.85);
+        const lift = Math.max(0, L.catch.armY - (hi - lo) * 0.72);
         const alt_m = Math.max(0, smp.alt_km * 1000);
         const w = 1 - THREE.MathUtils.smoothstep(alt_m, 0, 1000);
         fP.y -= lift * w;
@@ -1921,8 +1916,15 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   // Round 24 (Earth): after the payload release the story cuts to the first stage's final descent into the tower
   // catch: the flight group holds the first stage again (as it stood in the stack), everything else is hidden,
   // the grid fins are out, the legs stay stowed for the catch; the camera takes the local frame at once.
+  function storySunOff() {
+    if (!L.sunOv) return;
+    world.setSunOverride(null);
+    state.keyDir = null;
+    L.sunOv = null;
+  }
   function showBooster() {
     L.boosterOn = true;
+    storySunOff();
     const first = L.stage0?.length ? L.stage0 : parts.filter((p) => p.stageIndex === 0);
     for (const d of L.debris) d.part.group.visible = false;
     L.debris.length = 0;
@@ -1977,6 +1979,12 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     if (smp.segment !== "ascent") prepareLanding();
     if (smp.segment === "booster-descent" && !L.boosterOn) showBooster();
     placeFlight(smp);
+    // The release beat is lit (story, est.; Head 1): UI4's story sun over the ground below the stage from the black
+    // frame before the release to the cut after it, the stage's key light from the same side.
+    if (smp.segment === "payload-release" && !L.sunOv && world.setSunOverride) {
+      L.sunOv = world.setSunOverride(world.sunDirLightingPoint(L.V, 40));
+      state.keyDir = new THREE.Vector3().copy(L.sunOv ?? world.sunDir).applyQuaternion(L.QnInv).normalize();
+    }
     if (L.F.endState?.type === "lost" && (L.tumbling || tS > (L.peakT ?? Infinity))) fallUpdate(dt, smp, tS);
     // (Round 23, user: the upper stage with the payload on top lands whole; no separate lander.)
     if (!L.legsOut && !L.catch && (smp.segment === "approach" || smp.segment === "vertical" || smp.segment === "landing")) {
@@ -2015,6 +2023,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       const a = sampleAt(L.samples, Math.min(t, L.samples[L.samples.length - 1].t));
       L.onTelemetry({
         t: smp.t_vehicle ?? t, // the booster's own clock in its replayed descent (round 24)
+        who: smp.segment === "booster-descent" ? "FIRST STAGE" : smp.segment === "payload-release" ? "UPPER STAGE" : null,
         alt_m: s.alt_m,
         vel_ms: smp.speed_ms,
         g: smp.segment === "ascent" ? (a.acc_ms2 ?? 0) / 9.80665 : 0,
@@ -2300,7 +2309,6 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       look: 0,
       lookUp: L.flight.localToWorld(new THREE.Vector3(0, L.trackLocalY, 0)).y - pose.target.y,
       azDrift: 0,
-      sweep0: null,
       sep0: null,
     };
     changed();
@@ -2866,6 +2874,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   function endLaunch() {
     disposeEnding();
     if (!L) return;
+    storySunOff();
     for (const pl of L.plumes) pl.plume.dispose();
     dropPadLight(L.padLight);
     (L.anchors?.arms ?? []).forEach((arm, i) => (arm.mesh.rotation.y = L.arms0[i] ?? arm.mesh.rotation.y));

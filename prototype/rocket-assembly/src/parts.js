@@ -1743,8 +1743,8 @@ function buildTank(spec, mats) {
 // joint at the tip (pre-tilted so it lies flat once the leg is out), a two-stage telescoping piston per leg
 // (outer tube pinned on the body, polished rod pinned on the leg; both follow the leg, see applyDeploy), hidden
 // inside the folded leg, and the upper brackets on the skin. Sizes are visual ratios.
-function legs(out, mats, R, H, D, shellDist, y0) {
-  const len = Math.min(0.24 * H, 2.6 * D); // visual
+function legs(out, mats, R, H, D, shellDist, y0, lenIn = null) {
+  const len = lenIn ?? Math.min(0.24 * H, 2.6 * D); // visual
   const w0 = 0.2 * D;
   const w1 = 0.11 * D;
   const t0 = 0.1 * D;
@@ -2486,6 +2486,12 @@ function capsule(P, mats, g, y0) {
   P(projectUV(lathe(cm, 48).translate(0, yCm, 0)), mats.mliSilver, { order: 1.4, dist: 0.8, ax: [1, 0], sym: true, edges: true, dock: true });
   const lesH = g.lesH_m ?? 0;
   if (lesH > 0) {
+    // every tower piece is tagged (userData.escapeTower) so the director can drop it at "les-jettison"
+    const T = (geo, mat, o) => {
+      const pc = P(geo, mat, o);
+      pc.mesh.userData.escapeTower = true;
+      return pc;
+    };
     // tower: four tapering longerons, ring frames at five levels, X-bracing on every face of every bay
     const yL = yCm + cmH * 0.95;
     const tr = dims.les_base_diameter_m ? dims.les_base_diameter_m / 2 : 0.3 * Rc;
@@ -2505,24 +2511,24 @@ function capsule(P, mats, g, y0) {
         truss.push(rod(corner(i, levels[b]), corner((i + 1) % 4, levels[b + 1]), lr * 0.5, 1), rod(corner((i + 1) % 4, levels[b]), corner(i, levels[b + 1]), lr * 0.5, 1));
       }
     }
-    P(projectUV(merge(truss)), mats.darkMetal, { order: 1.5, dist: 1.0, ax: [1, 1] });
+    T(projectUV(merge(truss)), mats.darkMetal, { order: 1.5, dist: 1.0, ax: [1, 1] });
     // escape motor case with its four canted nozzles at the base, then the jettison motor, the canard
     // section (canards folded) and the nose, each its own lens layer
     const yM = yL + tH;
     const caseGeo = lathe([[0.001, 0], [0.13 * Rc, 0], [0.13 * Rc, 0.38 * lesH]], 24).translate(0, yM, 0);
-    P(projectUV(caseGeo.clone()), mats.trim, { order: 1.6, dist: 1.1, side: DS, ax: [1, 2], sym: true, edges: true, lineGeo: caseGeo });
+    T(projectUV(caseGeo.clone()), mats.trim, { order: 1.6, dist: 1.1, side: DS, ax: [1, 2], sym: true, edges: true, lineGeo: caseGeo });
     const nozzles = [];
     for (let i = 0; i < 4; i++) {
       const o = radial((i * TAU) / 4);
       nozzles.push(nozzle(o.clone().multiplyScalar(0.1 * Rc).setY(yM + 0.02 * lesH), o.clone().multiplyScalar(0.55).add(DOWN), 0.06 * lesH, 0.045 * Rc));
     }
-    P(projectUV(merge(nozzles.map(indexed))), mats.darkMetal, { order: 1.605, dist: 1.1, side: DS, ax: [1, 2] });
+    T(projectUV(merge(nozzles.map(indexed))), mats.darkMetal, { order: 1.605, dist: 1.1, side: DS, ax: [1, 2] });
     const jet = lathe([[0.13 * Rc, 0.38 * lesH], [0.135 * Rc, 0.4 * lesH], [0.135 * Rc, 0.42 * lesH], [0.09 * Rc, 0.46 * lesH]], 24).translate(0, yM, 0);
-    P(projectUV(jet.clone()), mats.trim, { order: 1.61, dist: 1.15, side: DS, ax: [1, 3], sym: true, edges: true, lineGeo: jet });
+    T(projectUV(jet.clone()), mats.trim, { order: 1.61, dist: 1.15, side: DS, ax: [1, 3], sym: true, edges: true, lineGeo: jet });
     const canards = [lathe([[0.09 * Rc, 0.46 * lesH], [0.09 * Rc, 0.5 * lesH], [0.06 * Rc, 0.54 * lesH]], 24).translate(0, yM, 0)];
     for (let i = 0; i < 4; i++) canards.push(box(0.08 * Rc, 0.03 * lesH, 0.006 * Rc, 0.12 * Rc, yM + 0.47 * lesH, 0).rotateY((-i * TAU) / 4));
-    P(projectUV(merge(canards)), mats.trim, { order: 1.62, dist: 1.2, side: DS, ax: [1, 4], sym: true });
-    P(projectUV(merge([lathe([[0.06 * Rc, 0.54 * lesH], [0.03 * Rc, 0.58 * lesH], [0.001, 0.6 * lesH]], 24).translate(0, yM, 0), new THREE.SphereGeometry(0.035 * Rc, 12, 8).translate(0, yM + 0.585 * lesH, 0)])), mats.darkMetal, { order: 1.63, dist: 1.25, side: DS, ax: [1, 5], sym: true });
+    T(projectUV(merge(canards)), mats.trim, { order: 1.62, dist: 1.2, side: DS, ax: [1, 4], sym: true });
+    T(projectUV(merge([lathe([[0.06 * Rc, 0.54 * lesH], [0.03 * Rc, 0.58 * lesH], [0.001, 0.6 * lesH]], 24).translate(0, yM, 0), new THREE.SphereGeometry(0.035 * Rc, 12, 8).translate(0, yM + 0.585 * lesH, 0)])), mats.darkMetal, { order: 1.63, dist: 1.25, side: DS, ax: [1, 5], sym: true });
   }
 }
 
@@ -2797,6 +2803,62 @@ export function applyDeploy(piece, k) {
   piece.mesh.quaternion.copy(hingeQ).multiply(piece.rest.quaternion);
   for (const f of piece.followers ?? []) poseFollower(f);
 }
+// Landing legs for any stage that lands (round 22: the S-IVB on the Moon, an upper stage on Mars): four of the
+// Falcon-style legs above, folded up the part's sides and hinged near its base, long enough that once deployed
+// (~30° off vertical) the feet are below_u under the part's base (default 0.6 × its diameter; pass the engine's
+// length so the bell stays off the ground). They join the part like built-in legs (part.pieces, part.group,
+// painted look from mats): deployables(part) lists them, applyDeploy(leg, k) swings them out with their pistons.
+//   addLandingLegs(part, mats, { below_u }) -> { legs (the four deployables), pieces (legs, pistons, brackets),
+//     footY_u (underside of the feet, part frame, fully out) }   — idempotent (the same object again).
+// Visual proportions (est.).
+export function addLandingLegs(part, mats, { below_u = null } = {}) {
+  if (part.landingLegs) return part.landingLegs;
+  const R = part.radius / S;
+  const H = part.height / S;
+  const D = 2 * R;
+  const y0 = 0.04 * H;
+  const below = below_u != null ? below_u / S : 0.6 * D;
+  const len = Math.max(Math.min(0.24 * H, 2.6 * D), (below + y0 + 0.08 * D) / Math.cos(Math.PI / 6));
+  const built = [];
+  legs(built, mats, R, H, D, 0.4, y0, len);
+  const entries = built.map((p, i) => {
+    const bb = p.mesh.geometry.boundingBox;
+    p.mesh.userData.partId = part.id;
+    p.mesh.name = `${part.id}:landing-leg-${i}`;
+    part.group.add(p.mesh);
+    return { mesh: p.mesh, index: part.pieces.length + i, order: p.order ?? 3 + i * 0.01, engine: p.engine, kind: p.kind, bottomY: bb.min.y + p.mesh.position.y, topY: bb.max.y + p.mesh.position.y, rest: { position: p.mesh.position.clone(), quaternion: p.mesh.quaternion.clone() }, explode: p.explode, deploy: p.deploy, follow: p.follow, axisOffset: 0, spin: 0 };
+  });
+  for (const e of entries) {
+    if (!e.follow) continue;
+    const leader = entries[built.indexOf(e.follow.leader)];
+    e.follow = { ...e.follow, leader };
+    (leader.followers ??= []).push(e);
+  }
+  part.pieces.push(...entries);
+  const legPieces = entries.filter((e) => e.deploy);
+  // the feet's underside fully out (part frame)
+  let footY = Infinity;
+  const box = new THREE.Box3();
+  for (const leg of legPieces) {
+    applyDeploy(leg, 1);
+    leg.mesh.updateMatrix();
+    footY = Math.min(footY, box.copy(leg.mesh.geometry.boundingBox).applyMatrix4(leg.mesh.matrix).min.y);
+    applyDeploy(leg, 0);
+  }
+  part.landingLegs = { legs: legPieces, pieces: entries, footY_u: footY };
+  return part.landingLegs;
+}
+
+// The payload's launch escape tower (Apollo: truss, escape motor and nozzles, jettison motor, canards, nose), for
+// the "les-jettison" event: { pieces, meshes, bottomY_u, topY_u } (part frame) or null. To drop it, move the
+// meshes into a group of your own with Object3D.attach (world transforms kept) and fly that off; the rest of the
+// part stays as it is.
+export function escapeTowerOf(part) {
+  const pieces = part.pieces.filter((p) => p.mesh.userData.escapeTower);
+  if (!pieces.length) return null;
+  return { pieces, meshes: pieces.map((p) => p.mesh), bottomY_u: Math.min(...pieces.map((p) => p.bottomY)), topY_u: Math.max(...pieces.map((p) => p.topY)) };
+}
+
 // Landable sub-part of a payload (the Apollo LM: descent stage, ascent stage, four legs), or null. Returns a
 // separate group made of copies of those pieces (shared geometry, own materials, both looks) with its origin
 // at the centre of the descent stage's base:

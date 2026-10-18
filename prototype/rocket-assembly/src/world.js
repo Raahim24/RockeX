@@ -910,6 +910,7 @@ export function createWorld({ renderer = null } = {}) {
     const size_u = size_km * NEAR_U_PER_KM;
     let kind;
     let inner;
+    let horizonRing = null; // airless bodies: near ground out to the horizon round the patch
     if (name === "earth") {
       if (kindIn ? kindIn === "ocean" : isOceanAt(f.lat, f.lon) === true) {
         kind = "ocean";
@@ -942,14 +943,35 @@ export function createWorld({ renderer = null } = {}) {
       const si = inner.sun?.intensity ?? (name === "mars" ? 2.2 : 2.8);
       const ch = (k) => far / (inner.albedoMean * ((sc[k] * si * nl) / Math.PI + (L.ambient ?? 0) * Math.max(sky[k], 0.05)));
       inner.scaleAlbedo([ch("r"), ch("g"), ch("b")]);
+      // airless: near ground from inside the patch's faded rim out to the horizon, curving with the body, in the
+      // patch's mean colour under the same lights, so no far-layer ground (lit by the far layer's own rules)
+      // shows below the horizon: black sky right down to the ground, no seam
+      if (!b.atmo) {
+        const am = inner.albedoMean;
+        horizonRing = new THREE.Mesh(horizonDisc(120 * NEAR_U_PER_KM, RADIUS_KM[name] * NEAR_U_PER_KM, size_u * 0.35), new THREE.MeshStandardMaterial({ color: new THREE.Color(tint.r * am * ch("r"), tint.g * am * ch("g"), tint.b * am * ch("b")), roughness: 0.97, metalness: 0 }));
+        horizonRing.position.y = -0.001 * NEAR_U_PER_KM; // 1 m under the patch's rim
+        horizonRing.frustumCulled = false;
+        horizonRing.name = "world-local-horizon";
+        horizonRing.raycast = () => {};
+      }
       // the far layer's dust haze on the patch too (at ground density), so its edge meets the far ground
       const dust = b.atmo?.dust;
       if (dust && inner.setHaze) inner.setHaze(new THREE.Color(dust[0], dust[1], dust[2]), (KM_PER_UNIT / dust[3]) * NEAR_U_PER_KM);
-      if (tintLater) retint.set(inner, { name, lat: f.lat, lon: f.lon, apply: (t) => inner.scaleAlbedo([t.r / tint.r, t.g / tint.g, t.b / tint.b]) });
+      if (tintLater)
+        retint.set(inner, {
+          name,
+          lat: f.lat,
+          lon: f.lon,
+          apply: (t) => {
+            inner.scaleAlbedo([t.r / tint.r, t.g / tint.g, t.b / tint.b]);
+            horizonRing?.material.color.multiply(new THREE.Color(t.r / tint.r, t.g / tint.g, t.b / tint.b));
+          },
+        });
     }
     const object3d = new THREE.Group();
     object3d.name = `world-local-${name}`;
     object3d.add(inner.object3d);
+    if (horizonRing) object3d.add(horizonRing);
     const inv = f.frame.clone().invert();
     return {
       object3d,
@@ -964,6 +986,8 @@ export function createWorld({ renderer = null } = {}) {
         object3d.position.copy(surface_km).sub(nearOrigin_km).applyQuaternion(inv).multiplyScalar(NEAR_U_PER_KM);
       },
       dispose() {
+        horizonRing?.geometry.dispose();
+        horizonRing?.material.dispose();
         retint.delete(inner);
         object3d.traverse((o) => retint.delete(o));
         inner.dispose?.();

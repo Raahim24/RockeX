@@ -1248,7 +1248,7 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
   normal.needsUpdate = true;
   const groundMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: albedo, normalMap: normal, normalScale: new THREE.Vector2(1.6, 1.6), roughness: 0.97, metalness: 0 });
   // haze: aerial perspective toward uHaze over uHazeD (1/e distance, scene units; 0 = none), Mars by default
-  const tu = { uFine: { value: m(4) }, uCoarse: { value: m(60) }, uLow: { value: m(220) }, uHalf: { value: half }, uWind: { value: new THREE.Vector2(wx, wz) }, uDuneL: { value: m(42) }, uDuneH: { value: m(4) }, uBigL: { value: DUNE_BIG_L }, uBigH: { value: DUNE_BIG_H }, uHaze: { value: mars ? skyAt(0, sd, "mars").horizon : new THREE.Color() }, uHazeD: { value: mars ? m(30000) : 0 }, uFadeA: { value: mars ? 1 : 0 } };
+  const tu = { uFine: { value: m(4) }, uCoarse: { value: m(60) }, uLow: { value: m(220) }, uHalf: { value: half }, uWind: { value: new THREE.Vector2(wx, wz) }, uDuneL: { value: m(42) }, uDuneH: { value: m(4) }, uBigL: { value: DUNE_BIG_L }, uBigH: { value: DUNE_BIG_H }, uHaze: { value: mars ? skyAt(0, sd, "mars").horizon : new THREE.Color() }, uHazeD: { value: mars ? m(30000) : 0 }, uFadeA: { value: 1 } };
   if (mars) groundMat.defines = { TERR_MARS: "" };
   groundMat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, tu);
@@ -1351,9 +1351,9 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
       .replace("#include <lights_fragment_begin>", THREE.ShaderChunk.lights_fragment_begin.replace("getDirectionalLightInfo( directionalLight, directLight );", "getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= vSunVis;"));
   };
   groundMat.customProgramCacheKey = () => "terrain-antitile-v5";
-  groundMat.transparent = mars; // the faded rim (uFadeA)
+  groundMat.transparent = true; // the faded rim (uFadeA): onto the far ground (Mars) or the horizon ring (Moon)
   const ground = new THREE.Mesh(geo, groundMat);
-  ground.renderOrder = mars ? -1 : 0; // first among the transparent: effects above it draw over it
+  ground.renderOrder = -1; // first among the transparent: effects above it draw over it
   ground.name = "terrain-ground";
   ground.receiveShadow = true;
   ground.castShadow = false; // its own shadows are baked (sunVis); the shadow map carries the lander and boulders
@@ -1383,7 +1383,7 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
     let placed = 0;
     for (let i = 0; i < n * 4 && placed < n; i++) {
       const [x, z] = pick();
-      if (Math.hypot(x, z) < padRadius_u * 1.5 || Math.abs(x) > half * 0.8 || Math.abs(z) > half * 0.8 || (mars && Math.hypot(x, z) > half * 0.7)) continue;
+      if (Math.hypot(x, z) < padRadius_u * 1.5 || Math.abs(x) > half * 0.8 || Math.abs(z) > half * 0.8 || Math.hypot(x, z) > half * 0.7) continue;
       const s = size();
       sc.set(s * (0.8 + 0.5 * rand()), s * (0.6 + 0.4 * rand()), s * (0.8 + 0.5 * rand()));
       q.setFromEuler(e.set(rand() * 6.3, rand() * 6.3, rand() * 6.3));
@@ -1490,13 +1490,16 @@ export function createTerrain({ body = "moon", size_u = 60, seed = 7, padRadius_
 // A ground disc out to the horizon: a centre vertex and 56 rings of 96, radii from 2 m growing geometrically to
 // radius_u (dense near the middle). planetR_u > 0 bends it down with the planet's curvature (y −= r² / 2R) so its
 // rim meets the far layer's horizon; 0 leaves it flat (the ocean bends in its shader instead).
-export function horizonDisc(radius_u, planetR_u = 0) {
+// inner_u > 0 leaves a hole of that radius (a ring round a local patch).
+export function horizonDisc(radius_u, planetR_u = 0, inner_u = 0) {
   const RINGS = 56;
   const SEGS = 96;
-  const r0 = 2 * SCALE;
-  const pos = [0, 0, 0];
-  const nrm = [0, 1, 0];
-  const uv = [0.5, 0.5];
+  const hole = inner_u > 0;
+  const r0 = hole ? inner_u : 2 * SCALE;
+  const base = hole ? 0 : 1; // the centre vertex
+  const pos = hole ? [] : [0, 0, 0];
+  const nrm = hole ? [] : [0, 1, 0];
+  const uv = hole ? [] : [0.5, 0.5];
   for (let k = 0; k < RINGS; k++) {
     const r = r0 * (radius_u / r0) ** (k / (RINGS - 1));
     const drop = planetR_u > 0 ? (r * r) / (2 * planetR_u) : 0;
@@ -1509,11 +1512,11 @@ export function horizonDisc(radius_u, planetR_u = 0) {
     }
   }
   const idx = [];
-  for (let j = 0; j < SEGS; j++) idx.push(0, 1 + ((j + 1) % SEGS), 1 + j);
+  if (!hole) for (let j = 0; j < SEGS; j++) idx.push(0, 1 + ((j + 1) % SEGS), 1 + j);
   for (let k = 0; k < RINGS - 1; k++) {
     for (let j = 0; j < SEGS; j++) {
-      const a = 1 + k * SEGS + j;
-      const b = 1 + k * SEGS + ((j + 1) % SEGS);
+      const a = base + k * SEGS + j;
+      const b = base + k * SEGS + ((j + 1) % SEGS);
       idx.push(a, b, a + SEGS, b, b + SEGS, a + SEGS);
     }
   }
