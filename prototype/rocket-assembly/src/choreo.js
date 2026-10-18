@@ -30,7 +30,7 @@ import { attachPlumes, createPadLight, createPlume, P0 } from "./plume.js";
 import { createPlanet, createSurfacePatch, createDustPuff, createSkyDome } from "./planet.js";
 import { createDroneShip } from "./anchors.js";
 import { createParachute } from "./parachute.js";
-import { createFlightTwin, prewarmAll } from "./flightTwin.js";
+import { createFlightTwin } from "./flightTwin.js";
 
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const D = (ms) => (reduced ? ms * 0.55 : ms);
@@ -1569,6 +1569,21 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   const spLook = new THREE.Vector3();
   const spSide = new THREE.Vector3();
   const spChute = new THREE.Vector3();
+  // The Moon / Mars arrival frame (world axes): up from the target's centre and forward along the velocity relative
+  // to it, at the first instant of lunar-orbit insertion (Moon) or entry interface (Mars).
+  function arrivalFrame() {
+    if (L.arrive !== undefined) return L.arrive;
+    L.arrive = null;
+    const seg = L.F.segments.find((x) => x.name === (L.kind === "moon" ? "lunar-orbit" : "entry"));
+    if (!seg) return null;
+    const s = L.F.sampleAt(seg.t0_screen + 0.02);
+    const up = world.fromECI(s.pos_eci_km).sub(bodyCentre(L.kind, s)).normalize();
+    const fwd = eciDir(s.vel_kms ?? s.vel_eci_kms);
+    fwd.addScaledVector(up, -fwd.dot(up));
+    if (fwd.lengthSq() < 1e-10) return null;
+    L.arrive = { up, fwd: fwd.normalize() };
+    return L.arrive;
+  }
   const spNow = new THREE.Vector3();
   const spVel = new THREE.Vector3();
   function spaceCam(dt) {
@@ -1577,39 +1592,51 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     // burns in space the axes are LOCKED (the planet stays put in the lower frame instead of sweeping under the
     // vehicle); they ease back to the live local frame for re-entry and the descent.
     const seg0 = L.smp.segment;
-    const live = /reentry|landing|braking|approach|vertical|entry|parachute|deorbit|booster-descent|lunar-orbit|mars-orbit/.test(seg0);
+    // From the cruise on (Moon / Mars) the frame is the target's: up away from its centre, forward along the
+    // velocity relative to it. Continuous from the cruise into orbit and the descent: no turn at insertion, the
+    // target below and growing (Head 1, round 25: it swung 420° in 10 s there).
+    const dest = L.kind === "moon" || L.kind === "mars" ? L.kind : null;
+    const toward = dest && (seg0 === "transfer" || seg0 === "coast" || L.smp.body === dest);
+    const live = toward || /reentry|landing|braking|approach|vertical|entry|parachute|deorbit|booster-descent|lunar-orbit|mars-orbit/.test(seg0);
     c.lockK = ease1(c.lockK ?? 0, live ? 0 : 1, dt, 0.8); // 1 = locked
-    const centre = bodyCentre(L.smp.body === "space" ? "earth" : L.smp.body, L.smp);
+    const centre = bodyCentre(toward ? dest : L.smp.body === "space" ? "earth" : L.smp.body, L.smp);
     const upNow = spNow.copy(L.V).sub(centre).normalize().applyQuaternion(L.QnInv);
     c.upLock ??= upNow.clone();
     const black = state.cut >= 0.98; // a skip or a cut: the locked frame re-takes the new place unseen
     if (c.lockK < 0.05 || black) c.upLock.copy(upNow);
     spUp.copy(upNow).lerp(c.upLock, c.lockK).normalize();
     // Direction of travel along the surface (the velocity, or the nose when the velocity is near vertical).
-    const v = L.smp.vel_kms ?? L.smp.vel_eci_kms; // relative to the body it is at (the Moon moves ~1 km/s)
+    let v = L.smp.vel_kms ?? L.smp.vel_eci_kms; // relative to the body it is at (the Moon moves ~1 km/s)
+    if (toward && L.smp.body !== dest && L.smp.vel_eci_kms) {
+      // the cruise: relative to the target (the Moon's own motion from its position a second either side)
+      const ve = L.smp.vel_eci_kms;
+      const a = dest === "moon" ? L.F.bodyPosAt("moon", L.smp.t_sim - 1) : null;
+      const b = dest === "moon" ? L.F.bodyPosAt("moon", L.smp.t_sim + 1) : null;
+      v = a && b ? [ve[0] - (b[0] - a[0]) / 2, ve[1] - (b[1] - a[1]) / 2, ve[2] - (b[2] - a[2]) / 2] : ve;
+    }
     const f = v ? spVel.set(v[0], v[1], v[2]).applyQuaternion(world.eciFrame).applyQuaternion(L.QnInv) : null;
     if (f && (c.lockK < 0.5 || black)) {
       f.addScaledVector(spUp, -f.dot(spUp));
       if (f.lengthSq() > 1e-8) spFwd.lerp(f.normalize(), black ? 1 : 1 - Math.exp(-dt / 0.8)).normalize(); // eased: no snaps
     }
+    // The cruise holds the arrival's framing (its frame at insertion / entry interface, from the timeline): fixed
+    // against the stars the whole way, no swing in the fades, and insertion opens on the same view.
+    const A = toward && (seg0 === "transfer" || seg0 === "coast") ? arrivalFrame() : null;
+    if (A) {
+      spUp.copy(A.up).applyQuaternion(L.QnInv);
+      spFwd.copy(A.fwd).applyQuaternion(L.QnInv);
+    }
     const seg = L.smp.segment;
     const low = /reentry|landing|braking|approach|vertical|entry|parachute|booster-descent/.test(seg);
     const away = L.kind === "moon" || L.kind === "mars";
-    // The cruise (Moon / Mars): behind the stage on the line from its target, a little above, the target ahead
-    // above the stage and growing; the stars fixed behind.
-    if (away && (seg === "transfer" || seg === "coast")) {
-      spVel.copy(bodyCentre(L.kind, L.smp)).sub(L.V).normalize().applyQuaternion(L.QnInv);
-      spFwd.lerp(spVel, 1 - Math.exp(-dt / 0.8)).normalize();
-      spUp.addScaledVector(spFwd, -spUp.dot(spFwd)).normalize();
-    }
     // Outside the cruise the held forward lies along the ground (from the cruise it points at the target, i.e.
     // down at arrival: without this the camera ends up over the stage looking straight down).
-    if (!(away && (seg === "transfer" || seg === "coast"))) {
+    {
       spFwd.addScaledVector(spUp, -spFwd.dot(spUp));
       if (spFwd.lengthSq() < 1e-6) spFwd.set(spUp.y, -spUp.x, 0).lengthSq() < 1e-6 && spFwd.set(1, 0, 0);
       spFwd.normalize();
     }
-    const el = THREE.MathUtils.degToRad(low ? 10 : away ? 14 : 24);
+    const el = THREE.MathUtils.degToRad(low ? 10 : toward ? 8 : away ? 14 : 24);
     const dist = L.trackDist * (low ? 1.3 : 1.6);
     L.flight.localToWorld(spLook.set(0, c.trackY ?? L.trackLocalY, 0));
     // Away from Earth: a three-quarter view (35° off the line of travel), never the stack end-on as a dot. The Mars
@@ -1642,7 +1669,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       spGoal.copy(spLook).add(new THREE.Vector3(Math.sin(az) * Math.cos(e), Math.sin(e), Math.cos(az) * Math.cos(e)).multiplyScalar(d));
     }
     // In space, aim a little below the vehicle so the Earth and its limb fill the lower part of the frame.
-    if (!low && !(away && (seg === "transfer" || seg === "coast"))) spLook.addScaledVector(spUp, -0.12 * dist);
+    if (!low && !toward) spLook.addScaledVector(spUp, -0.12 * dist); // (toward the target: level, its surface in the lower part)
     c.space = Math.min(1, (c.space ?? 0) + dt / 2.5); // blend in from the ascent framing over 2.5 s
     const k = c.space * c.space * (3 - 2 * c.space);
     camera.position.lerp(spGoal, k);
@@ -1939,33 +1966,87 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       L.siteFrame = L.ground.frame.clone();
       return;
     }
-    const last = L.F.sampleAt(L.F.totalScreen_s);
-    const pos = eciDir(last.pos_km); // body-relative km, world axes
-    // UI4's 3 km patch (fills the view to the horizon from ~1.5 km), without its own shadow sun: a new light in the
-    // scene would recompile every material (seconds). The scene's key light takes the site's sun direction instead
-    // while the ground shows (state.keyDir, main.js); the terrain's crater shadows are baked toward that sun.
-    L.ground = world.createLocalGround({ body, pos_km: pos, size_km: 3, sunLight: false });
-    if (L.ground.inner?.sunDir) L.groundKeyDir = L.ground.inner.sunDir.clone().normalize();
-    if (warmRenderer) L.ground.inner?.prewarm?.(warmRenderer); // its detail textures, now rather than at ~1 km
-    const lights = [];
-    L.ground.object3d.traverse((o) => o.isLight && lights.push(o));
-    for (const l of lights) {
-      if (l.isDirectionalLight) L.groundKeyDir = l.position.clone().sub(l.target.position).normalize();
-      l.target?.removeFromParent();
-      l.removeFromParent();
-    }
-    root.add(L.ground.object3d);
+    // The ground made at idle for this very timeline (prepareGround), else now.
+    const prep = groundPrep?.F === L.F ? groundPrep : null;
+    if (groundPrep && !prep) disposeGroundPrep();
+    groundPrep = null;
+    const g = prep ?? makeGround(L.F);
+    const pos = g.pos;
+    L.ground = g.ground;
+    L.groundKeyDir = g.keyDir;
+    if (!prep) root.add(L.ground.object3d);
     makeChute();
-    // Compile it now, while it is first added (the countdown), not on the frame it first shows.
     L.groundShown = null;
-    showGround(true);
-    if (L.chute) L.chute.c.object3d.visible = true;
-    warmRenderer?.compile(scene, camera);
+    if (!prep) {
+      // compiled now, while it is first added (the countdown), not on the frame it first shows
+      showGround(true);
+      if (L.chute) L.chute.c.object3d.visible = true;
+      warmOffscreen();
+      if (L.chute) L.chute.c.object3d.visible = false;
+    }
     showGround(false);
-    if (L.chute) L.chute.c.object3d.visible = false;
     L.siteFrame = L.ground.frame.clone();
     L.sun0 = world.sunDir.clone();
     L.sunSite = world.sunForSite(body, pos).clone();
+  }
+  // UI4's 3 km patch (fills the view to the horizon from ~1.5 km), without its own shadow sun: a new light in the
+  // scene would recompile every material (seconds). The scene's key light takes the site's sun direction instead
+  // while the ground shows (state.keyDir, main.js); the terrain's crater shadows are baked toward that sun.
+  function makeGround(F) {
+    const body = F.endState?.body ?? F.kind;
+    const pos = eciDir(F.sampleAt(F.totalScreen_s).pos_km); // body-relative km, world axes
+    const ground = world.createLocalGround({ body, pos_km: pos, size_km: 3, sunLight: false });
+    let keyDir = ground.inner?.sunDir ? ground.inner.sunDir.clone().normalize() : null;
+    if (warmRenderer) ground.inner?.prewarm?.(warmRenderer); // its detail textures, now rather than at ~1 km
+    const lights = [];
+    ground.object3d.traverse((o) => o.isLight && lights.push(o));
+    for (const l of lights) {
+      if (l.isDirectionalLight) keyDir = l.position.clone().sub(l.target.position).normalize();
+      l.target?.removeFromParent();
+      l.removeFromParent();
+    }
+    return { ground, keyDir, pos };
+  }
+  // One offscreen render (the post chain's render-target program variants and the shadow pass's depth ones) plus
+  // the canvas variants: what is shown now is warm for the flight.
+  // The same, asynchronous (KHR_parallel_shader_compile): the programs link in the GPU process while frames go on
+  // (UI 6: ~1 s of compile at DPR 2 for the twin's materials); resolves when they are ready.
+  function warmAsync() {
+    if (!warmRenderer) return Promise.resolve();
+    if (!warmRenderer.compileAsync) return Promise.resolve(warmOffscreen());
+    const prev = warmRenderer.getRenderTarget();
+    warmRenderer.setRenderTarget(warmTarget); // (compile reads the bound target for the program keys)
+    const a = warmRenderer.compileAsync(scene, camera);
+    warmRenderer.setRenderTarget(prev);
+    const b = warmRenderer.compileAsync(scene, camera);
+    return Promise.all([a, b]).catch(() => {});
+  }
+  function warmOffscreen() {
+    if (!warmRenderer) return;
+    const prev = warmRenderer.getRenderTarget();
+    warmRenderer.setRenderTarget(warmTarget);
+    warmRenderer.compile(scene, camera);
+    warmRenderer.render(scene, camera);
+    warmRenderer.setRenderTarget(prev);
+    warmRenderer.compile(scene, camera);
+  }
+  // At idle (main, once the stack is complete): the Moon / Mars landing ground for the timeline main will fly,
+  // made, added hidden and warmed, so L does not build or compile it.
+  let groundPrep = null;
+  function disposeGroundPrep() {
+    groundPrep?.ground.dispose?.();
+    groundPrep?.ground.object3d.removeFromParent();
+    groundPrep = null;
+  }
+  function prepareGround(F) {
+    if (state.launch || !world || !F || F.blocked || F.endState?.type !== "landed" || !/moon|mars/.test(F.endState.body ?? F.kind)) return;
+    if (groundPrep?.F === F) return;
+    disposeGroundPrep();
+    const g = makeGround(F);
+    root.add(g.ground.object3d);
+    g.ground.object3d.traverse((o) => o !== g.ground.object3d && (o.isMesh || o.isPoints || o.isLine || o.isSprite) && (o.visible = false));
+    groundPrep = { F, ...g };
+    warmAsync(); // (compile takes hidden objects too; it shows at the descent, long after this has finished)
   }
   // Mars (UI4's parachute.js): the canopy at the top of the stack, sized by arrival.js's canopy (6 × the
   // payload's diameter, a model choice), deployed from the sample's chute (0 packed → 1 open); when it drops to 0
@@ -2001,47 +2082,63 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     const key = twinKey();
     if (twinPrep?.key === key) return true;
     twinPrep?.twin.dispose();
-    twinPrep = { key, twin: buildTwin() };
-    warmTwin(twinPrep.twin);
+    const twin = buildTwin();
+    twinPrep = { key, twin };
+    warmAsync().then(() => (twin.ready = true));
     return true;
   }
   // Its programs as the flight draws them: the post chain renders into a render target (no tone mapping, linear
   // output: other program variants than renderer.compile gives for the canvas), and the shadow pass needs its depth
   // materials; so one offscreen render of the scene with the twin shown, then the canvas variants too (the
   // picture-in-picture draws straight to the canvas). UI 6: without it, 13 programs (~1 s) linked at L.
-  function warmTwin(twin) {
-    if (!warmRenderer) return;
-    const prev = warmRenderer.getRenderTarget();
-    twin.group.visible = true;
-    warmRenderer.setRenderTarget(warmTarget);
-    warmRenderer.compile(scene, camera);
-    warmRenderer.render(scene, camera);
-    warmRenderer.setRenderTarget(prev);
-    prewarmAll(warmRenderer, scene, camera, { extras: [twin.group] });
-    twin.group.visible = false;
-  }
-  // At L: the prepared twin if it is ready for this stack; otherwise it is made and warmed in the countdown's
-  // first second (on the pad, the camera still), never on the launch frame.
-  function attachTwin() {
+  // At L: the prepared twin once its programs are ready (now, or a few frames into the countdown); not prepared
+  // for this stack: made in the countdown's first second and swapped in when warm. The builder flies until then,
+  // and for the whole flight if the twin is not ready before the first drop.
+  function useTwin() {
     const twin = twinPrep?.key === twinKey() ? twinPrep.twin : null;
-    if (twin) return swapTwin(twin);
-    twinPrep?.twin.dispose();
+    if (!twin) {
+      twinPrep?.twin.dispose();
+      twinPrep = null;
+      L.twinPending = true;
+      return;
+    }
     twinPrep = null;
-    L.twinPending = true;
+    if (twin.ready) swapTwin(twin);
+    else L.twinWait = twin;
+  }
+  function twinStep() {
+    if (L.twinPending && L.real > -L.countdown + 0.3) {
+      L.twinPending = false;
+      const twin = buildTwin();
+      warmAsync().then(() => (twin.ready = true));
+      L.twinWait = twin;
+    }
+    if (!L.twinWait) return;
+    if (L.gone.size || L.done) {
+      L.twinWait.dispose(); // too late: the builder flies this one
+      L.twinWait = null;
+    } else if (L.twinWait.ready) {
+      swapTwin(L.twinWait);
+      L.twinWait = null;
+    }
   }
   function swapTwin(twin) {
     twinPrep = null;
-    // the Max-Q halo, hung on a builder group at L, moves to its twin (a swap in the countdown comes after it)
-    const halo = L.fx?.halo?.object3d;
-    const haloPart = halo ? parts.find((p) => p.group === halo.parent) : null;
-    if (haloPart) twin.partGroup(haloPart)?.attach(halo);
     for (const part of parts) {
       const tg = twin.partGroup(part);
       if (!tg) continue;
+      // in the builder group's place (same parent, same local pose: the twin's part frame is the part's), and what
+      // already hangs on it (the halo, plumes from engine start, the chute) moves over at the same local pose
+      const bg = part.group;
+      bg.parent.add(tg);
+      tg.position.copy(bg.position);
+      tg.quaternion.copy(bg.quaternion);
+      tg.scale.copy(bg.scale);
       tg.visible = true;
-      L.flight.attach(tg); // the flight group's frame, where the builder group hangs
-      part.builderGroup = part.group;
-      part.group.visible = false;
+      const own = new Set(part.pieces.map((q) => q.mesh));
+      for (const o of [...bg.children]) if (!own.has(o)) tg.add(o);
+      part.builderGroup = bg;
+      bg.visible = false;
       part.group = tg;
     }
     L.twin = twin;
@@ -2177,6 +2274,10 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       L.cut = { t: 0, up: 0, fired: false, hold: 1, wait: () => L.flipping && L.real < until, fn: () => {} };
     }
   }
+  // Across a skip (minutes to days of flight in a cut) the spent stages and fairing halves are long gone.
+  function clearDebris() {
+    for (const d of L.debris) d.part.group.visible = false;
+  }
   function flightUpdate(dt) {
     const F = L.F;
     L.dtFrame = dt;
@@ -2195,18 +2296,19 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       if (e.type !== "time-skip" || e.cutDone || L.real < e.t_screen - CUT_DOWN || L.real > e.t_screen + 0.3) continue;
       e.cutDone = true;
       const until = e.to_t_screen ?? e.t_screen;
-      if (until - e.t_screen > 0.6) continue; // the Moon / Mars cruise (~2 s) is shown: the stage, the target growing ahead
-      if (!L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 0, wait: () => L.real < until, fn: () => {} };
+      if (until - e.t_screen > 0.6) {
+        // the Moon / Mars cruise (~2 s) is shown: a quick fade at its start only, the camera taking the target's
+        // frame on the black frame
+        const t1 = e.t_screen + 0.15;
+        if (!L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 1, wait: () => L.real < t1, fn: clearDebris };
+        continue;
+      }
+      if (!L.cut) L.cut = { t: 0, up: 0, fired: false, hold: 0, wait: () => L.real < until, fn: clearDebris };
     }
     if (!L.done) L.real += dt;
     const tS = L.real;
     state.countdown = tS < 0;
-    if (L.twinPending && tS > -L.countdown + 0.3 && tS < -3) {
-      L.twinPending = false;
-      const twin = buildTwin();
-      warmTwin(twin);
-      swapTwin(twin);
-    }
+    if (L.twinPending || L.twinWait) twinStep();
     const smp = F.sampleAt(THREE.MathUtils.clamp(tS, 0, F.totalScreen_s));
     L.smp = smp;
     const t = tS < 0 ? tS : smp.t_sim;
@@ -2505,7 +2607,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     };
     retarget();
     if (L.F) makeLandingLegs(); // (before the twin: the legs become its deployables)
-    attachTwin();
+    useTwin();
     if (L.F) prepareLanding(); // its ground (and any light it carries) joins the scene now, in the countdown
     controls.autoRotate = false;
     controls.maxPolarAngle = Math.PI * 0.95; // the pad camera looks up from near the deck
@@ -3123,6 +3225,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     disposeEnding();
     if (!L) return;
     storySunOff();
+    L.twinWait?.dispose();
     for (const d of L.deps ?? []) deployPiece(d.piece, 0);
     L.les?.group.removeFromParent();
     dropTwin();
@@ -3565,6 +3668,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     setBounds,
     prewarm,
     prepareTwin,
+    prepareGround,
     uploadWarmTextures,
     nearOriginKm,
     viewer,

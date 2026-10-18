@@ -116,7 +116,7 @@ const root = new THREE.Group(); // shakes on lock
 scene.add(root);
 let pad = null;
 let anchors = null; // the launch complex (complex.js): tower, arms, RSS, person, masts at true size, on the pad
-const skyState = { time: "day", weather: "clear" }; // the user's Day/Night (N) and Clear/Cloudy (W) toggles
+const skyState = { time: "dusk", weather: "clear" }; // the user's sky (N: day → dusk → night) and Clear/Cloudy (W); dusk by default (user, round 25)
 const RSS_MATED = 120; // degrees; the countdown swings it away (choreo)
 // UI4's star field is a 90–130 u shell; pushed out ×30 (as in UI4's world harness) so no star sits in front of a
 // globe, with the points scaled to keep their size on screen.
@@ -257,7 +257,9 @@ function applySky() {
   if (!r) return;
   asColor(r.key?.color, key.color);
   if (Number.isFinite(r.key?.intensity)) keyBase = key.intensity = r.key.intensity;
-  skyKeyDir = r.time === "day" && r.sunDir ? new THREE.Vector3().copy(r.sunDir).normalize() : null;
+  // the key is the sun by day and at dusk (UI4: the low warm sun over the sea is the main light then); at night
+  // the fixed key direction
+  skyKeyDir = r.time !== "night" && r.sunDir ? new THREE.Vector3().copy(r.sunDir).normalize() : null;
   asColor(r.fill?.color, fill.color);
   if (Number.isFinite(r.fill?.intensity)) fill.intensity = r.fill.intensity;
   asColor(r.hemi?.sky, hemi.color);
@@ -267,7 +269,7 @@ function applySky() {
   if (Number.isFinite(r.exposure)) renderer.toneMappingExposure = r.exposure; // UI4: clear day 0.92, else 1.0
   asColor(r.fog?.color, FOG0);
   scene.fog.color.copy(FOG0);
-  skyFog = r.time === "day" ? r.fog : null; // by day the air is clear: the haze only far off (its suggested band)
+  skyFog = r.time !== "night" ? r.fog : null; // by day and at dusk the air is clear: the haze only far off (its suggested band)
   asColor(r.background, BG);
   world.clearColor.copy(BG);
   if (anchors?.setSky) anchors.setSky(r); // the complex's daylight and its coast (sun, sky colours, cloud cover)
@@ -571,11 +573,11 @@ skyBar.className = "sky-toggles";
 skyBar.innerHTML = `<button type="button" data-sky="time"></button><button type="button" data-sky="weather"></button>`;
 shell.brand.appendChild(skyBar);
 function skyButtons() {
-  skyBar.querySelector('[data-sky="time"]').textContent = skyState.time === "day" ? "Day" : "Night";
+  skyBar.querySelector('[data-sky="time"]').textContent = { day: "Day", dusk: "Dusk", night: "Night" }[skyState.time] ?? "Dusk";
   skyBar.querySelector('[data-sky="weather"]').textContent = skyState.weather === "clear" ? "Clear" : "Cloudy";
 }
 function toggleSky(which) {
-  if (which === "time") skyState.time = skyState.time === "day" ? "night" : "day";
+  if (which === "time") skyState.time = { day: "dusk", dusk: "night", night: "day" }[skyState.time] ?? "dusk";
   else skyState.weather = skyState.weather === "clear" ? "cloudy" : "clear";
   applySky();
 }
@@ -989,6 +991,7 @@ function simFor(build) {
 const idle = window.requestIdleCallback ?? ((fn) => setTimeout(fn, 250));
 // UI4's flight twin for the launch, made and compiled at idle while the stack stands complete (choreo keeps it
 // until the stack changes).
+const flightPrep = { key: null, flight: null };
 function twinSoon() {
   if (twinSoon.pending) return;
   twinSoon.pending = true;
@@ -997,7 +1000,21 @@ function twinSoon() {
       twinSoon.pending = false;
       if (!isComplete() || choreo.state.launch) return;
       // (an idle callback can starve while the scene animates: a timeout makes it run, and a busy stack retries)
-      if (!choreo.prepareTwin?.(current.build.missionId)) setTimeout(twinSoon, 500);
+      if (!choreo.prepareTwin?.(current.build.missionId)) return void setTimeout(twinSoon, 500);
+      // then, in idle slices of their own (each well under 100 ms): the flight's timeline, its landing ground
+      const key = buildKey(current.build);
+      if (flightPrep.key === key) return;
+      idle(
+        () => {
+          if (!isComplete() || choreo.state.launch || buildKey(current.build) !== key) return;
+          const sim = simFor(current.build);
+          const fl = sim?.samples?.length && sim.summary.outcome !== "blocked" ? flightTimeline(current.build, catalog, { ascent: sim }) : null;
+          flightPrep.key = fl && !fl.blocked ? key : null;
+          flightPrep.flight = flightPrep.key ? fl : null;
+          if (flightPrep.flight) idle(() => flightPrep.flight && !choreo.state.launch && choreo.prepareGround?.(flightPrep.flight), { timeout: 1200 });
+        },
+        { timeout: 1200 },
+      );
     },
     { timeout: 1200 },
   );
@@ -1081,7 +1098,10 @@ async function launch({ countdown, brief = false } = {}) {
   selector.clear();
   const arrival = arrivalTimeline(current.build, catalog, sim.summary);
   // One timeline for the whole flight (UI 2's flight.js); the story runs it shorter.
-  const flight = brief ? null : flightTimeline(current.build, catalog, { ascent: sim }); // the story keeps its short ascent
+  // the timeline made at idle for this build (its landing ground is warm), else now; the story keeps its short ascent
+  const prepped = flightPrep.key === buildKey(current.build) ? flightPrep.flight : null;
+  flightPrep.key = flightPrep.flight = null; // (a flight marks its timeline's events: one use)
+  const flight = brief ? null : prepped ?? flightTimeline(current.build, catalog, { ascent: sim });
   lastFlight = flight && !flight.blocked ? flight : null;
   rangeFlight = false;
   telemetry.sentences = [];
@@ -1778,7 +1798,7 @@ function frame() {
   // Daylight scenes in flight (the sun up over where the vehicle is, low enough to be under a lit sky): a faint
   // dark scrim behind the HUD line and the key legend keeps them legible (body.bright-sky).
   const vv = worldOn ? choreo.viewer() : null;
-  let bright = !vv && worldOn && skyState.time === "day"; // the day sky behind the builder
+  let bright = !vv && worldOn && skyState.time !== "night"; // the day / dusk sky behind the builder
   if (vv) {
     const up = viewerKm.copy(vv.pos_km);
     const alt = up.length() - world.bodies.earth.radius_km;
