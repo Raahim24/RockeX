@@ -1475,12 +1475,20 @@ function detailBudget(rawDt) {
   detailGuard.sum = detailGuard.n = 0;
   if (detailGuard.skip-- > 0) return; // the first window after a change settles
   if (avg > 0.022) {
-    setDetailLevel(--detail);
+    detail--;
     detailGuard.skip = 1;
   }
 }
+// In flight from tower clear to the end line the chase camera is far and sub-parts are sub-pixel: detail 1
+// (no instanced rivets/bolts, lines on shells only). Full detail on the pad, at liftoff and in the result view.
+let appliedDetail = detail;
+function applyDetail() {
+  const lvl = Math.min(detail, choreo.state.pastTower ? 1 : 2);
+  if (lvl !== appliedDetail) setDetailLevel((appliedDetail = lvl));
+}
 function luxuryBudget(rawDt) {
   detailBudget(rawDt);
+  applyDetail();
   if (!gtao) return;
   gtao.enabled = perf.gtaoOk && !animating();
   if (!gtao.enabled && !dof?.enabled) {
@@ -1505,7 +1513,10 @@ let dofK = 0;
 function updateDof(dt) {
   if (!dof) return;
   const s = choreo.state;
-  const flying = s.launch === "flying" || Boolean(s.ending);
+  // Not in flight: the pass re-renders the whole scene for its depth, doubling the draw calls (UI 6's numbers).
+  // On through the pad sequence and countdown (the close-ups of the arms, vents and engine start), off from T0,
+  // back on in the held result view and on a part focus at rest.
+  const flying = (s.launch === "done" && !s.ending) || (s.launch === "flying" && s.countdown);
   const focused = choreo.framing().mode === "focus" && !s.launch && !animating();
   const want = perf.dofOk && !landingOn() && (flying || focused);
   dofK += ((want ? 1 : 0) - dofK) * (1 - Math.exp(-dt / 0.15));

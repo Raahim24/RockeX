@@ -105,7 +105,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
 
   // cut: 0..1, the fade through black between the ending's scenes (main draws it as a full-screen overlay).
   // sky: during a launch, the background/fog/stars main blends in ({ w, horizon, stars, near, far }; see updateSky).
-  const state = { busy: 0, exploded: false, scrubbing: false, auto: false, launch: null, deploying: false, ending: false, gen: 0, shake: 0, cut: 0, sky: null };
+  // pastTower: in flight between tower clear and the end line (main lowers the parts' detail then).
+  // countdown: the pad sequence before T0 (main keeps the DoF for those close-ups).
+  const state = { busy: 0, exploded: false, scrubbing: false, auto: false, launch: null, deploying: false, ending: false, gen: 0, shake: 0, cut: 0, sky: null, pastTower: false, countdown: false };
   const live = new Set();
   const selectColor = new THREE.Color(COLORS.select ?? 0xffb020);
   const highlighted = new Set();
@@ -1178,6 +1180,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         if (!L.ignited) ignite(0, e.t); // normally already lit in the countdown (padSequence)
         L.ignited = true;
         break;
+      case "tower-clear":
+        state.pastTower = true;
+        break;
       case "liftoff":
         sfx.play("clunk"); // hold-down release
         state.shake = 1;
@@ -1734,6 +1739,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     L.dtFrame = dt;
     if (!L.done) L.real += dt;
     const tS = L.real;
+    state.countdown = tS < 0;
     const smp = F.sampleAt(THREE.MathUtils.clamp(tS, 0, F.totalScreen_s));
     L.smp = smp;
     const t = tS < 0 ? tS : smp.t_sim;
@@ -1840,6 +1846,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   }
   function finishFlight() {
     L.done = true;
+    state.pastTower = false; // the result view at full detail
     for (const pl of L.plumes) {
       pl.dead = true;
       pl.plume.update(0, { throttle: 0, ambientPressure_Pa: 0, cameraDistance: 10 });
@@ -1871,6 +1878,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     L.real += dt;
     const t = simTime(L.keys, L.real);
+    state.countdown = t < 0;
     padSequence(t, dt);
     if (t < 0) {
       L.onTelemetry({ countdown: Math.ceil(-t), label: L.real < L.labelUntil ? L.label : "" });
@@ -1928,6 +1936,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
 
   function finishLaunch(s) {
     L.done = true;
+    state.pastTower = false;
     for (const pl of L.plumes) {
       pl.dead = true;
       pl.plume.update(0, { throttle: 0, ambientPressure_Pa: 0, cameraDistance: 10 }); // no plume left lit (SECO can land on this frame)
@@ -2672,6 +2681,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     controls.maxPolarAngle = L.maxPolar0;
     controls.maxDistance = L.maxDist0;
+    state.pastTower = false;
+    state.countdown = false;
     if (L.far0) {
       camera.far = L.far0;
       camera.updateProjectionMatrix();

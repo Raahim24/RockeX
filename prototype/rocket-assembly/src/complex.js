@@ -66,7 +66,8 @@
 //   - The builder's fog band (main.js: dist − 0.6 R … dist + 6 R, R = stack radius) blacks out everything a few
 //     units past the rocket; fogRange(dist) returns a band that shows the complex ({ near, far }, scene units).
 //   - The FSS is fixed: drive the arms (mesh.rotation.y), not tower.rotation.z (the anchors.js strongback lean
-//     would tip the whole FSS). tower.visible = false hides the FSS, arms and RSS; setVisible(false) hides all.
+//     would tip the whole FSS). tower.visible = false hides the FSS, arms and RSS; setVisible(false) hides all
+//     (the 2 spots stay in the scene at intensity 0, so the light count never changes; `visible` reads it back).
 // Sizes are visual proportions (named constants below) or real-world orders of magnitude for a generic pad; none
 // is shown on screen as a fact.
 import * as THREE from "three";
@@ -2040,7 +2041,15 @@ export function createLaunchComplex({
   groundU.uGFar.value.set(siteR * 0.75, Math.max(m(60), Rf * 0.55), 0.16, 1 / m(60));
   nightU.uNight.value.set(siteR * 0.9, Math.max(m(70), Rf * 0.6), 0.2, 0);
   // Real lights: two warm spots (front-left bank: the key's side; back-right: a rim on the vehicle), no shadows.
+  // They hang in their own group (site frame) that setVisible never hides: a light leaving the scene changes the
+  // renderer's light count and relinks every lit program (a 0.3–0.75 s stall when Compare opens), so hidden they
+  // go to intensity 0 instead.
   const lights = [];
+  const rig = new THREE.Group();
+  rig.name = "complex-lights";
+  rig.rotation.copy(site.rotation);
+  object3d.add(rig);
+  let shown = true;
   if (spotLights) {
     for (const [i, kI] of [
       [3, 1.15],
@@ -2057,7 +2066,7 @@ export function createLaunchComplex({
       spot.distance = d * 3;
       spot.angle = clamp(Math.atan((0.62 * H) / d), 0.2, 0.65);
       spot.castShadow = false;
-      site.add(spot, spot.target);
+      rig.add(spot, spot.target);
       lights.push(spot);
     }
   }
@@ -2102,12 +2111,16 @@ export function createLaunchComplex({
     return true;
   }
   object3d.addEventListener("added", () => {
-    if (object3d.parent?.name === "pad" && object3d.visible) adoptPad(object3d.parent);
+    if (object3d.parent?.name === "pad" && shown) adoptPad(object3d.parent);
   });
   object3d.addEventListener("removed", restorePad);
   if (pad) adoptPad(pad);
 
   // ---------- API ----------
+  const shownWas = new Map(); // each child's visibility while the complex is hidden
+  const setSpots = () => {
+    for (const s of lights) s.intensity = shown ? s.userData.intensity0 * (look === "xray" ? 0.4 : 1) : 0;
+  };
   let look = "painted";
   const beaconCol = beaconGeo.attributes.color;
   const padC = new THREE.Vector3();
@@ -2159,15 +2172,30 @@ export function createLaunchComplex({
       return { near: Math.max(0.1, dist * 0.9), far: dist + Rf * 1.25 };
     },
     adoptPad,
+    // Hides everything but the light rig (whose spots go dark): the light count never changes. Each child's own
+    // visibility (e.g. tower.visible = false) comes back as it was.
     setVisible(on) {
-      object3d.visible = !!on;
+      on = !!on;
+      if (on !== shown) {
+        shown = on;
+        for (const c of object3d.children) {
+          if (c === rig) continue;
+          if (!on) shownWas.set(c, c.visible);
+          c.visible = on ? (shownWas.get(c) ?? true) : false;
+        }
+        if (on) shownWas.clear();
+        setSpots();
+      }
       if (!on) restorePad();
       else if (object3d.parent?.name === "pad") adoptPad(object3d.parent);
+    },
+    get visible() {
+      return shown;
     },
     setLook(next = "painted") {
       look = next === "xray" ? "xray" : "painted";
       setPropLook(object3d, look);
-      for (const s of lights) s.intensity = s.userData.intensity0 * (look === "xray" ? 0.4 : 1);
+      setSpots();
       lampMat.emissiveIntensity = S.lamp.emissiveIntensity * floodK * (look === "xray" ? 0.6 : 1);
       return look;
     },

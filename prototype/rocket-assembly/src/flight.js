@@ -2,7 +2,8 @@
 //   flightTimeline(build, catalog, opts?) -> {
 //     outcome, kind, endState, bodies, bodyPosAt(body, t_sim), segments, events, stageDrops, sampleAt(t_screen),
 //     screenToSim(t), simToScreen(t), surfaceFrame, totalScreen_s, totalSim_s, arrival, est }
-//   opts: { ascent (a simulateAscent result to reuse), totalScreen_s (scales every segment's share) }
+//   opts: { ascent (a simulateAscent result to reuse), totalScreen_s (scales every segment's share),
+//           calibrate (false: fly the ascent uncalibrated, see below) }
 //   A blocked build gives { blocked: true, outcome: "blocked", reason, endState, est } and nothing else.
 //   sampleAt(t_screen) -> { t_sim, t_screen, body ("earth" | "moon" | "mars" | "space"), segment, phase,
 //     stageIndex (null once only the spacecraft flies), pos_km (body-centred; "space" = Earth-centred), pos_eci_km,
@@ -24,7 +25,8 @@
 //   endState: { type, line (ready to show), text (= line) , ... }; type:
 //     "landed" (body; Earth missions bring the stage home, a story ending: line "Stage brought home (story) · est.",
 //     story: true, missionLine, landing { site, ... }) | "in-orbit-of" (body)
-//     | "lost" (impact { downrange_km, surface: "sea" | "ground" }) | "transfer-failed" (body, shortBy_ms,
+//     | "lost" (impact { downrange_km, surface: "sea" | "ground" }; shortBy_ms, budget_ms, orbitShortBy_ms,
+//     orbitBudget_ms when the verdict found it short of the LEO share) | "transfer-failed" (body, shortBy_ms,
 //     apogee_km (null if it escapes Earth), perigee_km, period_s) | "aborted" (blocked, or never left the pad).
 //   stageDrops: [{ type: "sep" | "fairing" | "payload-release" | "spacecraft-sep", stageIndex, t_sim, t_screen,
 //     dropAway: { dir_body, dir_eci, speed_ms, duration_s } }] (fairing: one half; the other mirrors x).
@@ -33,9 +35,14 @@
 // - Frame: Earth-centred, km, z = Earth's axis, x toward longitude 0; Earth's rotation ignored. Launch site 28.5 N,
 //   80.6 W (Cape Canaveral) launching due east, so the ascent's 2-D plane is the plane of the site's up and east
 //   directions, and everything after stays in that plane (the Moon's orbit is drawn in it too).
-// - The flight is the build's consequence. Never in orbit (ascent.js "impact" / suborbital "shortfall"): the
-//   ascent samples run through the fall and re-entry (heat) to the ground: "lost" (or "aborted" if it never left
-//   the pad). LEO: a quarter of a circular orbit at the SECO radius: "orbit".
+// - The flight is the build's consequence, and the verdict decides (round 21): ascent.js calibrates its trajectory
+//   to the verdict and the mission table (summary.calibration, est.). A GO build gets its mission. A NO-GO build
+//   with less than the LEO share (9,400 m/s) runs dry below orbital speed and falls: "lost", its line naming the
+//   shortfall ("Lost · Δv 2,043 m/s short of the 9,400 m/s LEO budget; burn ran dry short of orbit (est.)").
+//   One with the LEO share but short of its mission reaches the parking orbit and its departure burn runs dry
+//   short by exactly the verdict's shortfall: "transfer-failed" (below). opts.calibrate = false flies the build
+//   uncalibrated. Never in orbit (ascent.js "impact" / suborbital "shortfall"): the ascent samples run
+//   through the fall and re-entry (heat) to the ground: "lost" (or "aborted" if it never left the pad).
 // - Beyond LEO: a third of a circular parking orbit, then the departure burn, flown: the upper stage's own vacuum
 //   thrust and mass flow (engines.json), prograde, RK4 under Earth's gravity, until it has given the mission's
 //   departure delta-v (missions.json: mission - leo; for lunar-orbit, moon-transfer - leo, the rest being the
@@ -384,7 +391,7 @@ function buildClock(segs, windows) {
 
 // ---------- the timeline ----------
 export function flightTimeline(build, catalog, opts = {}) {
-  const ascent = opts.ascent ?? simulateAscent(build, catalog);
+  const ascent = opts.ascent ?? simulateAscent(build, catalog, opts.calibrate === false ? { calibrate: false } : {});
   const s = ascent.summary;
   if (s.outcome === "blocked") {
     // not flown: the pad-abort beat and a still rocket on the pad (sampleAt holds the pad point)
@@ -519,7 +526,14 @@ export function flightTimeline(build, catalog, opts = {}) {
         win(breakS.t - 0.5, breakS.t + 1.5);
       }
       const how = s.outcome === "shortfall" ? "Reached space but not orbital speed" : "Never reached orbital speed";
-      endState = end("lost", `Lost · ${how}; fell back and came down ${impact.surface === "sea" ? `${num(impact.downrange_km)} km downrange` : "near the pad"} (est.)`, { impact });
+      // the verdict found it short (calibrated ascent, ascent.js): say by how much, against which budget
+      // the verdict found it short of the LEO share (calibrated ascent, ascent.js): say by how much
+      const cal = s.calibration;
+      const short = cal?.orbitShortBy_ms > 0 ? { shortBy_ms: cal.shortBy_ms, budget_ms: cal.missionDeltaV_ms, orbitShortBy_ms: cal.orbitShortBy_ms, orbitBudget_ms: cal.leoDeltaV_ms } : null;
+      const against = short && (short.budget_ms === short.orbitBudget_ms ? `${num(short.orbitBudget_ms)} m/s LEO budget` : `${num(short.orbitBudget_ms)} m/s needed to reach orbit`);
+      endState = short
+        ? end("lost", `Lost · Δv ${num(short.orbitShortBy_ms)} m/s short of the ${against}; burn ran dry short of orbit (est.)`, { impact, ...short })
+        : end("lost", `Lost · ${how}; fell back and came down ${impact.surface === "sea" ? `${num(impact.downrange_km)} km downrange` : "near the pad"} (est.)`, { impact });
     }
     ev("end", tEndAscent, { body: "earth" });
   } else {
@@ -1083,6 +1097,7 @@ export function flightTimeline(build, catalog, opts = {}) {
     parking: inOrbit ? { perigee_km: round(s.perigee_km, 1), apogee_km: Number.isFinite(s.apogee_km) ? round(s.apogee_km, 1) : null, t_sim: round(tEndAscent, 1) } : null,
     peak: { alt_km: round(Math.max(...AS.map((x) => x.alt_m)) / 1000, 1), speed_ms: Math.round(Math.max(...AS.map((x) => x.vel_ms))) },
     mission: mission?.id ?? null,
+    calibration: s.calibration ?? null, // ascent.js: how the trajectory was made to agree with the verdict (est.)
     payload: payload ? { id: payload.id, archetype: catalog.visuals?.payloads?.[payload.id]?.archetype ?? null } : null,
     _clock: clock, // for checks
     est: true,
@@ -1094,6 +1109,7 @@ export function flightTimeline(build, catalog, opts = {}) {
 //   flightSummaryText(timeline) -> { headline, sentences: [2-3 short sentences] }
 // Every sentence that quotes a modelled number ends "(est.)".
 const BODY_NAME = { earth: "Earth", moon: "the Moon", mars: "Mars" };
+const MISSION_SHORT = { leo: "LEO", gto: "GTO", "earth-escape": "Earth escape", "moon-transfer": "Moon transfer", "lunar-orbit": "lunar orbit", "mars-transfer": "Mars transfer" };
 const MISSION_NAME = { leo: "Low Earth orbit", gto: "Geostationary transfer orbit", "earth-escape": "Earth escape", "moon-transfer": "Moon transfer", "lunar-orbit": "Lunar orbit", "mars-transfer": "Mars transfer" };
 export const GEO_ALT_KM = Math.round(GEO_R - R_EQ);
 const tPlus = (t) => `T+${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
@@ -1122,7 +1138,9 @@ export function flightSummaryText(f) {
     return {
       headline: "Lost · never reached orbit",
       sentences: [
-        est(`It climbed to ${num(f.peak.alt_km)} km at up to ${num(f.peak.speed_ms)} m/s, short of orbital speed`),
+        ...(e.orbitShortBy_ms ? [est(`The design check found it ${num(e.orbitShortBy_ms)} m/s short of the ${num(e.orbitBudget_ms)} m/s it needs to reach orbit, so its burn ran dry short of orbit`)] : []),
+        // fast enough for orbit but too low (in the air) is a different miss from too slow
+        est(f.peak.speed_ms >= Math.sqrt(MU.earth / (R.earth + f.peak.alt_km)) * 1000 ? `It reached ${num(f.peak.speed_ms)} m/s but only ${num(f.peak.alt_km)} km up, too low to stay in orbit` : `It climbed to ${num(f.peak.alt_km)} km at up to ${num(f.peak.speed_ms)} m/s, short of orbital speed`),
         est(`It fell back through the atmosphere and came down ${i.surface === "sea" ? `${num(i.downrange_km)} km downrange` : "near the pad"}`),
       ],
     };

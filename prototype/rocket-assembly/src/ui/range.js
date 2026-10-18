@@ -9,8 +9,10 @@
 // result: nothing unless scrubbed.
 // The line is a button (click, Enter or Space): a popover lists every factor (factorsFor in hazards.js) with its
 // simulated value, the limit, the verdict and the rule's source (new tab). Esc or a click outside closes it.
-// Layout: inside the HUD on desktop. The HUD is hidden at ≤ 760 px (style.css), so there the line docks under the
-// title on its own; at ≤ 420 px the popover is a full-width bottom sheet. CSS is injected once (<style data-range>),
+// Layout: inside the HUD on desktop. At ≤ 760 px style.css shows the HUD as a 1–2 line clamped strip (overflow
+// hidden), so there the line docks on its own just under the HUD's real bottom edge (tracked as the HUD grows from
+// one line to two; 80 px when the HUD can't be measured); at ≤ 420 px the popover is a full-width bottom sheet.
+// Touch screens get a ≥ 24 px hit box on the line (padding offset by a negative margin, so nothing moves). CSS is injected once (<style data-range>),
 // classes are prefixed rng-, colours are style.css's tokens. Keys typed on the line or in the popover do not reach
 // the demo's shortcuts (Space would explode the stack).
 // All DOM work goes through el(); buildLine, narrationFor and factorsFor are pure (scripts/check-range.mjs).
@@ -92,9 +94,10 @@ const CSS = `
 .rng-go { color: var(--go); font-weight: 600; }
 .rng-nogo { color: var(--nogo); font-weight: 600; }
 .rng-key { color: var(--text-2); }
-.rng-dock { position: fixed; top: 50px; left: 16px; right: 16px; z-index: 4; text-align: left;
+.rng-dock { position: fixed; top: 80px; left: 16px; right: 16px; z-index: 4; text-align: left;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7); transition: opacity 600ms ease; }
 body.landing .rng-dock, body.landing .rng-pop { opacity: 0; pointer-events: none; }
+@media (pointer: coarse) { .rng-line { padding: 3px 0; margin: -3px 0; } }
 body.bright-sky .rng-dock { background: rgba(6, 8, 12, 0.42); box-shadow: 0 0 0 6px rgba(6, 8, 12, 0.42); border-radius: 8px; }
 .rng-pop { position: fixed; z-index: 30; width: 380px; max-width: calc(100vw - 32px); max-height: min(70vh, 560px); overflow-y: auto;
   overscroll-behavior: contain; padding: 12px 14px; border: 1px solid rgba(255, 176, 32, 0.32); border-radius: 14px;
@@ -140,16 +143,27 @@ export function mountRange({ host, assessment = null, onOpen = null } = {}) {
   const pop = el("div", { class: "rng-pop", role: "dialog", "aria-label": "Range factors", hidden: true });
   document.body.append(pop);
 
-  // Where the line lives: in the HUD, or docked on its own where the HUD is hidden.
+  // Where the line lives: in the HUD, or docked on its own (narrow screens, where the HUD is a clamped strip).
   const mq = globalThis.matchMedia?.(DOCK_MQ) ?? null;
+  const GAP = 6; // px between the HUD's bottom and the docked line
+  function dockTop() {
+    if (!wrap.classList.contains("rng-dock")) return;
+    const r = host?.getBoundingClientRect?.();
+    wrap.style.top = r && r.height > 0 ? `${Math.round(r.bottom + GAP)}px` : ""; // "" = the CSS 80 px
+  }
   function place() {
     const dock = Boolean(mq?.matches) || !host;
     wrap.classList.toggle("rng-dock", dock);
     const parent = dock ? document.body : host;
     if (wrap.parentNode !== parent) parent.append(wrap);
+    if (dock) dockTop();
+    else wrap.style.top = "";
   }
   place();
   mq?.addEventListener?.("change", place);
+  // The HUD changes height with its text (one line or two): follow it.
+  const ro = host && typeof ResizeObserver === "function" ? new ResizeObserver(() => dockTop()) : null;
+  ro?.observe(host);
 
   function renderLine() {
     const p = lineParts(a, phase);
@@ -229,7 +243,10 @@ export function mountRange({ host, assessment = null, onOpen = null } = {}) {
   const onOutside = (e) => {
     if (!pop.hidden && !pop.contains(e.target) && !line.contains(e.target)) close();
   };
-  const onResize = () => !pop.hidden && position();
+  const onResize = () => {
+    dockTop();
+    if (!pop.hidden) position();
+  };
   line.addEventListener("click", toggle);
   line.addEventListener("keydown", keepKeys);
   pop.addEventListener("keydown", keepKeys);
@@ -256,6 +273,7 @@ export function mountRange({ host, assessment = null, onOpen = null } = {}) {
       removeEventListener("pointerdown", onOutside, true);
       removeEventListener("resize", onResize);
       mq?.removeEventListener?.("change", place);
+      ro?.disconnect();
       wrap.remove();
       pop.remove();
       if (!--styleRefs) {
