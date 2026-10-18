@@ -1,6 +1,7 @@
 // Owner: P1. Composition only, no logic.
 import AssemblyStage from "@/components/assembly/AssemblyStage";
+import { assemblyMarkup } from "@/components/assembly/markup";
 
 export default function Home() {
-  return <AssemblyStage />;
+  return <AssemblyStage markup={assemblyMarkup()} />;
 }
