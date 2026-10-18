@@ -1,10 +1,10 @@
 // Owner: P3. "Your Mission Story": POST { build, image?, flight? } -> { scenes: [{ id, title, caption, imageUrl }] }.
-// Chapters and captions come from code (storyboard.ts). Chapter 1 turns our own 3D still into a photo of this
-// exact rocket; every other chapter that shows the rocket is edited from that photo so it stays identical.
+// Chapters and captions come from code (storyboard.ts). Every chapter showing the rocket is edited from our own
+// 3D still, so all of them show this exact rocket.
 // A scene that fails is left out; if every scene fails the reply is { scenes: [], fallback: true, reason }.
 import { grokStill, grokStillEdit } from "@/lib/ai/grokClient";
 import { BuildStateSchema } from "@/lib/ai/schemas";
-import { storyScenes, type StoryScene } from "@/lib/ai/storyboard";
+import { storyScenes } from "@/lib/ai/storyboard";
 import { loadCatalog } from "@/lib/physics/catalog";
 import { z } from "zod";
 
@@ -36,25 +36,19 @@ export async function POST(req: Request): Promise<Response> {
 
   const scenes = storyScenes(build, loadCatalog(), flight);
   const errors: string[] = [];
-  const render = async (s: StoryScene, ref: string | undefined) => {
-    try {
-      const imageUrl = ref ? await grokStillEdit(s.prompt, ref, TIMEOUT_MS) : await grokStill(s.prompt, TIMEOUT_MS);
-      return { id: s.id, title: s.title, caption: s.caption, imageUrl };
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-      return null;
-    }
-  };
-  // 1. Chapter 1 from our 3D still. 2. Every rocket chapter edited from that photo, so the rocket stays identical
-  // (falling back to the 3D still if chapter 1 failed); scenes without the rocket are plain generations.
-  const first = scenes.filter((s) => s.reference === "still");
-  const firstDone = await Promise.all(first.map((s) => render(s, image)));
-  const padPhoto = firstDone.find((r) => r?.id === "pad")?.imageUrl ?? image;
-  const restDone = await Promise.all(
-    scenes.filter((s) => s.reference !== "still").map((s) => render(s, s.reference === "pad" ? padPhoto : undefined)),
+  // Every chapter runs in parallel. Rocket chapters are edited from our 3D still (same rocket in each); the rest
+  // are plain generations.
+  const results = await Promise.all(
+    scenes.map(async (s) => {
+      try {
+        const imageUrl = s.reference === "still" && image ? await grokStillEdit(s.prompt, image, TIMEOUT_MS) : await grokStill(s.prompt, TIMEOUT_MS);
+        return { id: s.id, title: s.title, caption: s.caption, imageUrl };
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+        return null;
+      }
+    }),
   );
-  const byId = new Map([...firstDone, ...restDone].filter((r) => r !== null).map((r) => [r.id, r]));
-  const results = scenes.map((s) => byId.get(s.id) ?? null);
   const ok = results.filter((r): r is NonNullable<typeof r> => r !== null);
   if (errors.length) console.warn("[storyboard]", errors.length, "scene(s) failed:", errors[0]);
   if (ok.length === 0) {
