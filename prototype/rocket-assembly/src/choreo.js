@@ -25,7 +25,7 @@ import { animate, spring } from "animejs";
 import { createHologramMaterial } from "./fx/hologram.js";
 import { createBoltFlash } from "./fx/flash.js";
 import { COLORS, LOOK, applyDeploy, deployables, landerOf, padLayout, setShellOpacity as setShell } from "./parts.js";
-import { createVents, createDeluge, createTrenchJet, createSteamCloud, createCondensationHalo, createColdGasPuffs, createIgnitionFlash, createPlasmaGlow } from "./fx/launchfx.js";
+import { createVents, createDeluge, createTrenchJet, createSteamCloud, createCondensationHalo, createColdGasPuffs, createIgnitionFlash, createPlasmaGlow, createImpact } from "./fx/launchfx.js";
 import { attachPlumes, createPadLight, createPlume, P0 } from "./plume.js";
 import { createPlanet, createSurfacePatch, createDustPuff, createSkyDome } from "./planet.js";
 import { createDroneShip } from "./anchors.js";
@@ -994,6 +994,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     ignition: "IGNITION", liftoff: "LIFTOFF", "tower-clear": "TOWER CLEARED", "throttle-down": "THROTTLE DOWN", transonic: "MACH 1", maxq: "MAX-Q",
     "throttle-up": "THROTTLE UP", meco: "MECO", sep: "STAGE SEP", "tea-teb": "TEA-TEB", igniter: "IGNITER", ignition2: "IGNITION", fairing: "FAIRING SEP",
     seco: "SECO", orbit: "ORBIT", "payload-release": "PAYLOAD RELEASE", shortfall: "SHORTFALL", impact: "IMPACT",
+    "propellant-depleted": "PROPELLANT DEPLETED", "departure-cutoff": "CUTOFF", apogee: "APOGEE", "entry-interface": "ENTRY INTERFACE",
   };
   const COUNTDOWN_S = 10;
   // Pad sequence (design round 14 B), seconds of countdown before T0 (sim t = 0, liftoff); a shorter countdown
@@ -1253,6 +1254,25 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         }
         break;
       }
+      case "propellant-depleted":
+        for (const pl of L.plumes) if (!pl.dead) pl.flicker = L.real + 0.5; // the burn sputters out early
+        if (L.landerPlume) L.landerPlume.update(0, { throttle: 0, ambientPressure_Pa: 0, cameraDistance: 10 });
+        break;
+      case "impact": {
+        // Lost (round 19): it hits the sea or the ground (UI4's impact) and is gone; the camera holds on the spot.
+        if (!L.ground) break;
+        L.fx ??= {};
+        L.fx.impact ??= createImpact();
+        L.ground.object3d.add(L.fx.impact.object3d);
+        const at = L.ground.object3d.worldToLocal(root.localToWorld(new THREE.Vector3()));
+        at.y = Math.max(at.y, 0); // on the surface
+        L.fx.impact.fire({ position: at, kind: L.F.endState.impact?.surface === "sea" ? "sea" : "ground", speed_ms: L.smp?.speed_ms ?? 300 });
+        L.flight.visible = false;
+        L.impacted = true;
+        for (const pl of L.plumes) pl.plume.update(0, { throttle: 0, ambientPressure_Pa: P0, cameraDistance: 10 });
+        state.shake = 0.6;
+        break;
+      }
       case "entry-interface": {
         // Re-entry: UI4's plasma glow round the base of what is coming home, driven by the heat sample.
         const base = parts.filter((p) => !L.gone.has(p)).sort((a, b) => a.slotY - b.slotY)[0];
@@ -1441,7 +1461,13 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       g.el = THREE.MathUtils.degToRad(14);
       g.dist = L.trackDist * 1.25;
     }
-    if (seg === "transfer" || seg === "escape") g.dist = L.trackDist * 2.6; // ease back: Earth shrinks, the destination grows
+    if (seg === "transfer" || seg === "escape" || seg === "coast") g.dist = L.trackDist * 2.6; // ease back: Earth shrinks, the destination grows
+    if (L.impacted) {
+      // The impact: look down at the spot on the surface from a little above, a step back.
+      g.el = THREE.MathUtils.degToRad(16);
+      g.dist = L.trackDist * 1.5;
+      g.lookUp = L.trackLocalY * 0.8;
+    }
     if (seg && /braking|approach|vertical|entry|parachute|reentry|landing/.test(seg)) {
       g.el = THREE.MathUtils.degToRad(seg === "vertical" ? 8 : 12);
       g.dist = L.trackDist * (seg === "vertical" ? 1.1 : 1.5);
@@ -1568,6 +1594,8 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     if (L.kind === "moon" || L.kind === "mars") world.setBodyECI(L.kind, L.kind === "moon" ? L.F.bodyPosAt("moon", smp.t_sim) : smp.dest_eci_km ?? L.F.bodyPosAt("mars", smp.t_sim));
     if (L.ground) {
       L.ground.place(fP.copy(L.V).sub(bodyCentre(L.landBody, smp))); // the near origin, body-relative km
+      // Never above the vehicle's base (the last metres of a sample can dip below the sphere): it touches down on it.
+      if (L.ground.object3d.position.y > 0) L.ground.object3d.position.y = 0;
       const alt = smp.body === L.landBody ? smp.alt_km : Infinity;
       showGround(alt < 6); // under the vehicle below ~5 km (above that the far body is the ground)
       if (L.ship && L.ground.inner.bob) {
@@ -1582,6 +1610,26 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   function viewer() {
     if (!L?.F) return null;
     return { pos_km: viewKm.copy(camera.position).applyQuaternion(L.Qn).divideScalar(NEAR_PER_KM).add(L.V), frame: L.Qn };
+  }
+  // A lost flight comes down at endState.impact: the sea or the ground there, the near axes turning to it over
+  // the fall (from the top of the arc), the impact fired on the "impact" event.
+  function prepareImpact() {
+    L.landingReady = true;
+    const F = L.F;
+    let peak = 0;
+    let top = -Infinity;
+    for (let t = 0; t <= F.totalScreen_s; t += 0.25) {
+      const a = F.sampleAt(t).alt_km;
+      if (a > top) (top = a), (peak = t);
+    }
+    L.peakT = peak;
+    L.turnSeg = { t0_screen: peak, t1_screen: Math.max(peak + 1, F.totalScreen_s - 3) };
+    L.landBody = "earth";
+    const pos = world.fromECI(F.sampleAt(F.totalScreen_s).pos_eci_km);
+    L.ground = world.createLocalGround({ body: "earth", pos_km: pos, size_km: 1.2, kind: F.endState.impact?.surface === "sea" ? "ocean" : "ground" });
+    root.add(L.ground.object3d);
+    showGround(false);
+    L.siteFrame = L.ground.frame.clone();
   }
   // The local ground's meshes show and hide; any light it carries (UI4's terrain shadow sun) stays in the scene
   // with its intensity at 0 while hidden, so the scene's light count never changes mid-flight (a recompile of
@@ -1601,7 +1649,9 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   // Prepare the landing (once the vehicle is in its parking orbit): the touchdown point from the timeline's last
   // sample, the local ground there (hidden until ~5 km), its frame for the near axes, the sun eased to light it.
   function prepareLanding() {
-    if (L.landingReady || L.F.endState?.type !== "landed") return;
+    if (L.landingReady) return;
+    if (L.F.endState?.type === "lost") return prepareImpact();
+    if (L.F.endState?.type !== "landed") return;
     L.landingReady = true;
     const body = L.F.endState.body ?? L.kind;
     L.landBody = body;
@@ -1628,9 +1678,12 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     const last = L.F.sampleAt(L.F.totalScreen_s);
     const pos = eciDir(last.pos_km); // body-relative km, world axes
-    L.ground = world.createLocalGround({ body, pos_km: pos, size_km: 1.2 });
-    // Its own shadow sun would add a light to the scene (every material recompiles: seconds). The scene's key
-    // light takes its direction instead while the ground shows (state.keyDir, main.js).
+    // UI4's 3 km patch (fills the view to the horizon from ~1.5 km), without its own shadow sun: a new light in the
+    // scene would recompile every material (seconds). The scene's key light takes the site's sun direction instead
+    // while the ground shows (state.keyDir, main.js); the terrain's crater shadows are baked toward that sun.
+    L.ground = world.createLocalGround({ body, pos_km: pos, size_km: 3, sunLight: false });
+    if (L.ground.inner?.sunDir) L.groundKeyDir = L.ground.inner.sunDir.clone().normalize();
+    if (warmRenderer) L.ground.inner?.prewarm?.(warmRenderer); // its detail textures, now rather than at ~1 km
     const lights = [];
     L.ground.object3d.traverse((o) => o.isLight && lights.push(o));
     for (const l of lights) {
@@ -1663,6 +1716,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
     }
     if (smp.segment !== "ascent") prepareLanding();
     placeFlight(smp);
+    if (L.F.endState?.type === "lost" && tS > (L.peakT ?? Infinity)) fallUpdate(dt, smp, tS);
     if (!L.lander && !L.landerChecked && (smp.segment === "braking" || smp.segment === "entry")) separateLander();
     if (!L.legsOut && (smp.segment === "approach" || smp.segment === "vertical" || smp.segment === "landing")) {
       L.legsOut = true; // the landing legs swing out for the last part of the descent
@@ -1738,6 +1792,24 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
       run(k, { v: 1, delay: D(i * 60), ease: spring({ stiffness: 55, damping: 9 }), onUpdate: () => applyDeploy(leg, k.v) });
     });
   }
+  // The fall of a lost vehicle: it starts tumbling past the top of the arc, glows on re-entry and breaks up at
+  // the hottest part (UI4's plasma with setBreakup).
+  const tumbleQ = new THREE.Quaternion();
+  const tumbleAxis = new THREE.Vector3(1, 0, 0.3).normalize();
+  function fallUpdate(dt, smp, tS) {
+    L.tumble = (L.tumble ?? 0) + dt * Math.min(1.6, 0.25 + (tS - L.peakT) * 0.12);
+    L.flight.quaternion.multiply(tumbleQ.setFromAxisAngle(tumbleAxis, L.tumble));
+    const heat = smp.heat ?? 0;
+    if (heat > 0.05 && !L.fx?.plasma) {
+      const base = parts.filter((p) => !L.gone.has(p)).sort((a, b) => a.slotY - b.slotY)[0];
+      if (base) {
+        L.fx ??= {};
+        L.fx.plasma = createPlasmaGlow({ radius_u: base.radius, length_u: base.height * 0.8 });
+        base.group.add(L.fx.plasma.object3d);
+      }
+    }
+    L.fx?.plasma?.setBreakup?.(THREE.MathUtils.smoothstep(heat, 0.35, 0.8));
+  }
   function finishFlight() {
     L.done = true;
     for (const pl of L.plumes) {
@@ -1753,7 +1825,11 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
   }
 
   function launchUpdate(dt) {
-    if (L.F) return flightUpdate(dt);
+    if (L.F) {
+      flightUpdate(dt);
+      L?.fx?.impact?.update(dt);
+      return;
+    }
     if (L.cut) stepCut(L, dt);
     if (L.done) {
       if (L.drifting) L.flight.rotateY(dt * 0.15); // slow roll in orbit; the outcome line stays in the HUD
@@ -2813,7 +2889,7 @@ export function createChoreographer({ parts, scene, root, camera, controls, sfx,
         createDroneShip({ size_u: 0.5 }).object3d,
         ...(() => {
           const layout = padLayout({ baseRadius_u: 0.5 });
-          return [createVents([{ position: new THREE.Vector3() }], { scale_u: 0.2 }), createDeluge({ layout }), createTrenchJet({ layout }), createSteamCloud({ layout }), createCondensationHalo({}), createSkyDome({ radius_u: 1 }), createIgnitionFlash({}), createColdGasPuffs({})].map((fx) => fx.object3d);
+          return [createVents([{ position: new THREE.Vector3() }], { scale_u: 0.2 }), createDeluge({ layout }), createTrenchJet({ layout }), createSteamCloud({ layout }), createCondensationHalo({}), createSkyDome({ radius_u: 1 }), createIgnitionFlash({}), createColdGasPuffs({}), createImpact(), createPlasmaGlow({})].map((fx) => fx.object3d);
         })(),
       );
       warmFx.position.set(0, -50, 0);

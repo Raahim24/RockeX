@@ -6,7 +6,8 @@
 //     scene, camera, bodies: { earth, moon, mars }, sunDir (world, unit), sunLight (a DirectionalLight for the near
 //     layer, same direction), setViewer({ body, pos_km, quaternion | camera, frame? }), setDestination(body,
 //     pos_km_fromEarth), landingSite(body), skyAt(body, alt_km), surfaceColourAt(body, lat, lon), isOceanAt(lat,
-//     lon), atmosphereLimb(body), createLocalGround({ body, pos_km, size_km, kind? }), cloudDeck(body, alt_km),
+//     lon), atmosphereLimb(body), createLocalGround({ body, pos_km, size_km (≤ ~3), kind?, sunLight = true }),
+//     cloudDeck(body, alt_km),
 //     attach(body, fx) (far-layer effects riding with a body, e.g. launchfx's aurora), update(),
 //     render(renderer), createPass(), dispose(),
 //     // UI 2's flight.js frame (Earth-centred, z = Earth's axis, x toward longitude 0, Earth's rotation ignored):
@@ -156,7 +157,10 @@ const bodyFragment = /* glsl */ `
       vec2 uv = uvOf(nG);
       vec3 albedo = texture2D(uColor, uv).rgb;
       float h = texture2D(uBump, uv).r;
-      vec3 N = bumpN(nG, pG, h * uRelief);
+      // relief fades when one map texel covers many pixels (close to the surface): the GPU's bilinear weights are
+      // quantized and their steps would show as stripes; camera-relative P: pG = d·t − C loses digits there
+      float texelsPerPx = length(fwidth(uv)) * 1024.0;
+      vec3 N = bumpN(nG, d * tG, h * uRelief * smoothstep(0.004, 0.03, texelsPerPx));
       float ndl0 = dot(nG, uSun);
       float diff = max(dot(N, uSun), 0.0) * smoothstep(-0.03, 0.06, ndl0);
       float shade = 1.0;
@@ -758,7 +762,7 @@ export function createWorld({ renderer = null } = {}) {
   // km); frame: near axes → world axes (pass it to setViewer).
   // kind (Earth): "ocean" | "ground" forces the surface (e.g. "ocean" under a drone ship); otherwise the
   // topography decides, and land is assumed while the map is still loading.
-  function createLocalGround({ body: name = "earth", pos_km, size_km = 0.6, seed = 7, kind: kindIn = null } = {}) {
+  function createLocalGround({ body: name = "earth", pos_km, size_km = 0.6, seed = 7, kind: kindIn = null, sunLight = true } = {}) {
     const b = bodies[name];
     const up = (pos_km ?? landingSite(name).pos_km).clone().normalize();
     const f = surfaceFrame(name, up);
@@ -783,7 +787,18 @@ export function createWorld({ renderer = null } = {}) {
     } else {
       kind = "terrain";
       // a little darker than the global map so the patch's own detail and shadows carry the brightness
-      inner = createTerrain({ body: name, size_u, seed, padRadius_u: Math.min(2, size_u * 0.04), sunDir: sunDir.clone().applyQuaternion(f.frame.clone().invert()), tint: [tint.r * 1.1, tint.g * 1.1, tint.b * 1.1] });
+      inner = createTerrain({ body: name, size_u, seed, padRadius_u: Math.min(2, size_u * 0.04), sunDir: sunDir.clone().applyQuaternion(f.frame.clone().invert()), tint: [tint.r, tint.g, tint.b], sunLight });
+      // As bright and the same hue as the far body around it, so the patch edge vanishes: far = map × N·L × uSunI
+      // (white sun, the body shader); near = albedo × (sun colour × intensity / π × N·L + ambient × sky colour) with UI 2's
+      // lightingFor ambient and sky colour (the near layer's fill, assumed), per channel, on level ground.
+      const L = lightingFor(name);
+      const nl = Math.max(0.05, f.up.dot(sunDir));
+      const sky = new THREE.Color(L.skyColour ?? "#000000");
+      const sc = inner.sun?.color ?? new THREE.Color(name === "mars" ? 0xffe2c4 : 0xfff3e6); // without its light: the colour the key light should take
+      const far = b.uniforms.uSunI.value * nl;
+      const si = inner.sun?.intensity ?? (name === "mars" ? 2.2 : 2.8);
+      const ch = (k) => far / (inner.albedoMean * ((sc[k] * si * nl) / Math.PI + (L.ambient ?? 0) * Math.max(sky[k], 0.05)));
+      inner.scaleAlbedo([ch("r"), ch("g"), ch("b")]);
     }
     const object3d = new THREE.Group();
     object3d.name = `world-local-${name}`;
